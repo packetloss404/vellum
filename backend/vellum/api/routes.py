@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 
 from .. import models as m
 from .. import storage
+from ..agent import telemetry
 
 router = APIRouter(prefix="/api")
 
@@ -197,3 +198,14 @@ def end_work_session(session_id: str) -> m.WorkSession:
     if not result:
         raise HTTPException(404, "work_session not found")
     return result
+
+
+# ---------- telemetry / stats ----------
+
+
+@router.get("/work-sessions/{session_id}/stats")
+def work_session_stats(session_id: str) -> dict:
+    stats = telemetry.session_stats(session_id)
+    if stats is None:
+        raise HTTPException(404, "work_session not found")
+    return stats
