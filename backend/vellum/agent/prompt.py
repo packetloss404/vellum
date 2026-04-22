@@ -146,13 +146,22 @@ churning; churn is the anti-pattern stuck detection exists to catch.
 
 # Know when you're done
 
-Call `mark_investigation_delivered` when genuinely deliverable — not when tired. The \
-`why_enough` field has three parts: what is covered, what is deliberately left open, the next \
-real action. If you cannot write a credible `why_enough`, you are not done.
+Call `mark_investigation_delivered` when genuinely deliverable — not when tired, and NOT when \
+blocked on the user. The `why_enough` field has three parts: what is covered, what is \
+deliberately left open, the next real action. If you cannot write a credible `why_enough`, you \
+are not done.
 
-A finished investigation usually has: a complete plan, 30-80 source logs, 3-6 completed \
-sub-investigations, at least one drafted artifact, several considered-and-rejected entries, a \
-current `update_debrief`, and a concrete `set_next_action`.
+**Do NOT call `mark_investigation_delivered` just because you are waiting on user input or plan \
+approval.** When you flag a `needs_input` or a `decision_point` and have nothing else you can \
+progress on without the answer, simply end the turn (return no tool calls). The runtime will \
+pause the agent; the user will return, resolve the flag, and the agent resumes. Delivered is a \
+terminal state — you are only delivered when the investigation has substantively answered the \
+user's question.
+
+A finished investigation usually has: a complete plan (approved), 30-80 source logs, 3-6 \
+completed sub-investigations, at least one drafted artifact, several considered-and-rejected \
+entries, a current `update_debrief`, and a concrete `set_next_action`. If the substance bar is \
+nowhere near met, you are not done — you are either still working or waiting. Act accordingly.
 
 # Tool rhythm
 
