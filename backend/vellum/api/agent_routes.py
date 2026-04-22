@@ -10,17 +10,24 @@ exceptions into HTTP status codes:
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from .. import models as m
 from .. import storage
 from ..agent.orchestrator import (
     ORCHESTRATOR,
     AgentAlreadyRunning,
     AgentNotRunning,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/api")
@@ -77,3 +84,97 @@ def status(dossier_id: str) -> dict:
 @router.get("/agents/running")
 def list_running() -> list[dict]:
     return ORCHESTRATOR.list_running()
+
+
+# ---------- resume (Day-3) ----------
+#
+# Resume is *explicit*: visiting a dossier is read-only (see
+# ``POST /dossiers/{id}/visit`` in routes.py), and this endpoint is the
+# single user-facing way to restart the agent on an existing dossier.
+# The resume endpoint lives here (not routes.py) because it talks to the
+# orchestrator.
+
+
+@router.post("/dossiers/{dossier_id}/resume")
+async def resume(dossier_id: str) -> dict:
+    """Resume agent work on a dossier.
+
+    - 404 if the dossier is missing
+    - 409 if a work_session is already open on this dossier; the body
+      includes ``active_work_session_id`` so the caller can surface the
+      collision without another round-trip.
+    - Otherwise: opens a new ``work_session`` with
+      ``trigger=resume``, fires ``ORCHESTRATOR.start()`` in the
+      background, and returns the new session id.
+
+    The orchestrator call is fire-and-forget on purpose: the client
+    doesn't need (and shouldn't wait for) the agent's first turn to
+    finish before the UI re-renders the dossier.
+    """
+    if storage.get_dossier(dossier_id) is None:
+        raise HTTPException(404, "dossier not found")
+
+    active = storage.get_active_work_session(dossier_id)
+    if active is not None:
+        # 409 with structured body so the client gets both the error
+        # detail AND the id of the offending session in one response.
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": "work_session already active for this dossier",
+                "dossier_id": dossier_id,
+                "active_work_session_id": active.id,
+            },
+        )
+
+    session = storage.start_work_session(
+        dossier_id, trigger=m.WorkSessionTrigger.resume
+    )
+
+    # Fire-and-forget: don't block the HTTP response on the agent's
+    # first turn. Any failure is caught + logged by the orchestrator's
+    # own done-callback; we surface an AgentAlreadyRunning here only if
+    # one slipped between the storage check above (extremely unlikely
+    # given the storage-level guard, but belt + braces).
+    try:
+        await ORCHESTRATOR.start(dossier_id)
+    except AgentAlreadyRunning:
+        # Close the session we just opened so we don't leak an orphan
+        # row. Report the collision with the *pre-existing* session
+        # we raced against, which is the one the caller cares about.
+        try:
+            storage.end_work_session(session.id)
+        except Exception:
+            logger.exception(
+                "resume: failed to close just-created session %s after "
+                "orchestrator reported AgentAlreadyRunning; will be "
+                "cleaned up by next reconcile_at_startup",
+                session.id,
+            )
+        active_now = storage.get_active_work_session(dossier_id)
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": "work_session already active for this dossier",
+                "dossier_id": dossier_id,
+                "active_work_session_id": (
+                    active_now.id if active_now else None
+                ),
+            },
+        )
+
+    return {
+        "dossier_id": dossier_id,
+        "work_session_id": session.id,
+        "status": "started",
+    }
+
+
+@router.get("/dossiers/{dossier_id}/resume-state")
+def resume_state(dossier_id: str) -> dict:
+    """Compact read-only snapshot of what the UI needs to decide whether
+    to offer a resume action. 404 if the dossier is missing."""
+    state = storage.get_dossier_resume_state(dossier_id)
+    if state is None:
+        raise HTTPException(404, "dossier not found")
+    return state

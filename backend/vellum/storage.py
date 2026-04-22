@@ -277,6 +277,100 @@ def delete_dossier(dossier_id: str) -> bool:
         return cur.rowcount > 0
 
 
+def get_dossier_resume_state(dossier_id: str) -> Optional[dict]:
+    """Compact "can we resume this dossier?" snapshot.
+
+    Read-only. Returns ``None`` if the dossier is missing (so callers can
+    map that to a 404). Otherwise returns a dict of the shape documented
+    in the Day-3 brief:
+
+        {
+          "dossier_id": str,
+          "has_plan": bool,
+          "plan_approved": bool,
+          "active_work_session_id": Optional[str],
+          "last_session_ended_at": Optional[datetime],
+          "last_visited_at": Optional[datetime],
+          "open_needs_input_count": int,
+          "open_decision_point_count": int,
+          "delivered": bool,  # dossier.status == delivered
+        }
+
+    Uses a single connection so the counts are drawn from a consistent
+    snapshot of the DB rather than racing mid-turn agent writes.
+    """
+    with connect() as conn:
+        dossier_row = conn.execute(
+            "SELECT * FROM dossiers WHERE id = ?", (dossier_id,)
+        ).fetchone()
+        if dossier_row is None:
+            return None
+
+        plan_json = dossier_row["investigation_plan"]
+        has_plan = plan_json is not None and plan_json != ""
+        plan_approved = False
+        if has_plan:
+            try:
+                plan = m.InvestigationPlan.model_validate_json(plan_json)
+                plan_approved = plan.approved_at is not None
+            except Exception:
+                # Corrupt JSON shouldn't break resume-state — surface as
+                # "has plan but not approved" so the user isn't blocked.
+                plan_approved = False
+
+        # Active session: ended_at IS NULL. We sort by started_at DESC and
+        # take the most recent — in theory there's only one, but if a prior
+        # crash left duplicates this picks the latest deterministically.
+        active_row = conn.execute(
+            "SELECT id FROM work_sessions "
+            "WHERE dossier_id = ? AND ended_at IS NULL "
+            "ORDER BY started_at DESC LIMIT 1",
+            (dossier_id,),
+        ).fetchone()
+        active_work_session_id = active_row["id"] if active_row else None
+
+        # Last ended session — informs "how long has nothing been
+        # happening?" in the UI. NULL if the dossier has never had a
+        # session end.
+        last_ended_row = conn.execute(
+            "SELECT ended_at FROM work_sessions "
+            "WHERE dossier_id = ? AND ended_at IS NOT NULL "
+            "ORDER BY ended_at DESC LIMIT 1",
+            (dossier_id,),
+        ).fetchone()
+        last_session_ended_at = (
+            _dt(last_ended_row["ended_at"]) if last_ended_row else None
+        )
+
+        open_ni_row = conn.execute(
+            "SELECT COUNT(*) AS n FROM needs_input "
+            "WHERE dossier_id = ? AND answered_at IS NULL",
+            (dossier_id,),
+        ).fetchone()
+        open_needs_input_count = int(open_ni_row["n"]) if open_ni_row else 0
+
+        open_dp_row = conn.execute(
+            "SELECT COUNT(*) AS n FROM decision_points "
+            "WHERE dossier_id = ? AND resolved_at IS NULL",
+            (dossier_id,),
+        ).fetchone()
+        open_decision_point_count = int(open_dp_row["n"]) if open_dp_row else 0
+
+        delivered = dossier_row["status"] == m.DossierStatus.delivered.value
+
+        return {
+            "dossier_id": dossier_id,
+            "has_plan": has_plan,
+            "plan_approved": plan_approved,
+            "active_work_session_id": active_work_session_id,
+            "last_session_ended_at": last_session_ended_at,
+            "last_visited_at": _dt(dossier_row["last_visited_at"]),
+            "open_needs_input_count": open_needs_input_count,
+            "open_decision_point_count": open_decision_point_count,
+            "delivered": delivered,
+        }
+
+
 def mark_dossier_visited(dossier_id: str) -> Optional[m.Dossier]:
     """End any active work_session and update last_visited_at. Called when the user opens the dossier."""
     now = _dt_str(m.utc_now())

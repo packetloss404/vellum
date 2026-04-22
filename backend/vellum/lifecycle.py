@@ -14,7 +14,7 @@ idempotent, swallows per-step errors, and logs a one-line summary.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 from typing import Optional
 
@@ -31,6 +31,10 @@ STALE_INTAKE_SECONDS = 7 * 24 * 60 * 60  # 7 days
 class LifecycleReport:
     recovered_work_sessions: int
     abandoned_stale_intakes: int
+    # Day-3 enrichments. Defaults keep older callers (and tests that
+    # instantiate the report positionally) working without change.
+    recovered_dossier_ids: list[str] = field(default_factory=list)
+    active_sessions_before_reconcile: int = 0
 
 
 def _find_orphan_work_sessions() -> list[tuple[str, str]]:
@@ -102,6 +106,7 @@ def reconcile_at_startup(
     """
     recovered = 0
     abandoned = 0
+    recovered_dossier_ids: list[str] = []
 
     # --- 1. Orphan work sessions ---
     try:
@@ -113,9 +118,18 @@ def reconcile_at_startup(
         )
         orphans = []
 
+    active_before = len(orphans)
+
     for session_id, dossier_id in orphans:
         if _recover_one_work_session(session_id, dossier_id):
             recovered += 1
+            # De-dup: a single dossier can in principle own multiple
+            # orphan sessions (historic bug, manual DB edits). The ID
+            # list is the set of dossiers touched, not the raw session
+            # count — that's what the `recovered_work_sessions` counter
+            # already reports.
+            if dossier_id not in recovered_dossier_ids:
+                recovered_dossier_ids.append(dossier_id)
 
     # --- 2. Stale intakes ---
     try:
@@ -127,14 +141,41 @@ def reconcile_at_startup(
         )
         abandoned = 0
 
+    # One-liner summary, carrying up to 5 dossier titles. Fetching titles
+    # is best-effort — a missing dossier (FK already cleaned up) mustn't
+    # abort logging.
+    sample_titles: list[str] = []
+    for did in recovered_dossier_ids[:5]:
+        try:
+            dossier = storage.get_dossier(did)
+        except Exception:
+            dossier = None
+        if dossier is not None:
+            sample_titles.append(dossier.title)
+        else:
+            sample_titles.append(f"<unknown:{did}>")
+
+    titles_suffix = ""
+    if sample_titles:
+        shown = ", ".join(repr(t) for t in sample_titles)
+        if len(recovered_dossier_ids) > 5:
+            shown += f", +{len(recovered_dossier_ids) - 5} more"
+        titles_suffix = f"; dossiers: {shown}"
+
     logger.info(
-        "lifecycle reconcile: recovered %d work_sessions, abandoned %d stale intakes",
+        "lifecycle reconcile: active_before=%d recovered %d work_sessions on "
+        "%d dossier(s), abandoned %d stale intakes%s",
+        active_before,
         recovered,
+        len(recovered_dossier_ids),
         abandoned,
+        titles_suffix,
     )
     return LifecycleReport(
         recovered_work_sessions=recovered,
         abandoned_stale_intakes=abandoned,
+        recovered_dossier_ids=recovered_dossier_ids,
+        active_sessions_before_reconcile=active_before,
     )
 
 
