@@ -4,6 +4,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "./client";
+import type {
+  InvestigationLogEntryType,
+  SubInvestigationState,
+} from "./types";
 
 // ---------- query key helpers ----------
 
@@ -12,6 +16,17 @@ export const qk = {
   dossier: (id: string) => ["dossier", id] as const,
   changeLog: (id: string) => ["dossier", id, "change-log"] as const,
   intake: (id: string) => ["intake", id] as const,
+  // v2
+  artifacts: (id: string) => ["dossier", id, "artifacts"] as const,
+  subInvestigations: (id: string, state?: SubInvestigationState) =>
+    ["dossier", id, "sub-investigations", state ?? null] as const,
+  nextActions: (id: string) => ["dossier", id, "next-actions"] as const,
+  investigationLog: (id: string, entryType?: InvestigationLogEntryType) =>
+    ["dossier", id, "investigation-log", entryType ?? null] as const,
+  investigationLogCounts: (id: string) =>
+    ["dossier", id, "investigation-log", "counts"] as const,
+  consideredAndRejected: (id: string) =>
+    ["dossier", id, "considered-and-rejected"] as const,
 };
 
 // ---------- queries ----------
@@ -180,3 +195,53 @@ export function useStopAgent() {
     },
   });
 }
+
+// ---------- v2 read hooks ----------
+
+export const useArtifacts = (dossierId: string) =>
+  useQuery({
+    queryKey: qk.artifacts(dossierId),
+    queryFn: () => api.listArtifacts(dossierId),
+    enabled: !!dossierId,
+  });
+
+export const useSubInvestigations = (
+  dossierId: string,
+  state?: SubInvestigationState,
+) =>
+  useQuery({
+    queryKey: qk.subInvestigations(dossierId, state),
+    queryFn: () => api.listSubInvestigations(dossierId, state),
+    enabled: !!dossierId,
+  });
+
+export const useNextActions = (dossierId: string) =>
+  useQuery({
+    queryKey: qk.nextActions(dossierId),
+    queryFn: () => api.listNextActions(dossierId),
+    enabled: !!dossierId,
+  });
+
+export const useInvestigationLog = (
+  dossierId: string,
+  entryType?: InvestigationLogEntryType,
+) =>
+  useQuery({
+    queryKey: qk.investigationLog(dossierId, entryType),
+    queryFn: () => api.listInvestigationLog(dossierId, entryType),
+    enabled: !!dossierId,
+  });
+
+export const useInvestigationLogCounts = (dossierId: string) =>
+  useQuery({
+    queryKey: qk.investigationLogCounts(dossierId),
+    queryFn: () => api.investigationLogCounts(dossierId),
+    enabled: !!dossierId,
+  });
+
+export const useConsideredAndRejected = (dossierId: string) =>
+  useQuery({
+    queryKey: qk.consideredAndRejected(dossierId),
+    queryFn: () => api.listConsideredAndRejected(dossierId),
+    enabled: !!dossierId,
+  });

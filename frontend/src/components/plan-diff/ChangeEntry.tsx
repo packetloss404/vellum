@@ -66,6 +66,61 @@ const KIND_MAP: Record<ChangeKind, KindPresentation> = {
     label: "Reordered sections",
     dotClass: "bg-ink-faint",
   },
+  // v2 kinds — placeholder presentations; final styling is Day 4 UI work.
+  artifact_added: {
+    label: "Artifact added",
+    dotClass: "bg-state-confident",
+  },
+  artifact_updated: {
+    label: "Artifact revised",
+    dotClass: "bg-ink-faint",
+  },
+  sub_investigation_spawned: {
+    label: "Sub-investigation",
+    dotClass: "bg-accent",
+    accentBody: "accent",
+  },
+  sub_investigation_completed: {
+    label: "Sub-investigation returned",
+    dotClass: "bg-state-confident",
+  },
+  sub_investigation_abandoned: {
+    label: "Sub-investigation abandoned",
+    dotClass: "bg-ink-faint",
+    mutedBody: true,
+  },
+  debrief_updated: {
+    label: "Debrief updated",
+    dotClass: "bg-ink-faint",
+  },
+  plan_updated: {
+    label: "Plan updated",
+    dotClass: "bg-ink-faint",
+  },
+  next_action_added: {
+    label: "Next action",
+    dotClass: "bg-attention",
+    accentBody: "attention",
+  },
+  next_action_completed: {
+    label: "Next action done",
+    mutedBody: true,
+  },
+  next_action_removed: {
+    label: "Next action removed",
+    dotClass: "bg-ink-faint",
+    strikethrough: true,
+    mutedBody: true,
+  },
+  investigation_log_appended: {
+    label: "Log entry",
+    dotClass: "bg-ink-faint",
+  },
+  considered_and_rejected_added: {
+    label: "Considered & rejected",
+    dotClass: "bg-ink-faint",
+    mutedBody: true,
+  },
 };
 
 function Dot({ className }: { className: string }) {

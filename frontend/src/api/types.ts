@@ -52,7 +52,20 @@ export type ChangeKind =
   | "decision_point_added"
   | "decision_point_resolved"
   | "ruled_out_added"
-  | "sections_reordered";
+  | "sections_reordered"
+  // v2 additions
+  | "artifact_added"
+  | "artifact_updated"
+  | "sub_investigation_spawned"
+  | "sub_investigation_completed"
+  | "sub_investigation_abandoned"
+  | "debrief_updated"
+  | "plan_updated"
+  | "next_action_added"
+  | "next_action_completed"
+  | "next_action_removed"
+  | "investigation_log_appended"
+  | "considered_and_rejected_added";
 
 export type IntakeMessageRole = "user" | "assistant";
 
@@ -83,6 +96,9 @@ export interface Dossier {
   last_visited_at?: string | null;
   created_at: string;
   updated_at: string;
+  // v2 additions (nullable — older dossiers may not have these populated)
+  debrief?: Debrief | null;
+  investigation_plan?: InvestigationPlan | null;
 }
 
 export interface Section {
@@ -175,6 +191,12 @@ export interface DossierFull {
   reasoning_trail: ReasoningTrailEntry[];
   ruled_out: RuledOut[];
   work_sessions: WorkSession[];
+  // v2 additions — optional because older dossiers may not populate them.
+  artifacts?: Artifact[];
+  sub_investigations?: SubInvestigation[];
+  investigation_log?: InvestigationLogEntry[];
+  considered_and_rejected?: ConsideredAndRejected[];
+  next_actions?: NextAction[];
 }
 
 // ---------- API request shapes (Pydantic *Create / *Update / etc.) ----------
@@ -292,3 +314,212 @@ export interface StartAgentRequest {
   max_turns?: number;
   model?: string | null;
 }
+
+// ===================================================================
+// v2 schema (Day 1). Appended below to avoid disturbing v1 definitions.
+// The spec asked for `type` aliases (not `interface`) and snake_case
+// fields matching the Pydantic source on the wire.
+// ===================================================================
+
+// ---------- Artifacts ----------
+
+export type ArtifactKind =
+  | "letter"
+  | "script"
+  | "comparison"
+  | "timeline"
+  | "checklist"
+  | "offer"
+  | "other";
+
+export type ArtifactState = "draft" | "ready" | "superseded";
+
+export type Artifact = {
+  id: string;
+  dossier_id: string;
+  kind: ArtifactKind;
+  title: string;
+  content: string;
+  intended_use: string;
+  state: ArtifactState;
+  kind_note: string | null;
+  supersedes: string | null;
+  last_updated: string;
+  created_at: string;
+};
+
+export type ArtifactCreate = {
+  kind: ArtifactKind;
+  title: string;
+  content?: string;
+  intended_use?: string;
+  state?: ArtifactState;
+  kind_note?: string | null;
+  supersedes?: string | null;
+};
+
+export type ArtifactUpdate = {
+  kind?: ArtifactKind;
+  title?: string;
+  content?: string;
+  intended_use?: string;
+  state?: ArtifactState;
+  change_note: string;
+};
+
+// ---------- Sub-investigations ----------
+
+export type SubInvestigationState =
+  | "running"
+  | "delivered"
+  | "blocked"
+  | "abandoned";
+
+export type SubInvestigation = {
+  id: string;
+  dossier_id: string;
+  parent_section_id: string | null;
+  scope: string;
+  questions: string[];
+  state: SubInvestigationState;
+  return_summary: string | null;
+  findings_section_ids: string[];
+  findings_artifact_ids: string[];
+  started_at: string;
+  completed_at: string | null;
+};
+
+export type SubInvestigationSpawn = {
+  scope: string;
+  questions?: string[];
+  parent_section_id?: string | null;
+};
+
+export type SubInvestigationComplete = {
+  return_summary: string;
+  findings_section_ids?: string[];
+  findings_artifact_ids?: string[];
+};
+
+// ---------- Debrief / InvestigationPlan / NextAction ----------
+
+export type Debrief = {
+  what_i_did: string;
+  what_i_found: string;
+  what_you_should_do_next: string;
+  what_i_couldnt_figure_out: string;
+  last_updated: string;
+};
+
+export type InvestigationPlanItemStatus =
+  | "planned"
+  | "in_progress"
+  | "completed"
+  | "abandoned";
+
+export type InvestigationPlanItem = {
+  id: string;
+  question: string;
+  rationale: string;
+  expected_sources: string[];
+  as_sub_investigation: boolean;
+  status: InvestigationPlanItemStatus;
+};
+
+export type InvestigationPlan = {
+  items: InvestigationPlanItem[];
+  rationale: string;
+  drafted_at: string;
+  approved_at: string | null;
+  revised_at: string | null;
+  revision_count: number;
+};
+
+export type NextAction = {
+  id: string;
+  dossier_id: string;
+  action: string;
+  rationale: string;
+  priority: number;
+  completed: boolean;
+  completed_at: string | null;
+  created_at: string;
+};
+
+// ---------- Investigation log ----------
+
+export type InvestigationLogEntryType =
+  | "source_consulted"
+  | "sub_investigation_spawned"
+  | "sub_investigation_returned"
+  | "section_upserted"
+  | "section_revised"
+  | "artifact_added"
+  | "artifact_revised"
+  | "path_rejected"
+  | "decision_flagged"
+  | "input_requested"
+  | "plan_revised"
+  | "stuck_declared";
+
+export type InvestigationLogEntry = {
+  id: string;
+  dossier_id: string;
+  work_session_id: string | null;
+  sub_investigation_id: string | null;
+  entry_type: InvestigationLogEntryType;
+  payload: Record<string, unknown>;
+  summary: string;
+  created_at: string;
+};
+
+// ---------- Considered and rejected ----------
+
+export type ConsideredAndRejected = {
+  id: string;
+  dossier_id: string;
+  sub_investigation_id: string | null;
+  path: string;
+  why_compelling: string;
+  why_rejected: string;
+  cost_of_error: string;
+  sources: Source[];
+  created_at: string;
+};
+
+// ---------- v2 request payloads used by client fetchers ----------
+
+export type DebriefUpdate = {
+  what_i_did?: string;
+  what_i_found?: string;
+  what_you_should_do_next?: string;
+  what_i_couldnt_figure_out?: string;
+};
+
+export type InvestigationPlanUpdate = {
+  items?: InvestigationPlanItem[];
+  rationale?: string;
+  approved?: boolean;
+};
+
+export type NextActionCreate = {
+  action: string;
+  rationale?: string;
+  priority?: number;
+};
+
+export type InvestigationLogAppend = {
+  entry_type: InvestigationLogEntryType;
+  summary: string;
+  payload?: Record<string, unknown>;
+  sub_investigation_id?: string | null;
+};
+
+export type ConsideredAndRejectedCreate = {
+  path: string;
+  why_compelling: string;
+  why_rejected: string;
+  cost_of_error: string;
+  sources?: Source[];
+  sub_investigation_id?: string | null;
+};
