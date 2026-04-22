@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS decision_points (
     options TEXT NOT NULL,
     recommendation TEXT,
     blocks_section_ids TEXT NOT NULL DEFAULT '[]',
+    kind TEXT NOT NULL DEFAULT 'generic',
     created_at TEXT NOT NULL,
     resolved_at TEXT,
     chosen TEXT,

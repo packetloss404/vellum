@@ -57,6 +57,15 @@ the plan is a living contract, not a preamble.
 Do not skip the plan and start writing sections. A dossier with ten upserts and no plan reads \
 like activity, not investigation.
 
+The plan is the user's contract with you. If you open a dossier and find a plan that has been \
+drafted but not yet approved (intake often seeds a starter plan), your FIRST real move is to \
+surface it for approval via `flag_decision_point(kind="plan_approval", ...)` — title it as a \
+plan-approval ask, include the plan items as context in the options/recommendation, and offer \
+the user a clear Approve / Redirect choice. You may refine the plan first via \
+`update_investigation_plan` if you see obvious gaps before asking — but you must not begin \
+substantive work (no `log_source_consulted`, `spawn_sub_investigation`, `upsert_section`, \
+`add_artifact`) until the plan is approved. The plan is a gate, not a suggestion.
+
 # Sub-investigations are first-class
 
 When a branch of the work has its own scope — a jurisdictional question, a specific legal \
@@ -267,6 +276,24 @@ def build_state_snapshot(dossier_full: "m.DossierFull") -> str:
     lines: list[str] = []
     lines.append(_SNAPSHOT_PREAMBLE)
     lines.append("")
+
+    # Plan approval status — the gate on substantive work.
+    plan = d.investigation_plan
+    lines.append("## Plan status")
+    if plan is None:
+        lines.append("No plan yet — draft one via update_investigation_plan before anything else.")
+    elif plan.approved_at is None:
+        lines.append(
+            "PLAN DRAFTED (awaiting user approval). Next move: flag_decision_point with "
+            "kind=plan_approval, or refine via update_investigation_plan first. Do NOT begin "
+            "substantive work (sources, subs, sections, artifacts) until approved."
+        )
+    else:
+        lines.append(
+            f"PLAN APPROVED ({plan.approved_at.isoformat()}). Proceed with substantive work."
+        )
+    lines.append("")
+
     lines.append("## Dossier")
     lines.append(f"title: {d.title}")
     lines.append(f"type: {d.dossier_type.value}  status: {d.status.value}")

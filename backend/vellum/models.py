@@ -162,6 +162,7 @@ class DecisionPoint(BaseModel):
     options: list[DecisionOption]
     recommendation: Optional[str] = None
     blocks_section_ids: list[str] = Field(default_factory=list)
+    kind: Literal["plan_approval", "stuck_resolution", "generic"] = "generic"
     created_at: datetime
     resolved_at: Optional[datetime] = None
     chosen: Optional[str] = None
@@ -304,6 +305,7 @@ class DecisionPointCreate(BaseModel):
     options: list[DecisionOption]
     recommendation: Optional[str] = None
     blocks_section_ids: list[str] = Field(default_factory=list)
+    kind: Literal["plan_approval", "stuck_resolution", "generic"] = "generic"
 
 
 class DecisionPointResolve(BaseModel):

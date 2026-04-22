@@ -101,6 +101,8 @@ def _row_to_needs_input(row: sqlite3.Row) -> m.NeedsInput:
 
 
 def _row_to_decision_point(row: sqlite3.Row) -> m.DecisionPoint:
+    # Gracefully handle legacy rows that predate the `kind` column.
+    kind = row["kind"] if "kind" in row.keys() else "generic"
     return m.DecisionPoint(
         id=row["id"],
         dossier_id=row["dossier_id"],
@@ -108,6 +110,7 @@ def _row_to_decision_point(row: sqlite3.Row) -> m.DecisionPoint:
         options=_OptionList.validate_json(row["options"]),
         recommendation=row["recommendation"],
         blocks_section_ids=_json_list(row["blocks_section_ids"]),
+        kind=kind or "generic",
         created_at=_dt(row["created_at"]),
         resolved_at=_dt(row["resolved_at"]),
         chosen=row["chosen"],
@@ -690,14 +693,15 @@ def add_decision_point(
         options=data.options,
         recommendation=data.recommendation,
         blocks_section_ids=data.blocks_section_ids,
+        kind=data.kind,
         created_at=now,
     )
     with connect() as conn:
         conn.execute(
             """
             INSERT INTO decision_points (id, dossier_id, title, options, recommendation,
-                                         blocks_section_ids, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                                         blocks_section_ids, kind, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 item.id,
@@ -706,12 +710,16 @@ def add_decision_point(
                 _OptionList.dump_json(item.options).decode(),
                 item.recommendation,
                 json.dumps(item.blocks_section_ids),
+                item.kind,
                 _dt_str(now),
             ),
         )
         _log_change(conn, dossier_id, work_session_id, "decision_point_added", item.title)
         _touch_dossier(conn, dossier_id)
     return item
+
+
+_APPROVE_PATTERN = __import__("re").compile(r"approve|approved|yes", __import__("re").IGNORECASE)
 
 
 def resolve_decision_point(
@@ -738,7 +746,11 @@ def resolve_decision_point(
         )
         _touch_dossier(conn, dossier_id)
         row = conn.execute("SELECT * FROM decision_points WHERE id = ?", (decision_id,)).fetchone()
-    return _row_to_decision_point(row)
+    resolved = _row_to_decision_point(row)
+    # Auto-approve plan if this is a plan_approval decision with an approving choice.
+    if resolved.kind == "plan_approval" and _APPROVE_PATTERN.search(chosen or ""):
+        approve_investigation_plan(dossier_id, work_session_id)
+    return resolved
 
 
 def list_decision_points(dossier_id: str, open_only: bool = False) -> list[m.DecisionPoint]:
@@ -1034,6 +1046,38 @@ def update_investigation_plan(
         if data.approve:
             note += " — approved"
         _log_change(conn, dossier_id, work_session_id, "plan_updated", note)
+        _touch_dossier(conn, dossier_id)
+    return get_dossier(dossier_id)
+
+
+def approve_investigation_plan(
+    dossier_id: str,
+    work_session_id: Optional[str] = None,
+) -> Optional[m.Dossier]:
+    """Stamp approved_at = now on the dossier's plan. No-op if plan is null or
+    already approved. Logs a plan_updated change_log entry on first approval."""
+    now = m.utc_now()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT investigation_plan FROM dossiers WHERE id = ?", (dossier_id,)
+        ).fetchone()
+        if not row:
+            return None
+        plan_json = row["investigation_plan"]
+        if not plan_json:
+            return get_dossier(dossier_id)
+        current = m.InvestigationPlan.model_validate_json(plan_json)
+        if current.approved_at is not None:
+            return get_dossier(dossier_id)
+        approved = current.model_copy(update={"approved_at": now})
+        conn.execute(
+            "UPDATE dossiers SET investigation_plan = ? WHERE id = ?",
+            (approved.model_dump_json(), dossier_id),
+        )
+        _log_change(
+            conn, dossier_id, work_session_id, "plan_updated",
+            f"Plan approved ({len(approved.items)} items)",
+        )
         _touch_dossier(conn, dossier_id)
     return get_dossier(dossier_id)
 
