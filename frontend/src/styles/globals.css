@@ -3,24 +3,36 @@
 @tailwind utilities;
 
 :root {
+  /* Paper / surfaces */
   --color-paper: #FBF8F3;
+  --color-paper-dark: #F5EFE4;
   --color-surface: #FFFFFF;
   --color-surface-sunk: #F5EFE4;
+  /* Ink */
   --color-ink: #1F2937;
   --color-ink-muted: #6B7280;
   --color-ink-faint: #9CA3AF;
+  /* Rules */
   --color-rule: #E5E1D6;
   --color-rule-strong: #CEC6B5;
+  --color-divider: #E5E1D6;
+  /* Accent */
   --color-accent: #8B4513;
   --color-accent-hover: #6B340F;
+  /* Attention */
   --color-attention: #B45309;
   --color-attention-bg: #FEF3C7;
+  /* Semantic state pips */
   --color-state-confident: #047857;
   --color-state-confident-bg: #ECFDF5;
-  --color-state-provisional: #78716C;
-  --color-state-provisional-bg: #F5F5F4;
+  --color-state-provisional: #B45309;
+  --color-state-provisional-bg: #FEF3C7;
   --color-state-blocked: #9F1239;
   --color-state-blocked-bg: #FFF1F2;
+
+  /* Prose measure + leading */
+  --prose-measure: 70ch;
+  --prose-leading: 1.65;
 }
 
 html,
