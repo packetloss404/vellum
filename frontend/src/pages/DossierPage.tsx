@@ -4,7 +4,6 @@ import { Header } from "../components/layout/Header";
 import { NeedsInputBlock } from "../components/needs-input/NeedsInputBlock";
 import { DecisionPointBlock } from "../components/decision-points/DecisionPointBlock";
 import { PlanApprovalBlock } from "../components/plan-approval/PlanApprovalBlock";
-import { Pill } from "../components/common/Pill";
 import { DossierHero } from "../components/common/DossierHero";
 import { DebriefBlock } from "../components/dossier/DebriefBlock";
 import { PlanBlock } from "../components/dossier/PlanBlock";
@@ -16,13 +15,12 @@ import { NextActionsList } from "../components/dossier/NextActionsList";
 import { InvestigationLogSidebar } from "../components/dossier/InvestigationLogSidebar";
 import {
   useDossier,
+  useInvestigationLogCounts,
   useResumeAgent,
   useResumeState,
   useVisitDossier,
 } from "../api/hooks";
-import { relativeTime } from "../utils/time";
 import { useDocumentTitle } from "../utils/useDocumentTitle";
-import type { DossierStatus } from "../api/types";
 
 /**
  * DossierPage — the read-only hero view at /dossiers/:id. Day 3 scaffold.
@@ -37,12 +35,6 @@ import type { DossierStatus } from "../api/types";
  * resume-state endpoint says there's no active session; if that endpoint
  * isn't live yet we degrade to showing Resume unconditionally.
  */
-
-function statusPillVariant(
-  status: string,
-): "default" | "accent" | "attention" {
-  return (status as DossierStatus) === "active" ? "accent" : "default";
-}
 
 function CenteredMessage({ children }: { children: React.ReactNode }) {
   return (
@@ -61,6 +53,7 @@ export default function DossierPage() {
   const resumeState = useResumeState(dossierId);
   const resumeAgent = useResumeAgent();
   const visit = useVisitDossier();
+  const logCounts = useInvestigationLogCounts(dossierId);
   useDocumentTitle(data?.dossier ? `${data.dossier.title} · Vellum` : "Vellum");
 
   // POST /visit once per mount. A ref guards against StrictMode double-fire
@@ -148,9 +141,6 @@ export default function DossierPage() {
     openDecisions.length === 0 &&
     !hasPendingPlan;
 
-  const typeLabel = dossier.dossier_type.replace(/_/g, " ");
-  const cadenceLabel = dossier.check_in_policy?.cadence?.replace(/_/g, " ");
-
   // Resume CTA — show when:
   //   - dossier is not delivered, AND
   //   - resume-state says there's no active session, OR the endpoint 404s
@@ -173,44 +163,25 @@ export default function DossierPage() {
 
       <main className="mx-auto max-w-page px-6 py-10 grid grid-cols-1 md:grid-cols-[1fr_320px] gap-12">
         <div className="space-y-10 max-w-prose min-w-0">
-          {/* TITLE + meta + Resume CTA. Flex row so the CTA anchors top-right. */}
-          <div className="flex items-start justify-between gap-6">
-            <div className="min-w-0 flex-1">
-              <DossierHero
-                title={dossier.title}
-                subtitle={dossier.problem_statement ?? undefined}
-                meta={
-                  <>
-                    <span className="lowercase tracking-wide">{typeLabel}</span>
-                    <span aria-hidden="true">·</span>
-                    <Pill variant={statusPillVariant(dossier.status)}>
-                      {dossier.status}
-                    </Pill>
-                    <span aria-hidden="true">·</span>
-                    <span>created {relativeTime(dossier.created_at)}</span>
-                    {cadenceLabel ? (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span>check-in: {cadenceLabel}</span>
-                      </>
-                    ) : null}
-                  </>
-                }
-              />
-            </div>
+          {/* HERO — case-file cover. The Resume button sits top-right as a
+              visually subordinate CTA so the title + problem statement own
+              the first glance. */}
+          <div className="relative">
+            <DossierHero dossier={data} counts={logCounts.data} />
             {showResume ? (
               <button
                 type="button"
                 onClick={() => resumeAgent.mutate(dossierId)}
                 disabled={resumeAgent.isPending}
-                className="shrink-0 bg-accent text-paper px-4 py-2 font-sans text-sm rounded hover:bg-accent-hover transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                className="absolute right-0 top-0 shrink-0 border border-rule-strong text-ink-muted hover:text-ink hover:border-accent px-3 py-1.5 font-sans text-xs rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed bg-surface"
               >
                 {resumeAgent.isPending ? "Resuming…" : "Resume"}
               </button>
             ) : null}
           </div>
 
-          {/* Debrief — only renders if populated. */}
+          {/* Debrief — four-field summary. Always renders a placeholder if
+              empty so the page shape is predictable. */}
           <DebriefBlock debrief={dossier.debrief} />
 
           {/* Plan — lists the items. */}
