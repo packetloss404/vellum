@@ -766,3 +766,41 @@ def tool_schemas() -> list[dict[str, Any]]:
     })
 
     return schemas
+
+
+# ---------- Extension points for day-2 agents ----------
+#
+# HANDLER_OVERRIDES: map of tool_name -> callable(dossier_id, args) -> result.
+#   When set, the dispatcher calls the override instead of HANDLERS[name].
+#   Used by sub_runtime to turn spawn_sub_investigation into a real blocking
+#   sub-agent run rather than a mere row-insert.
+#
+# TOOL_HOOKS: list of callables called AFTER every dispatch with
+#   (dossier_id, tool_name, args, result). Non-blocking, best-effort; errors
+#   in hooks are logged and swallowed. Used by telemetry.
+
+from typing import Callable
+
+HANDLER_OVERRIDES: dict[str, Callable[[str, dict[str, Any]], Any]] = {}
+TOOL_HOOKS: list[Callable[[str, str, dict[str, Any], Any], None]] = []
+
+
+def dispatch(dossier_id: str, tool_name: str, args: dict[str, Any]) -> Any:
+    """Unified dispatch path: override -> default handler -> hooks.
+
+    Runtimes MUST call this instead of HANDLERS[name] directly, so override
+    registration and telemetry work.
+    """
+    impl = HANDLER_OVERRIDES.get(tool_name) or HANDLERS.get(tool_name)
+    if impl is None:
+        raise KeyError(f"unknown tool: {tool_name}")
+    result = impl(dossier_id, args)
+    for hook in TOOL_HOOKS:
+        try:
+            hook(dossier_id, tool_name, args, result)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "tool hook raised; swallowing", exc_info=True
+            )
+    return result

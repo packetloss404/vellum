@@ -43,7 +43,7 @@ _WEB_SEARCH_TOOL: dict[str, Any] = {
 
 @dataclass
 class RunResult:
-    reason: str  # "ended_turn" | "turn_limit" | "stuck" | "error"
+    reason: str  # "ended_turn" | "turn_limit" | "stuck" | "error" | "delivered"
     turns: int
     session_id: str
     stuck_signal: Optional[Any] = None  # vellum.agent.stuck.StuckSignal
@@ -159,6 +159,7 @@ class DossierAgent:
 
                 tool_results: list[dict[str, Any]] = []
                 stuck_signal = None
+                delivered = False
 
                 for tu in tool_uses:
                     tool_name = tu.name
@@ -183,6 +184,14 @@ class DossierAgent:
                         if sid:
                             self._last_section_id = sid
 
+                    # Terminal tool: the agent signals the investigation is
+                    # handed off to the user. We still let any remaining
+                    # tool_uses in this same turn dispatch (so their results
+                    # are appended and the message shape stays valid), then
+                    # break out of the loop after appending tool_results.
+                    if tool_name == "mark_investigation_delivered":
+                        delivered = True
+
                     # After each dossier mutation, let stuck detection look
                     # at the sequence. First returned signal wins.
                     if stuck_signal is None:
@@ -192,6 +201,13 @@ class DossierAgent:
 
                 if tool_results:
                     state.messages.append({"role": "user", "content": tool_results})
+
+                if delivered:
+                    return RunResult(
+                        reason="delivered",
+                        turns=state.turns,
+                        session_id=session_id,
+                    )
 
                 # Post-turn budget / revision-stall check, independent of
                 # record_tool_call's per-call looping check.
@@ -256,8 +272,10 @@ class DossierAgent:
     async def _dispatch_client_tool(
         self, tool_name: str, tool_input: dict[str, Any], tool_use_id: str
     ) -> dict[str, Any]:
-        handler = handlers.HANDLERS.get(tool_name)
-        if handler is None:
+        if (
+            tool_name not in handlers.HANDLERS
+            and tool_name not in handlers.HANDLER_OVERRIDES
+        ):
             return {
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
@@ -267,8 +285,11 @@ class DossierAgent:
 
         try:
             # Handlers are sync; run them off the event loop so a slow write
-            # doesn't stall concurrent agents.
-            result = await asyncio.to_thread(handler, self.dossier_id, tool_input)
+            # doesn't stall concurrent agents. Route through handlers.dispatch
+            # so HANDLER_OVERRIDES and TOOL_HOOKS apply.
+            result = await asyncio.to_thread(
+                handlers.dispatch, self.dossier_id, tool_name, tool_input
+            )
             return {
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
