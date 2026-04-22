@@ -257,15 +257,37 @@ export const useNextActions = (dossierId: string) =>
     enabled: !!dossierId,
   });
 
-export const useInvestigationLog = (
+/**
+ * useInvestigationLog — fetches the investigation log for a dossier.
+ *
+ * Overloads:
+ *   useInvestigationLog(id)                            // all entry types
+ *   useInvestigationLog(id, "source_consulted")        // single type filter (legacy)
+ *   useInvestigationLog(id, { entryType, limit })      // options bag
+ *
+ * The options-bag form is preferred; the single-string form is kept so
+ * older callers don't break.
+ */
+export function useInvestigationLog(
   dossierId: string,
-  entryType?: InvestigationLogEntryType,
-) =>
-  useQuery({
-    queryKey: qk.investigationLog(dossierId, entryType),
-    queryFn: () => api.listInvestigationLog(dossierId, entryType),
+  entryTypeOrOpts?:
+    | InvestigationLogEntryType
+    | { entryType?: InvestigationLogEntryType; limit?: number },
+) {
+  const opts =
+    typeof entryTypeOrOpts === "string"
+      ? { entryType: entryTypeOrOpts, limit: undefined }
+      : entryTypeOrOpts ?? {};
+  const { entryType, limit } = opts;
+  return useQuery({
+    queryKey: [
+      ...qk.investigationLog(dossierId, entryType),
+      limit ?? null,
+    ] as const,
+    queryFn: () => api.listInvestigationLog(dossierId, entryType, limit),
     enabled: !!dossierId,
   });
+}
 
 export const useInvestigationLogCounts = (dossierId: string) =>
   useQuery({
