@@ -130,19 +130,16 @@ class DigestStats:
 def read_stats_from_storage(dossier_id: str) -> DigestStats:
     """Compute a fresh DigestStats by reading the dossier + children.
 
-    Maps Day-2 brief vocabulary onto the Day-1 storage primitives:
-      - sub_investigation: section with type in {finding, evidence, open_question, decision_needed}
-                           (summary/ruled_out/recommendation excluded)
-          state ``confident``   -> delivered
-          state ``provisional`` -> running
-          state ``blocked``     -> blocked
-      - source_consulted:  each entry in ``section.sources`` counts as one
-      - artifact:          section with type == ``recommendation``
-      - considered-and-rejected: ``ruled_out`` entries
-      - debrief:           reasoning_trail entries tagged ``debrief``;
-                           if absent, derive a best-effort four-field summary.
+    v2 primitives (all first-class in storage):
+      - sub_investigations: storage.list_sub_investigations
+      - source_consulted:   investigation_log entries with entry_type=source_consulted
+      - artifacts:          storage.list_artifacts
+      - considered_and_rejected: storage.list_considered_and_rejected
+      - debrief:            dossier.debrief (Debrief model)
+      - investigation_plan: dossier.investigation_plan (InvestigationPlan model)
     """
     from vellum import storage
+    from vellum import models as m
 
     stats = DigestStats(dossier_id=dossier_id)
     dossier = storage.get_dossier(dossier_id)
@@ -155,61 +152,40 @@ def read_stats_from_storage(dossier_id: str) -> DigestStats:
     if full is None:
         return stats
 
-    sections = full.sections
-    stats.sections = len(sections)
+    stats.sections = len(full.sections)
+    stats.artifacts = len(full.artifacts)
+    stats.sub_investigations = len(full.sub_investigations)
+    stats.sub_delivered = sum(
+        1 for s in full.sub_investigations
+        if (s.state.value if hasattr(s.state, "value") else str(s.state)) == "delivered"
+    )
+    stats.considered_rejected = len(full.considered_and_rejected)
 
-    sub_types = {"finding", "evidence", "open_question", "decision_needed"}
-    for s in sections:
-        t = s.type.value if hasattr(s.type, "value") else str(s.type)
-        if t in sub_types:
-            stats.sub_investigations += 1
-            state = s.state.value if hasattr(s.state, "value") else str(s.state)
-            if state == "confident":
-                stats.sub_delivered += 1
-        if t == "recommendation":
-            stats.artifacts += 1
-        stats.sources += len(s.sources or [])
+    # source_consulted count from investigation_log
+    try:
+        counts = storage.count_investigation_log_by_type(dossier_id)
+        stats.sources = counts.get("source_consulted", 0)
+    except Exception:
+        stats.sources = 0
 
-    stats.considered_rejected = len(full.ruled_out)
-
-    # Debrief: prefer explicit entries, fall back to best-effort derivation.
-    debrief_entries = [
-        e for e in full.reasoning_trail if "debrief" in (e.tags or [])
-    ]
-    if debrief_entries:
-        # Parse the latest 4 entries or a single multi-field entry.
-        latest = debrief_entries[-1]
-        parsed = _parse_debrief_note(latest.note)
-        stats.debrief_what_i_did = parsed.get("what_i_did", "")
-        stats.debrief_what_i_found = parsed.get("what_i_found", "")
-        stats.debrief_do_next = parsed.get("do_next", "")
-        stats.debrief_left_open = parsed.get("left_open", "")
+    # Debrief: direct from dossier.debrief; fall back to derivation if null.
+    if dossier.debrief is not None:
+        stats.debrief_what_i_did = dossier.debrief.what_i_did or ""
+        stats.debrief_what_i_found = dossier.debrief.what_i_found or ""
+        stats.debrief_do_next = dossier.debrief.what_you_should_do_next or ""
+        stats.debrief_left_open = dossier.debrief.what_i_couldnt_figure_out or ""
     else:
         stats.debrief_what_i_did, stats.debrief_what_i_found, \
             stats.debrief_do_next, stats.debrief_left_open = \
             _derive_debrief(full)
 
-    # Most recent investigation-log entries = change_log lines (newest last,
-    # show newest 3).
+    # Most recent investigation-log entries (newest 3, summary line).
     try:
-        sessions = full.work_sessions or []
-        if sessions:
-            latest_session = sessions[-1]
-            change_entries = storage.list_change_log_for_session(
-                dossier_id, latest_session.id
-            )
-        else:
-            change_entries = []
-        stats.recent_log = [
-            f"{e.kind}: {e.change_note}" for e in change_entries[-3:]
-        ]
+        recent = storage.list_investigation_log(dossier_id, limit=3)
+        stats.recent_log = [f"{e.entry_type.value}: {e.summary}" for e in recent]
     except Exception:
         stats.recent_log = []
 
-    # Turn count = token_budget_used / some-avg doesn't exist directly.
-    # Use work_session count * handled-per-session is too rough. Instead,
-    # leave turns 0 here; the runner overwrites with the real count from
-    # the RunResult when available.
     return stats
 
 
