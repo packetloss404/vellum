@@ -295,11 +295,66 @@ def mark_investigation_delivered(dossier_id: str, args: dict[str, Any]) -> dict[
 
     Sets dossier.status = delivered AND appends a [delivered] reasoning note
     so the plan-diff surfaces the self-declaration alongside the status flip.
+
+    Defense-in-depth guard (day-6): refuse when the dossier isn't actually
+    ready. Specifically, if any sub-investigation is still ``running``, or
+    any ``needs_input`` is unanswered, or any ``plan_approval`` decision
+    point is unresolved, return a structured ``{"ok": False, ...}``
+    without flipping dossier.status. The agent can read the refusal and
+    either wait (end turn) or explicitly abandon the blockers. Generic
+    open decision points are tolerated — the agent may intentionally
+    leave those for the user.
     """
-    session_id = _ensure_session(dossier_id)
     parsed = m.MarkDeliveredArgs(**args)
     why_enough = parsed.why_enough
 
+    # --- Pre-flight guards ------------------------------------------------
+    running_subs = storage.list_sub_investigations(
+        dossier_id, state=m.SubInvestigationState.running
+    )
+    if running_subs:
+        return {
+            "ok": False,
+            "reason": "still_running_subs",
+            "subs": [{"id": s.id, "scope": s.scope} for s in running_subs],
+            "message": (
+                f"{len(running_subs)} sub-investigation(s) still running; "
+                "wait for them or abandon explicitly before marking delivered"
+            ),
+        }
+
+    open_needs = storage.list_needs_input(dossier_id, open_only=True)
+    if open_needs:
+        return {
+            "ok": False,
+            "reason": "open_needs_input",
+            "needs_input": [
+                {"id": n.id, "question": n.question} for n in open_needs
+            ],
+            "message": (
+                f"{len(open_needs)} unanswered needs_input item(s); "
+                "resolve or resurface before marking delivered"
+            ),
+        }
+
+    open_dps = storage.list_decision_points(dossier_id, open_only=True)
+    open_plan_approvals = [dp for dp in open_dps if dp.kind == "plan_approval"]
+    if open_plan_approvals:
+        return {
+            "ok": False,
+            "reason": "open_plan_approval",
+            "decision_points": [
+                {"id": dp.id, "title": dp.title}
+                for dp in open_plan_approvals
+            ],
+            "message": (
+                f"{len(open_plan_approvals)} unresolved plan_approval "
+                "decision point(s); the plan has not been approved"
+            ),
+        }
+
+    # --- All clear: proceed ----------------------------------------------
+    session_id = _ensure_session(dossier_id)
     storage.update_dossier(
         dossier_id, m.DossierUpdate(status=m.DossierStatus.delivered)
     )
@@ -311,7 +366,11 @@ def mark_investigation_delivered(dossier_id: str, args: dict[str, Any]) -> dict[
         ),
         session_id,
     )
-    return {"dossier_id": dossier_id, "status": m.DossierStatus.delivered.value}
+    return {
+        "ok": True,
+        "dossier_id": dossier_id,
+        "status": m.DossierStatus.delivered.value,
+    }
 
 
 # ===================================================================

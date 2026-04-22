@@ -194,8 +194,14 @@ class DossierAgent:
                     # tool_uses in this same turn dispatch (so their results
                     # are appended and the message shape stays valid), then
                     # break out of the loop after appending tool_results.
+                    # Day-6 defense-in-depth: the handler may refuse (open
+                    # needs_input, running subs, unresolved plan_approval).
+                    # Only terminate when the handler signals success — on
+                    # refusal the loop continues so the agent can see the
+                    # refusal result_block on the next turn and react.
                     if tool_name == "mark_investigation_delivered":
-                        delivered = True
+                        if _handler_result_ok(result_block):
+                            delivered = True
 
                     # After each dossier mutation, let stuck detection look
                     # at the sequence. First returned signal wins.
@@ -343,6 +349,34 @@ def _coerce_tool_result(result: Any) -> str:
         return json.dumps(result, default=str)
     except (TypeError, ValueError):
         return str(result)
+
+
+def _handler_result_ok(result_block: dict[str, Any]) -> bool:
+    """Inspect a tool_result block to decide if the handler succeeded.
+
+    Used for terminal-tool handling: if ``mark_investigation_delivered``
+    refuses (returns ``{"ok": False, ...}``), we do NOT want the runtime
+    to treat the dossier as delivered. A result is "ok" unless:
+
+    - the block is explicitly ``is_error=True``, or
+    - the parsed content is a JSON object containing ``"ok": false``.
+
+    Any other shape (string content, dict without an ``ok`` key) is
+    treated as ok — preserves backwards compatibility with handlers
+    that don't opt into the ``ok`` protocol.
+    """
+    if result_block.get("is_error"):
+        return False
+    content = result_block.get("content")
+    if isinstance(content, str) and content:
+        import json
+        try:
+            parsed = json.loads(content)
+        except (ValueError, TypeError):
+            return True
+        if isinstance(parsed, dict) and parsed.get("ok") is False:
+            return False
+    return True
 
 
 if __name__ == "__main__":

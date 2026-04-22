@@ -531,8 +531,16 @@ def test_increment_session_tokens_called_with_input_plus_output(fresh_db, monkey
 )
 def test_mark_investigation_delivered_ends_with_delivered(fresh_db):
     did = _seed_dossier()
+    # Valid args: the day-6 delivery guard in handlers.mark_investigation_delivered
+    # also inspects the handler result — a pydantic error or a
+    # ``{"ok": False}`` refusal must NOT terminate the loop, so we pass a
+    # well-formed args dict here.
     deliver_turn = _message(
-        [_tool_use("mark_investigation_delivered", {}, id="tu_done")],
+        [_tool_use(
+            "mark_investigation_delivered",
+            {"why_enough": "Nothing left to do in this minimal test."},
+            id="tu_done",
+        )],
         stop_reason="tool_use",
     )
     # Tail-end in case runtime doesn't early-terminate in current tree.

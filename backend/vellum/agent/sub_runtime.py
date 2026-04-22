@@ -306,6 +306,9 @@ async def run_sub_investigation(
     result plus a ``return_summary`` mirror — the parent's
     ``spawn_handler`` hands this back up to the main agent.
     """
+    logger.info(
+        "sub_runtime: starting sub %s scope=%r", sub_id, scope,
+    )
     resolved_model = model or MODEL
     client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY or None)
 
@@ -424,6 +427,12 @@ async def run_sub_investigation(
             if completion_args is not None:
                 # Clean exit: the model called complete_sub_investigation
                 # and the handler already persisted the update.
+                summary_text = completion_args.get("return_summary") or ""
+                logger.info(
+                    "sub_runtime: sub %s completed via model call, "
+                    "return_summary_len=%d",
+                    sub_id, len(summary_text),
+                )
                 break
 
         if completion_args is None:
@@ -432,6 +441,10 @@ async def run_sub_investigation(
             force_completed = True
 
         if force_completed and completion_args is None:
+            logger.warning(
+                "sub_runtime: sub %s force-completing at max_turns=%d",
+                sub_id, max_turns,
+            )
             fallback_summary = "[incomplete — max_turns reached]"
             try:
                 handlers.HANDLERS["complete_sub_investigation"](
@@ -444,9 +457,9 @@ async def run_sub_investigation(
                     },
                 )
             except Exception:  # noqa: BLE001 — log + continue; parent still needs a reply
-                logger.warning(
-                    "sub_runtime: force-complete failed for sub %s", sub_id,
-                    exc_info=True,
+                logger.exception(
+                    "sub_runtime: force-complete storage call failed for sub %s",
+                    sub_id,
                 )
             completion_args = {
                 "sub_investigation_id": sub_id,
@@ -472,30 +485,49 @@ async def run_sub_investigation(
             "turns": turns,
         }
 
-    except Exception as exc:  # noqa: BLE001 — never raise out of the sub loop
-        logger.exception("sub_runtime: unexpected error in sub %s", sub_id)
-        # Best-effort: record the failure on the sub row so the parent
-        # doesn't see a sub stuck in `running` forever.
+    except Exception as exc:  # noqa: BLE001 — log + persist, then re-raise
+        # Sub-agent errored mid-turn (streaming exception, tool dispatch
+        # error, etc.). Critical: ensure the sub row does NOT stay in
+        # `running`, then re-raise so spawn_handler can surface the error
+        # to the main agent as a tool_result. The original day-5 bug was
+        # that both this completion AND the force-complete fallback
+        # silently failed, leaving subs pristine in `running`.
+        logger.exception(
+            "sub_runtime: unexpected error in sub %s — persisting failure row",
+            sub_id,
+        )
+        error_summary = f"[sub-agent errored: {type(exc).__name__}: {exc}]"
         try:
-            handlers.HANDLERS["complete_sub_investigation"](
+            storage.complete_sub_investigation(
                 parent_dossier_id,
-                {
-                    "sub_investigation_id": sub_id,
-                    "return_summary": f"[error — {type(exc).__name__}: {exc}]",
-                    "findings_section_ids": [],
-                    "findings_artifact_ids": [],
-                },
+                sub_id,
+                m.SubInvestigationComplete(
+                    return_summary=error_summary,
+                    findings_section_ids=[],
+                    findings_artifact_ids=[],
+                ),
+                session_id,
             )
         except Exception:  # noqa: BLE001
-            pass
-        return {
-            "sub_investigation_id": sub_id,
-            "return_summary": f"[error — {type(exc).__name__}: {exc}]",
-            "findings_section_ids": [],
-            "findings_artifact_ids": [],
-            "terminated_without_completion": True,
-            "turns": turns,
-        }
+            logger.exception(
+                "sub_runtime: storage.complete_sub_investigation also failed "
+                "for sub %s — attempting abandon_sub_investigation fallback",
+                sub_id,
+            )
+            try:
+                storage.abandon_sub_investigation(
+                    parent_dossier_id,
+                    sub_id,
+                    error_summary,
+                    session_id,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "sub_runtime: abandon_sub_investigation also failed "
+                    "for sub %s — sub row may remain in `running`",
+                    sub_id,
+                )
+        raise
 
     finally:
         CURRENT_SUB_INVESTIGATION_ID.reset(token)
@@ -537,35 +569,65 @@ def spawn_handler(parent_dossier_id: str, args: dict[str, Any]) -> dict[str, Any
     # sync-from-the-agent's-POV but the underlying dispatch already runs
     # handlers in asyncio.to_thread, so we need a fresh event loop if
     # there's no running one.
+    result: Optional[dict[str, Any]] = None
+    spawn_error: Optional[BaseException] = None
     try:
-        result = asyncio.run(
-            run_sub_investigation(
-                parent_dossier_id,
-                sub.id,
-                spawn_data.scope,
-                list(spawn_data.questions or []),
-            )
-        )
-    except RuntimeError as exc:
-        # If we're already inside a running loop (e.g. the main runtime
-        # called us without asyncio.to_thread), fall back to nesting. We
-        # don't expect this in normal operation — handlers are dispatched
-        # via to_thread — but guard against it.
-        if "asyncio.run() cannot be called" in str(exc):
-            loop = asyncio.new_event_loop()
-            try:
-                result = loop.run_until_complete(
-                    run_sub_investigation(
-                        parent_dossier_id,
-                        sub.id,
-                        spawn_data.scope,
-                        list(spawn_data.questions or []),
-                    )
+        try:
+            result = asyncio.run(
+                run_sub_investigation(
+                    parent_dossier_id,
+                    sub.id,
+                    spawn_data.scope,
+                    list(spawn_data.questions or []),
                 )
-            finally:
-                loop.close()
-        else:
-            raise
+            )
+        except RuntimeError as exc:
+            # If we're already inside a running loop (e.g. the main runtime
+            # called us without asyncio.to_thread), fall back to nesting. We
+            # don't expect this in normal operation — handlers are dispatched
+            # via to_thread — but guard against it.
+            if "asyncio.run() cannot be called" in str(exc):
+                loop = asyncio.new_event_loop()
+                try:
+                    result = loop.run_until_complete(
+                        run_sub_investigation(
+                            parent_dossier_id,
+                            sub.id,
+                            spawn_data.scope,
+                            list(spawn_data.questions or []),
+                        )
+                    )
+                finally:
+                    loop.close()
+            else:
+                raise
+    except Exception as exc:  # noqa: BLE001 — surface to main agent
+        logger.exception(
+            "sub_runtime: spawn_handler caught error running sub %s",
+            sub.id,
+        )
+        spawn_error = exc
+        # Defense in depth: run_sub_investigation already attempted to
+        # persist a failure row before re-raising, but double-check here.
+        # If the sub is still in `running`, abandon it so the parent never
+        # sees a zombie.
+        try:
+            fetched = storage.get_sub_investigation(sub.id)
+            if (
+                fetched is not None
+                and fetched.state == m.SubInvestigationState.running
+            ):
+                storage.abandon_sub_investigation(
+                    parent_dossier_id,
+                    sub.id,
+                    f"[sub-agent errored: {type(exc).__name__}: {exc}]",
+                    parent_session_id,
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "sub_runtime: failed to abandon stuck sub %s after error",
+                sub.id,
+            )
 
     fetched = storage.get_sub_investigation(sub.id)
     final_state = (
@@ -574,6 +636,24 @@ def spawn_handler(parent_dossier_id: str, args: dict[str, Any]) -> dict[str, Any
         else "running"
     )
 
+    if spawn_error is not None:
+        # Return a structured error so the main agent can see it, rather
+        # than letting the exception bubble out of the tool dispatch
+        # (which would become an is_error=True string and lose structure).
+        return {
+            "sub_investigation_id": sub.id,
+            "state": final_state,
+            "return_summary": (
+                f"[sub-agent errored: {type(spawn_error).__name__}: "
+                f"{spawn_error}]"
+            ),
+            "findings_section_ids": [],
+            "findings_artifact_ids": [],
+            "terminated_without_completion": True,
+            "error": f"{type(spawn_error).__name__}: {spawn_error}",
+        }
+
+    assert result is not None  # unreachable: success path always sets result
     return {
         "sub_investigation_id": sub.id,
         "state": final_state,
