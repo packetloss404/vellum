@@ -4,21 +4,33 @@ Owns the set of in-flight ``DossierAgent.run()`` tasks. One task per
 dossier at a time; N dossiers run concurrently as independent
 ``asyncio.Task``s — no queueing.
 
-Design notes:
-  - ``_tasks: dict[str, asyncio.Task]`` keyed by dossier_id. Membership
-    is the source of truth for "is an agent running for X?".
-  - Every spawned task has a ``done_callback`` that removes itself from
-    ``_tasks`` and logs the outcome. This handles the race between
-    ``stop()`` and natural completion cleanly: whichever path finishes
-    the task first, the callback prunes tracking exactly once.
-  - ``stop()`` issues ``task.cancel()`` then awaits with a 30 s grace
-    period. The callback still fires and prunes; ``stop()`` just waits
-    for cancellation to propagate.
-  - ``shutdown()`` cancels everything and awaits; safe to call from a
-    FastAPI shutdown hook.
-  - Exceptions raised inside the runtime are never silently swallowed:
-    the done-callback logs them. The runtime itself is responsible for
-    closing its own ``work_session`` on error.
+Invariants (enforced here, assumed by callers):
+  1. **One active run per dossier.** A second ``start()`` for a
+     dossier that already has a non-done task raises
+     ``AgentAlreadyRunning``. The ``_lock`` makes the check-then-
+     insert atomic across concurrent callers.
+  2. **Cross-dossier parallelism.** Different dossiers run as
+     independent ``asyncio.Task``s scheduled on the same event loop —
+     there is no artificial concurrency cap and no cross-dossier
+     serialization. SQLite with WAL (configured in ``db.py``) absorbs
+     the concurrent writers.
+  3. **Graceful shutdown.** ``shutdown()`` cancels every in-flight
+     task and awaits them with a 30 s grace period. Safe to call from
+     a FastAPI lifespan hook; never raises.
+  4. **``_tasks`` cleanup.** A single done-callback is the only path
+     that removes entries from ``_tasks`` / ``_started_at`` — so the
+     same pruning runs whether the task ended naturally, cancelled,
+     or errored.
+  5. **Sub-investigation inlining.** Sub-agents run *inside* the
+     parent's ``DossierAgent.run()`` coroutine; the orchestrator
+     never registers a sub-agent as a separate task and never imposes
+     a wall-clock timeout on a task in progress. A dossier's task
+     runs until the runtime returns (or is cancelled) — so a long
+     internal sub-agent loop won't be killed by the orchestrator.
+  6. **No silent failures.** Exceptions raised inside the runtime are
+     logged (with tracebacks) by the done-callback. The runtime
+     itself is responsible for closing its own ``work_session`` on
+     error.
 """
 from __future__ import annotations
 
@@ -204,6 +216,57 @@ class AgentOrchestrator:
                 {
                     "dossier_id": dossier_id,
                     "started_at": self._started_at.get(dossier_id),
+                }
+            )
+        return out
+
+    def list_active(self) -> list[dict]:
+        """Return a snapshot of every tracked task with a coarse status.
+
+        This is the day-2 observability entry point (telemetry agent
+        reads it). Unlike ``list_running``, entries in terminal states
+        (``cancelled``, ``done``) may briefly appear here between the
+        moment a task completes and the done-callback pruning it; the
+        telemetry layer should treat this as "just finished" rather
+        than filter it out silently.
+
+        Each entry is::
+
+            {"dossier_id": ..., "started_at": ..., "status": "..."}
+
+        Where ``status`` is one of:
+          - ``"scheduled"``: task created but hasn't begun running
+          - ``"running"``: task is actively executing
+          - ``"cancelled"``: task was cancelled (about to be pruned)
+          - ``"done"``: task finished naturally (about to be pruned)
+        """
+        out: list[dict] = []
+        for dossier_id, task in list(self._tasks.items()):
+            if task.cancelled():
+                status = "cancelled"
+            elif task.done():
+                status = "done"
+            else:
+                # asyncio doesn't distinguish "scheduled but not yet
+                # run" from "running" cleanly — a task is "scheduled"
+                # until its coroutine has taken at least one step.
+                # ``get_coro().cr_frame is None`` means the coroutine
+                # hasn't started (or has finished and been closed);
+                # combined with ``not task.done()`` that means
+                # scheduled. Best-effort: on Python versions where
+                # introspection fails, fall back to "running".
+                status = "running"
+                try:
+                    coro = task.get_coro()
+                    if coro is not None and getattr(coro, "cr_frame", None) is None:
+                        status = "scheduled"
+                except Exception:  # noqa: BLE001 - observability must not raise
+                    pass
+            out.append(
+                {
+                    "dossier_id": dossier_id,
+                    "started_at": self._started_at.get(dossier_id),
+                    "status": status,
                 }
             )
         return out
