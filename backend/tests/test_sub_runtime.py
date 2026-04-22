@@ -125,9 +125,23 @@ def _mk_dossier():
 
 
 def test_registration_on_import():
-    """Importing sub_runtime wires spawn_handler into HANDLER_OVERRIDES."""
-    from vellum.agent import sub_runtime  # noqa: F401 — side effect is the test
+    """Importing sub_runtime wires spawn_handler into HANDLER_OVERRIDES.
+
+    The conftest's ``_isolate_tool_hooks`` fixture clears
+    ``HANDLER_OVERRIDES`` between tests to prevent leakage. If this test
+    runs after a test that imported sub_runtime for the first time, the
+    snapshot taken by the fixture will have been empty (no overrides)
+    and the override entry will have been cleared. Force a reimport so
+    the module-level registration runs again under the fresh snapshot.
+    """
+    import importlib
+    from vellum.agent import sub_runtime
     from vellum.tools import handlers
+
+    # Force re-run of module-level registration if it was cleared by the
+    # test-isolation fixture.
+    if "spawn_sub_investigation" not in handlers.HANDLER_OVERRIDES:
+        importlib.reload(sub_runtime)
 
     assert hasattr(handlers, "HANDLER_OVERRIDES")
     assert "spawn_sub_investigation" in handlers.HANDLER_OVERRIDES
