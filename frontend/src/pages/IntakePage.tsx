@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import {
   useIntake,
@@ -18,10 +18,13 @@ import { useDocumentTitle } from "../utils/useDocumentTitle";
  *   - /intake         → blank "What's the problem?" starter.
  *   - /intake/:id     → conversation view (thread + right-rail state).
  *
- * On commit, we wait ~1s so the user registers the "Dossier open" success
- * state before we shove them into /dossiers/{id}. Long enough to feel
- * intentional; short enough that it doesn't feel like a bug.
+ * On commit we navigate to /dossiers/{id}. A short (~900ms) pause gives the
+ * user time to register the "Dossier open" pill in the right rail before
+ * the page switches, so the transition feels intentional rather than abrupt.
  */
+
+const SERVER_ERROR = "I couldn't reach the server.";
+
 export default function IntakePage() {
   useDocumentTitle("Intake · Vellum");
   const { id } = useParams<{ id: string }>();
@@ -39,23 +42,27 @@ function IntakeStart() {
   const trimmed = value.trim();
   const canSubmit = trimmed.length > 0 && !startIntake.isPending;
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleSubmit(e?: React.FormEvent) {
+    if (e) e.preventDefault();
     if (!canSubmit) return;
     setError(null);
     try {
       const res = await startIntake.mutateAsync(trimmed);
-      // NOTE on `first_reply`: the server returns the assistant's first
-      // reply alongside the new IntakeSession. The start mutation's
-      // onSuccess seeds the intake cache with `res.intake`, and that
-      // session already contains all messages (including the assistant
-      // reply). So we don't need to forward first_reply separately —
-      // the /intake/:id view reads the cached session and renders it.
+      // onSuccess on the mutation seeds the intake cache with res.intake
+      // (which already contains the first assistant reply), so the
+      // /intake/:id view can render immediately without a refetch.
       navigate(`/intake/${res.intake.id}`);
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Couldn't start intake.",
-      );
+    } catch {
+      setError(SERVER_ERROR);
+    }
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    // Cmd/Ctrl+Enter submits from the opener too — matches the composer
+    // behavior on the conversation view so muscle memory carries over.
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      void handleSubmit();
     }
   }
 
@@ -76,14 +83,24 @@ function IntakeStart() {
             autoFocus
             value={value}
             onChange={(e) => setValue(e.target.value)}
+            onKeyDown={handleKeyDown}
             rows={6}
             placeholder="What's the problem?"
             className="w-full resize-none font-serif text-base bg-surface border border-rule focus:border-accent focus:outline-none rounded px-4 py-3 text-ink placeholder:text-ink-faint"
           />
 
           {error ? (
-            <div className="mt-3 text-sm font-mono text-attention">
-              {error}
+            <div className="mt-3 flex items-center gap-3">
+              <div className="text-sm font-serif italic text-attention">
+                {error}
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleSubmit()}
+                className="text-sm font-sans text-accent hover:text-accent-hover underline"
+              >
+                Retry
+              </button>
             </div>
           ) : null}
 
@@ -112,21 +129,24 @@ function IntakeStart() {
 
 function IntakeConversation({ id }: { id: string }) {
   const navigate = useNavigate();
-  const { data, isLoading, isError, error } = useIntake(id);
+  const query = useIntake(id);
+  const { data, isLoading, isError } = query;
   const sendMessage = useSendIntakeMessage();
   const [sendError, setSendError] = useState<string | null>(null);
+  // We stash the last user message so a send failure can be replayed via
+  // the Retry button without the user having to retype.
+  const lastUserMessageRef = useRef<string | null>(null);
 
   const status = data?.status;
   const dossierId = data?.dossier_id ?? null;
 
-  // Auto-redirect on commit. 1s pause lets the user register the success
-  // state — the "Dossier open" pill appears in the right rail — before we
-  // navigate. Short enough that it feels like a transition, not a wait.
+  // Auto-redirect on commit. The pause lets the user register the success
+  // state — the "Dossier open" pill in the right rail — before we navigate.
   useEffect(() => {
     if (status === "committed" && dossierId) {
       const t = window.setTimeout(() => {
         navigate(`/dossiers/${dossierId}`);
-      }, 1000);
+      }, 900);
       return () => window.clearTimeout(t);
     }
     return undefined;
@@ -146,16 +166,22 @@ function IntakeConversation({ id }: { id: string }) {
       <div className="min-h-screen bg-paper">
         <Header />
         <div className="mx-auto max-w-narrow px-6 py-16">
-          <div className="font-serif text-ink-muted">
-            Couldn't load this intake.{" "}
-            {error instanceof Error ? error.message : ""}
+          <div className="font-serif italic text-attention">
+            {SERVER_ERROR}
           </div>
-          <div className="mt-4">
+          <div className="mt-4 flex items-center gap-4">
+            <button
+              type="button"
+              onClick={() => void query.refetch()}
+              className="bg-accent text-paper font-sans text-sm rounded px-4 py-2 hover:bg-accent-hover"
+            >
+              Retry
+            </button>
             <Link
               to="/intake"
-              className="font-sans text-sm text-accent hover:text-accent-hover"
+              className="font-sans text-sm text-ink-faint hover:text-accent"
             >
-              Start a new intake →
+              Start a new intake
             </Link>
           </div>
         </div>
@@ -184,41 +210,72 @@ function IntakeConversation({ id }: { id: string }) {
     );
   }
 
-  async function handleSend(text: string) {
+  async function doSend(text: string) {
+    lastUserMessageRef.current = text;
     setSendError(null);
     try {
       const result = await sendMessage.mutateAsync({ intakeId: id, content: text });
       // The backend returns HTTP 200 even when the intake agent itself
       // raised an error mid-turn; surface it rather than silently dropping.
       if (result.error) {
-        setSendError(result.error);
+        setSendError(SERVER_ERROR);
+      } else {
+        lastUserMessageRef.current = null;
       }
-    } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Couldn't send that message.";
-      setSendError(msg);
+    } catch {
+      setSendError(SERVER_ERROR);
       // Re-throw so IntakeInput restores the textarea content.
-      throw err;
+      throw new Error(SERVER_ERROR);
     }
   }
+
+  async function handleSend(text: string) {
+    await doSend(text);
+  }
+
+  function handleSendRetry() {
+    const last = lastUserMessageRef.current;
+    if (!last) return;
+    void doSend(last);
+  }
+
+  // The composer disables while a turn is in flight. We also show the
+  // thinking ellipsis in the thread while awaiting the assistant reply.
+  const awaitingAssistant = sendMessage.isPending;
+  const composerDisabled = awaitingAssistant || data.status !== "gathering";
 
   return (
     <div className="min-h-screen bg-paper">
       <Header />
       <main className="grid grid-cols-1 md:grid-cols-[1fr_280px] gap-8 max-w-wide mx-auto py-10 px-6">
         <div className="min-w-0 flex flex-col">
-          <IntakeThread messages={data.messages} />
+          <IntakeThread
+            messages={data.messages}
+            pending={awaitingAssistant}
+          />
 
           {sendError ? (
-            <div className="mt-4 text-sm font-mono text-attention">
-              {sendError}
+            <div className="mt-4 flex items-center gap-3">
+              <div className="text-sm font-serif italic text-attention">
+                {sendError}
+              </div>
+              {lastUserMessageRef.current ? (
+                <button
+                  type="button"
+                  onClick={handleSendRetry}
+                  disabled={awaitingAssistant}
+                  className="text-sm font-sans text-accent hover:text-accent-hover underline disabled:opacity-50"
+                >
+                  Retry
+                </button>
+              ) : null}
             </div>
           ) : null}
 
           <div className="mt-auto pt-6">
             <IntakeInput
               onSend={handleSend}
-              disabled={sendMessage.isPending || data.status !== "gathering"}
+              disabled={composerDisabled}
               placeholder="Reply…"
             />
           </div>
