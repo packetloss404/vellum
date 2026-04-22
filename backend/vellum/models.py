@@ -218,6 +218,8 @@ ChangeKind = Literal[
     "next_action_added",
     "next_action_completed",
     "next_action_removed",
+    "artifact_added",
+    "artifact_updated",
 ]
 
 
@@ -241,6 +243,7 @@ class DossierFull(BaseModel):
     ruled_out: list[RuledOut] = Field(default_factory=list)
     work_sessions: list[WorkSession] = Field(default_factory=list)
     next_actions: list[NextAction] = Field(default_factory=list)
+    artifacts: list["Artifact"] = Field(default_factory=list)
 
 
 # --- API request shapes ---
@@ -331,3 +334,58 @@ class NextActionCreate(BaseModel):
     action: str
     rationale: str = ""
     after_action_id: Optional[str] = None # position after this one; None = end
+
+
+# --- Artifacts ---
+
+
+class ArtifactKind(str, Enum):
+    letter = "letter"
+    script = "script"
+    comparison = "comparison"
+    timeline = "timeline"
+    checklist = "checklist"
+    offer = "offer"
+    other = "other"
+
+
+class ArtifactState(str, Enum):
+    draft = "draft"
+    ready = "ready"
+    superseded = "superseded"
+
+
+class Artifact(BaseModel):
+    id: str                       # prefix: "art"
+    dossier_id: str
+    kind: ArtifactKind
+    title: str
+    content: str = ""              # markdown in v1
+    intended_use: str = ""
+    state: ArtifactState = ArtifactState.draft
+    kind_note: Optional[str] = None
+    supersedes: Optional[str] = None  # prior artifact id this replaces
+    last_updated: datetime
+    created_at: datetime
+
+
+class ArtifactCreate(BaseModel):
+    kind: ArtifactKind
+    title: str
+    content: str = ""
+    intended_use: str = ""
+    state: ArtifactState = ArtifactState.draft
+    kind_note: Optional[str] = None
+    supersedes: Optional[str] = None
+
+
+class ArtifactUpdate(BaseModel):
+    kind: Optional[ArtifactKind] = None
+    title: Optional[str] = None
+    content: Optional[str] = None
+    intended_use: Optional[str] = None
+    state: Optional[ArtifactState] = None
+    change_note: str   # required — shown in plan-diff sidebar
+
+
+DossierFull.model_rebuild()

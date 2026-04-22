@@ -288,3 +288,54 @@ def reorder_next_actions(
         return storage.reorder_next_actions(dossier_id, action_ids, work_session_id)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+# ---------- artifacts ----------
+
+
+@router.post("/dossiers/{dossier_id}/artifacts", response_model=m.Artifact)
+def create_artifact(
+    dossier_id: str,
+    data: m.ArtifactCreate,
+    work_session_id: Optional[str] = None,
+) -> m.Artifact:
+    if not storage.get_dossier(dossier_id):
+        raise HTTPException(404, "dossier not found")
+    return storage.create_artifact(dossier_id, data, work_session_id)
+
+
+@router.get("/dossiers/{dossier_id}/artifacts", response_model=list[m.Artifact])
+def list_artifacts(dossier_id: str) -> list[m.Artifact]:
+    return storage.list_artifacts(dossier_id)
+
+
+@router.get("/artifacts/{artifact_id}", response_model=m.Artifact)
+def get_artifact(artifact_id: str) -> m.Artifact:
+    result = storage.get_artifact(artifact_id)
+    if not result:
+        raise HTTPException(404, "artifact not found")
+    return result
+
+
+@router.patch("/dossiers/{dossier_id}/artifacts/{artifact_id}", response_model=m.Artifact)
+def update_artifact(
+    dossier_id: str,
+    artifact_id: str,
+    patch: m.ArtifactUpdate,
+    work_session_id: Optional[str] = None,
+) -> m.Artifact:
+    result = storage.update_artifact(dossier_id, artifact_id, patch, work_session_id)
+    if not result:
+        raise HTTPException(404, "artifact not found")
+    return result
+
+
+@router.delete("/dossiers/{dossier_id}/artifacts/{artifact_id}")
+def delete_artifact(
+    dossier_id: str,
+    artifact_id: str,
+    work_session_id: Optional[str] = None,
+) -> dict:
+    if not storage.delete_artifact(dossier_id, artifact_id, work_session_id):
+        raise HTTPException(404, "artifact not found")
+    return {"ok": True}
