@@ -349,112 +349,163 @@ HANDLERS = {
 TOOL_DESCRIPTIONS = {
     # v1
     "upsert_section": (
-        "Create or update a section of the dossier. Use this for every finding, "
-        "recommendation, summary, or piece of evidence. Always include sources if you have them; "
-        "if you cannot source a claim, set state='provisional'. Provide after_section_id to place "
-        "the new section immediately after an existing one. "
-        "change_note is the line the user reads in their plan-diff sidebar — write it for that "
-        "reader: what changed and why, not a restatement of the section body. "
-        "'Updated section' is a bad change_note; 'Downgraded after the CA AG bulletin contradicted "
-        "the earlier 10-25% finding' is a good one."
+        "Call this to write or revise a finding, recommendation, summary, or piece of evidence "
+        "into the dossier body — the substantive prose the user reads. Include sources when you "
+        "have them; if you cannot source a claim, set state='provisional'. Use after_section_id "
+        "to place the new section immediately after an existing one. "
+        "Do NOT use for throwaway drafts, letters, tables, or other usable objects — those are "
+        "add_artifact. change_note is the plan-diff line the user reads: write what changed and "
+        "why, not a restatement of the body. Good: 'Downgraded after the CA AG bulletin "
+        "contradicted the earlier 10-25% finding.' Bad: 'Updated section.'"
     ),
     "update_section_state": (
-        "Change a section's state (confident / provisional / blocked). Use this when new evidence "
-        "contradicts a confident finding, or when you've resolved a blocker. Always include a reason."
+        "Call to flip a section's state between confident / provisional / blocked when evidence "
+        "shifts. Example: promote from provisional to confident after a second source confirms, "
+        "or demote to blocked when a key fact becomes unavailable. Always include a reason."
     ),
     "delete_section": (
-        "Remove a section from the dossier. Provide a reason — it is logged to the reasoning trail."
+        "Remove a section from the dossier. Use only when the section is wrong or obsolete, not "
+        "merely revised — revisions go through upsert_section. Provide a reason; it lands in the "
+        "reasoning trail."
     ),
     "reorder_sections": (
-        "Reorder the dossier's sections by providing the full list of section_ids in desired order."
+        "Rearrange the dossier's sections. Pass the full list of section_ids in the desired "
+        "order — partial lists reorder nothing. Use sparingly; most ordering should come out of "
+        "upsert_section's after_section_id."
     ),
     "flag_needs_input": (
-        "Post a single crisp question to the user and block on it. Use only when you are actually "
-        "stuck and an answer would unblock progress. Batch small questions into one when possible."
+        "Ask the user a single crisp factual question and block on the answer. Use when a fact "
+        "only the user has would unblock progress (e.g., 'What state do you live in?', 'What's "
+        "the amount on the statement?'). Batch small questions into one where possible. "
+        "Do NOT use to present a choice between options — that is flag_decision_point. Do not "
+        "use for ambiguity you can resolve by reading."
     ),
     "flag_decision_point": (
-        "Present the user with a choice between structured options. Use for 'pick a direction' moments, "
-        "not for factual questions."
+        "Present the user with a choice between two or more structured options and block on "
+        "their pick. Use for 'pick a direction' moments where you've done the legwork and the "
+        "user now has to decide. Set kind='plan_approval' when surfacing the investigation plan "
+        "for the user's sign-off. "
+        "Example: title='Send verification letter now or wait for SOL research?', "
+        "kind='strategy', options=[{'label': 'Send now', 'implications': 'starts 30-day "
+        "clock'}, {'label': 'Wait', 'implications': 'preserves optionality'}]. "
+        "Do NOT use for factual questions (flag_needs_input) or when you are actually stuck "
+        "(declare_stuck)."
     ),
     "append_reasoning": (
-        "Private log for your own coherence across work sessions. The user does not see this directly. "
-        "Tag strategic shifts ('strategy_shift'), rejected approaches ('rejected_approach'), etc."
+        "Private note to yourself for coherence across work sessions — the user does not see "
+        "this in the main dossier. Use for strategy shifts, hypotheses to revisit, or context "
+        "you want future-you to have. Tag with 'strategy_shift', 'rejected_approach', etc. "
+        "Do NOT use for user-visible substance (upsert_section) or for one-line progress notes "
+        "that belong in the investigation_log via log_source_consulted."
     ),
     "mark_ruled_out": (
-        "Record that you investigated something and rejected it, with the reason. This prevents you from "
-        "re-investigating it and shows the user what you considered."
+        "Record a hypothesis or approach you investigated and rejected. Prevents re-exploration "
+        "and shows the user what you considered. Lighter-weight than mark_considered_and_rejected "
+        "(which is reserved for paths compelling enough to need a full cost-of-error argument). "
+        "Always include a reason."
     ),
     "check_stuck": (
-        "Call when you notice yourself looping, over-budget, or revising without progress. Surfaces a "
-        "decision_point to the user with the options you see. Do not keep burning cycles."
+        "Call when you notice yourself looping, over budget, or revising without progress. "
+        "Surfaces a decision_point to the user with the options you see. Use declare_stuck "
+        "instead if v2 is available; check_stuck is the v1 variant that only logs to the "
+        "reasoning trail, not the investigation_log."
     ),
     "request_user_paste": (
-        "Specifically request a document or block of text from the user (contract language, statement, etc.). "
-        "Softer than flag_needs_input — for content you need to read, not a question you need answered."
+        "Ask the user to paste a specific document or block of text (contract language, "
+        "collection letter, bank statement). Softer than flag_needs_input: for content you need "
+        "to read, not a factual question to answer. Describe precisely what you need so the "
+        "user knows exactly what to paste."
     ),
     # v2
     "update_investigation_plan": (
-        "Draft or revise the investigation plan. Call this before diving in — list the questions you "
-        "expect to investigate, whether each becomes a sub-investigation, and a rationale for the "
-        "shape. The user sees this and may redirect. Call again when scope shifts. "
-        "Set approve=true only if you want to mark it as user-approved (typically the user does this; "
-        "set true to self-approve when the user has not explicitly said otherwise and you're confident)."
+        "Draft or revise the investigation plan before diving in. Each item lists a question, "
+        "whether it becomes a sub-investigation, and a rationale. The user sees this and may "
+        "redirect; call again whenever scope shifts materially. "
+        "Example items: [{'question': 'Does CA SOL bar this debt?', 'becomes_sub_investigation': "
+        "true, 'rationale': 'Jurisdiction-specific, worth dedicated dig'}, {'question': 'Draft "
+        "a §1692g letter', 'becomes_sub_investigation': false}]. "
+        "Set approve=true to self-approve only when the user has given you a clear go-ahead; "
+        "otherwise leave false and surface the plan via flag_decision_point(kind='plan_approval')."
     ),
     "update_debrief": (
-        "Rewrite the top-of-dossier 2-minute read: what you did, what you found, what the user should "
-        "do next, and what you couldn't figure out. Partial updates allowed — only non-null fields are "
-        "merged. This is the first thing the user reads when they return — write for someone who has "
-        "been away for 18 hours and has 90 seconds."
+        "Rewrite the top-of-dossier 2-minute read: what you did, what you found, what the user "
+        "should do next, and what you couldn't figure out. Partial updates merge — only non-null "
+        "fields land. Call this BEFORE mark_investigation_delivered (delivery with a stale "
+        "debrief is a bug) and at meaningful checkpoints: after every completed sub, after a "
+        "finding flips state, after the user answers a blocking question. Write for someone who "
+        "has been away 18 hours and has 90 seconds."
     ),
     "add_artifact": (
-        "Draft a usable thing: letter, script, comparison table, timeline, checklist, offer template, "
-        "or other. Content is markdown. intended_use tells the user where to use it "
-        "('mail to Capital One recovery dept'; 'read on first call with collector'). An investigation "
+        "Draft a usable object the user can copy, send, or run through: letter, script, "
+        "comparison table, timeline, checklist, offer template. Content is markdown. "
+        "intended_use tells the user exactly where to use it. "
+        "Example args: kind='letter', title='FDCPA §1692g verification request', "
+        "content='# Request for Verification\\n...', intended_use='mail certified to Capital "
+        "One recovery dept within 30 days of first contact'. "
+        "Do NOT use for findings or analysis — those go in upsert_section. An investigation "
         "without at least one artifact is incomplete."
     ),
     "update_artifact": (
-        "Revise a previously drafted artifact. change_note is the line the user reads in the "
-        "plan-diff sidebar — make it specific."
+        "Revise a previously drafted artifact. Use for tightening language, fixing a cited "
+        "amount, or responding to user feedback. change_note is the line the user reads in the "
+        "plan-diff — make it specific ('tightened the ask to 30-day window', not 'updated')."
     ),
     "spawn_sub_investigation": (
-        "Open a scoped sub-investigation for a question that deserves its own attention. Use for "
-        "jurisdictional questions, specific legal mechanisms, head-to-head comparisons. You'll "
-        "receive the sub_investigation_id; the sub-agent will run and return findings before this "
-        "tool call returns. Do NOT spawn sub-investigations for trivial lookups — those go in "
-        "log_source_consulted."
+        "Open a scoped sub-investigation for a question worth its own focused dig — "
+        "jurisdictional questions, specific legal mechanisms, head-to-head comparisons, "
+        "creditor-specific patterns. SYNCHRONOUS: the sub-agent runs to completion and this "
+        "call returns with the sub's findings (return_summary + section/artifact ids). No "
+        "polling. "
+        "Example: title='CA SOL on credit card debt', scope='California statute of limitations "
+        "on credit card accounts', questions=['Does CA SOL bar this collection?', 'Does the "
+        "choice-of-law clause change it?']. "
+        "Do NOT spawn for trivial lookups — a single source read is log_source_consulted."
     ),
     "complete_sub_investigation": (
-        "Called from WITHIN a sub-investigation agent to return findings. Include a 3–8 sentence "
-        "return_summary and pointers to the sections/artifacts you produced. Only a sub-agent calls "
-        "this — the main agent does not."
+        "The sub-agent's ONLY exit call. Pass a 3-8 sentence return_summary (lead with the "
+        "answer, state confidence high/medium/low, name conditions if the answer is "
+        "conditional), plus findings_section_ids for the sections you wrote and "
+        "findings_artifact_ids for artifacts you drafted. Only a sub-agent calls this; the main "
+        "agent never does."
     ),
     "log_source_consulted": (
-        "Log every source you actually read and drew on, one call per source. This is not optional — "
-        "the user counts these as evidence of work. citation is a URL or a plain citation; "
-        "why_consulted is the question you were answering; what_learned is a one-sentence takeaway. "
-        "Link to the sections the source supports via supports_section_ids when possible."
+        "Call ONCE PER SOURCE you actually read. Searching does not count — log only after you "
+        "have read the page. The user counts these as evidence of work; the '47 sources' "
+        "counter on the dossier depends on this call being honest. "
+        "Example args: citation='https://www.consumerfinance.gov/rules-policy/regulations/1006/', "
+        "why_consulted='Does Reg F cap collection call frequency?', what_learned='Reg F caps at "
+        "7 calls per 7 days per debt', supports_section_ids=['sec_abc123']. "
+        "Link via supports_section_ids whenever the source backs a claim in a section."
     ),
     "mark_considered_and_rejected": (
-        "Record a path you seriously considered and rejected. Include why it was compelling "
-        "(what made it tempting), why you rejected it (evidence, reasoning), and cost_of_error "
-        "(what happens if you were wrong to reject). The user reads this to see your judgment — "
-        "weak entries are worse than none."
+        "Record a path you seriously considered and rejected — reserved for options compelling "
+        "enough to need a real cost-of-error argument. Lighter rejections go in mark_ruled_out. "
+        "Example args: path='File a CFPB complaint immediately', why_compelling='Fast, free, "
+        "creates a paper trail', why_rejected='Collector has 15 days to respond, wasting lead "
+        "time we need for verification', cost_of_error='Low — can file later if verification "
+        "fails'. Weak entries are worse than none; the user reads this as a judgment sample."
     ),
     "set_next_action": (
-        "Add a concrete next action for the user. Short imperative ('Request debt verification from "
-        "Capital One under FDCPA §1692g'), with rationale. Appended to the ordered list; to reorder, "
-        "use the dedicated reorder endpoint."
+        "Append a concrete next action for the user — short imperative plus rationale. "
+        "Example args: action='Request debt verification from Capital One under FDCPA §1692g', "
+        "rationale='Starts the 30-day clock on their verification duty and pauses collection "
+        "activity'. Appended to the ordered list; reordering goes through the dedicated "
+        "endpoint, not this tool."
     ),
     "declare_stuck": (
-        "Call when you detect yourself spinning: repeated identical tool calls, revising without "
-        "progress, or you've exceeded the section token budget. Summarize what you tried and present "
-        "options to the user as a decision_point. Do not keep burning cycles."
+        "The v2 stuck-declaration. Call when you detect yourself spinning: repeated identical "
+        "tool calls, revising without progress, or scope budget exhausted without a finding. "
+        "Logs a stuck_declared entry to the investigation_log AND raises a decision_point to "
+        "the user with your options. Stronger than check_stuck (which is v1, reasoning-trail "
+        "only). Do not keep burning cycles."
     ),
     "mark_investigation_delivered": (
-        "Self-declare the investigation complete. why_enough should list: what you covered, what you "
-        "explicitly left open, what the next real action is. The user can still re-open. Only call "
-        "this when the substance bar is met: multiple sub-investigations completed, tens of sources "
-        "consulted, at least one artifact drafted, debrief current."
+        "TERMINATES the agent loop — after this call, the agent stops. Call ONLY when the "
+        "substance bar is met: multiple sub-investigations completed, tens of sources "
+        "consulted, at least one artifact drafted, debrief current (call update_debrief first). "
+        "why_enough must name what you covered, what you explicitly left open, and what the "
+        "next real action is. The user can re-open the dossier, but you should not call this "
+        "speculatively — an under-baked delivery is the worst failure mode."
     ),
 }
 

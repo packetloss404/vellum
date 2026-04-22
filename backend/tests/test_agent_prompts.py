@@ -65,6 +65,72 @@ def test_sub_prompt_does_not_mention_spawn_sub_investigation() -> None:
     assert "spawn_sub_investigation" not in SUB_INVESTIGATION_SYSTEM_PROMPT
 
 
+def test_sub_prompt_word_count_under_limit() -> None:
+    # Sharpening pass (day 5) targets ~900 words. Guard both ends so the
+    # prompt does not drift back into the weak/shapeless zone (<650 words)
+    # or bloat past the limit.
+    words = len(SUB_INVESTIGATION_SYSTEM_PROMPT.split())
+    assert 650 <= words <= 900, f"sub prompt word count off target: {words}"
+
+
+def test_sub_prompt_demands_confidence_level() -> None:
+    # Every return_summary MUST state confidence high/medium/low. The prompt
+    # should explicitly name that requirement — "confident" alone is too
+    # ambiguous.
+    lower = SUB_INVESTIGATION_SYSTEM_PROMPT.lower()
+    assert "confidence" in lower, "sub prompt should require a confidence level"
+    # All three levels mentioned so the sub knows the axis, not just the word.
+    assert "high" in lower and "medium" in lower and "low" in lower, (
+        "sub prompt should enumerate high / medium / low confidence levels"
+    )
+
+
+def test_sub_prompt_handles_conditional_answers() -> None:
+    # If the answer depends on a branch ('depends on state', etc.), the
+    # sub must surface the condition and both branches, not hide one.
+    lower = SUB_INVESTIGATION_SYSTEM_PROMPT.lower()
+    assert "conditional" in lower or "condition" in lower, (
+        "sub prompt should address conditional answers"
+    )
+
+
+def test_sub_prompt_warns_against_early_exit() -> None:
+    # The "5 turns, 3 sources is an early exit" discipline must be explicit
+    # so the sub does not return half-baked.
+    lower = SUB_INVESTIGATION_SYSTEM_PROMPT.lower()
+    assert "early exit" in lower or "exit early" in lower, (
+        "sub prompt should name the early-exit failure mode"
+    )
+
+
+def test_sub_prompt_requires_pre_search_scope_check() -> None:
+    # Scope discipline: before each web_search, the sub should ask whether
+    # the query is inside scope. The prompt should make that check concrete.
+    text = SUB_INVESTIGATION_SYSTEM_PROMPT
+    assert "web_search" in text, "sub prompt should reference web_search"
+    assert "scope" in text.lower(), "sub prompt should mention scope"
+    # The pre-search scope check is the concrete guardrail; look for a
+    # phrasing close to 'before each web_search'.
+    assert "before each" in text.lower() or "before every" in text.lower(), (
+        "sub prompt should demand a pre-search scope check"
+    )
+
+
+def test_sub_prompt_requires_findings_sections() -> None:
+    # A summary-only return (no findings_section_ids) is weaker than one
+    # with sections the parent can include verbatim. Prompt should say so.
+    lower = SUB_INVESTIGATION_SYSTEM_PROMPT.lower()
+    assert "findings_section_ids" in lower, (
+        "sub prompt should reference findings_section_ids"
+    )
+    # Either "at least one section" or the summary-only-is-weaker framing.
+    assert (
+        "at least one section" in lower
+        or "summary-only" in lower
+        or "no sections" in lower
+    ), "sub prompt should require at least one section on return"
+
+
 # ---------- render_sub_scope ----------
 
 
