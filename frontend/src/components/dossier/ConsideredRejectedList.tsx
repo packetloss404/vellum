@@ -54,6 +54,16 @@ export function ConsideredRejectedList({
                   </dd>
                 </div>
               ) : null}
+              {item.cost_of_error && item.cost_of_error.trim().length > 0 ? (
+                <div>
+                  <dt className="font-mono text-xs uppercase tracking-wide text-ink-faint">
+                    Cost of error
+                  </dt>
+                  <dd className="mt-0.5 font-serif text-sm text-ink-muted leading-relaxed">
+                    {item.cost_of_error}
+                  </dd>
+                </div>
+              ) : null}
             </dl>
           </li>
         ))}

@@ -28,16 +28,18 @@ export interface HeaderProps {
 
 function statusVariant(
   status: string,
-): "default" | "state" | "accent" | "attention" {
+): { variant: "default" | "state" | "accent" | "attention"; state?: "confident" | "provisional" | "blocked" } {
   switch (status as DossierStatus) {
     case "active":
-      return "accent";
+      return { variant: "accent" };
     case "paused":
-      return "default";
+      return { variant: "default" };
     case "delivered":
-      return "default";
+      // Confident green — the case file is finished, and the status
+      // pill should read positive, not incidental.
+      return { variant: "state", state: "confident" };
     default:
-      return "default";
+      return { variant: "default" };
   }
 }
 
@@ -67,9 +69,14 @@ export function Header({ title, dossier }: HeaderProps) {
                 {dossier!.dossier_type.replace(/_/g, " ")}
               </span>
               <span aria-hidden="true">·</span>
-              <Pill variant={statusVariant(dossier!.status)}>
-                {dossier!.status}
-              </Pill>
+              {(() => {
+                const v = statusVariant(dossier!.status);
+                return (
+                  <Pill variant={v.variant} state={v.state}>
+                    {dossier!.status}
+                  </Pill>
+                );
+              })()}
             </div>
           </div>
         ) : title ? (

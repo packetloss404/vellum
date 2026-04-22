@@ -165,10 +165,17 @@ function SubCard({
                 {sub.questions.length}{" "}
                 {sub.questions.length === 1 ? "question" : "questions"}
               </div>
-              <div>
-                {findingsCount}{" "}
-                {findingsCount === 1 ? "finding" : "findings"}
-              </div>
+              {/* Running subs don't have findings yet — don't surface a
+                  "0 findings" tally that reads as a negative. The expanded
+                  body still shows start time so progress is visible. */}
+              {isRunning && findingsCount === 0 ? (
+                <div className="italic">in progress</div>
+              ) : (
+                <div>
+                  {findingsCount}{" "}
+                  {findingsCount === 1 ? "finding" : "findings"}
+                </div>
+              )}
             </div>
             <span
               aria-hidden="true"

@@ -16,8 +16,19 @@ import { truncate } from "../../utils/format";
 
 const TRUNCATE_LIMIT = 180;
 
-function statusPillVariant(status: string): "default" | "accent" {
-  return (status as DossierStatus) === "active" ? "accent" : "default";
+function statusPill(status: string): {
+  variant: "default" | "accent" | "state";
+  state?: "confident" | "provisional" | "blocked";
+} {
+  switch (status as DossierStatus) {
+    case "active":
+      return { variant: "accent" };
+    case "delivered":
+      // Confident green for the delivered state, matching the Header.
+      return { variant: "state", state: "confident" };
+    default:
+      return { variant: "default" };
+  }
 }
 
 export interface DossierCardProps {
@@ -61,9 +72,14 @@ export function DossierCard({ dossier, counts }: DossierCardProps) {
         <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-ink-faint mt-4">
           <span className="lowercase tracking-wide">{typeLabel}</span>
           <span aria-hidden="true">·</span>
-          <Pill variant={statusPillVariant(dossier.status)}>
-            {dossier.status}
-          </Pill>
+          {(() => {
+            const sp = statusPill(dossier.status);
+            return (
+              <Pill variant={sp.variant} state={sp.state}>
+                {dossier.status}
+              </Pill>
+            );
+          })()}
           {hasCounts ? (
             <>
               <span aria-hidden="true">·</span>

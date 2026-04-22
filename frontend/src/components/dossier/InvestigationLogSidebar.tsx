@@ -64,21 +64,50 @@ const LABEL_BY_TYPE: Record<InvestigationLogEntryType, string> = Object.fromEntr
 
 interface InvestigationLogSidebarProps {
   dossierId: string;
+  /**
+   * Live counts from the dossier snapshot. Used as the source of truth for
+   * the hero numbers when the investigation_log is missing `*_spawned` /
+   * `*_added` entry types (the backend only logs some event types, so the
+   * log-counts endpoint under-reports sub-investigations and artifacts).
+   * When provided, these trump the log-derived counts for subs/artifacts/
+   * rejected. `sources` still comes from the log (that's the only place
+   * they're counted).
+   */
+  subsCount?: number;
+  artifactsCount?: number;
+  rejectedCount?: number;
 }
 
 // ---------- helpers ----------
 
-/** Total count across the few "hero" metrics shown in the sticky header. */
-function heroMetrics(counts: Record<string, number> | undefined) {
+/**
+ * Total count across the few "hero" metrics shown in the sticky header.
+ *
+ * Sources come from the log (the only place they're counted). For subs /
+ * artifacts / rejected we prefer the live dossier snapshot counts when the
+ * caller supplies them — the log endpoint only reports entry types that
+ * have actually been written, so a dossier whose agent didn't emit
+ * `sub_investigation_spawned` / `artifact_added` entries would show `0`
+ * in the sidebar even when subs/artifacts clearly exist. The dossier
+ * snapshot is authoritative.
+ */
+function heroMetrics(
+  counts: Record<string, number> | undefined,
+  liveCounts: {
+    subs?: number;
+    artifacts?: number;
+    rejected?: number;
+  },
+) {
   const c = counts ?? {};
+  const logSubs = c.sub_investigation_spawned ?? 0;
+  const logArtifacts = (c.artifact_added ?? 0) + (c.artifact_revised ?? 0);
+  const logRejected = c.path_rejected ?? 0;
   return {
     sources: c.source_consulted ?? 0,
-    subs:
-      (c.sub_investigation_spawned ?? 0) +
-      // Don't double-count spawn+return; the spawn count is the headline.
-      0,
-    artifacts: (c.artifact_added ?? 0) + (c.artifact_revised ?? 0),
-    rejected: c.path_rejected ?? 0,
+    subs: liveCounts.subs ?? logSubs,
+    artifacts: liveCounts.artifacts ?? logArtifacts,
+    rejected: liveCounts.rejected ?? logRejected,
   };
 }
 
@@ -148,16 +177,18 @@ function scrollToEntryTarget(entry: InvestigationLogEntry): void {
 function CountsHero({
   counts,
   loading,
+  liveCounts,
 }: {
   counts: Record<string, number> | undefined;
   loading: boolean;
+  liveCounts: { subs?: number; artifacts?: number; rejected?: number };
 }) {
   if (loading && !counts) {
     return (
       <div className="font-mono text-xs text-ink-faint">Loading counts…</div>
     );
   }
-  const m = heroMetrics(counts);
+  const m = heroMetrics(counts, liveCounts);
   return (
     <dl className="font-mono text-ink grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 leading-tight">
       <dt className="text-2xl font-semibold tabular-nums">{m.sources}</dt>
@@ -367,9 +398,17 @@ function PayloadDetails({ entry }: { entry: InvestigationLogEntry }) {
 
 export function InvestigationLogSidebar({
   dossierId,
+  subsCount,
+  artifactsCount,
+  rejectedCount,
 }: InvestigationLogSidebarProps) {
   const countsQ = useInvestigationLogCounts(dossierId);
   const logQ = useInvestigationLog(dossierId, { limit: LOG_LIMIT });
+  const liveCounts = {
+    subs: subsCount,
+    artifacts: artifactsCount,
+    rejected: rejectedCount,
+  };
 
   const [selected, setSelected] = useState<Set<InvestigationLogEntryType>>(
     new Set(),
@@ -437,7 +476,11 @@ export function InvestigationLogSidebar({
         <div className="font-mono text-xs uppercase tracking-wide text-ink-faint mb-3">
           Investigation log
         </div>
-        <CountsHero counts={countsQ.data} loading={countsQ.isLoading} />
+        <CountsHero
+          counts={countsQ.data}
+          loading={countsQ.isLoading}
+          liveCounts={liveCounts}
+        />
         <div className="mt-4">
           <FilterChips
             counts={countsQ.data}

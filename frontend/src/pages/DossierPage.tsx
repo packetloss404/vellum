@@ -146,18 +146,29 @@ export default function DossierPage() {
 
   // Filter out plan_approval decision points — those are owned by
   // PlanApprovalBlock. Prefer `kind` when present; fall back to title match
-  // for legacy rows.
+  // for legacy rows. Also suppress stale mid-session "stuck" self-prompts
+  // on a delivered dossier — the agent ended up delivering anyway, so
+  // these internal budget check-ins are no longer actionable and would
+  // otherwise render as "DECIDE" cards on a finished case file.
+  const isDelivered = dossier.status === "delivered";
   const visibleDecisionPoints = (decision_points ?? []).filter((dp) => {
     if ((dp as { kind?: string }).kind === "plan_approval") return false;
     const t = (dp.title ?? "").toLowerCase();
-    return !t.startsWith("approve plan") && !t.includes("plan approval");
+    if (t.startsWith("approve plan") || t.includes("plan approval")) {
+      return false;
+    }
+    // Delivered dossier: drop open "stuck" check-ins that the agent
+    // bypassed in-session by continuing to work and shipping.
+    if (isDelivered && !dp.resolved_at && t.startsWith("stuck")) {
+      return false;
+    }
+    return true;
   });
 
   // Resume CTA — show when:
   //   - dossier is not delivered, AND
   //   - resume-state says there's no active session, OR the endpoint 404s
   //     (another agent is adding it; graceful degrade = show CTA).
-  const isDelivered = dossier.status === "delivered";
   const resumeStateKnown = resumeState.data !== undefined;
   const hasActiveSession =
     resumeStateKnown && !!resumeState.data?.active_work_session_id;
@@ -242,7 +253,12 @@ export default function DossierPage() {
         <aside className="min-w-0 lg:sticky lg:top-6 lg:self-start lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto">
           <div className="space-y-10">
             <PlanDiffSidebar dossierId={dossierId} />
-            <InvestigationLogSidebar dossierId={dossierId} />
+            <InvestigationLogSidebar
+              dossierId={dossierId}
+              subsCount={sub_investigations?.length}
+              artifactsCount={artifacts?.length}
+              rejectedCount={considered_and_rejected?.length}
+            />
           </div>
         </aside>
       </main>
