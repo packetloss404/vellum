@@ -120,6 +120,22 @@ def set_check_in_policy(intake_id: str, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def commit_intake(intake_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Commit the gathered intake as a dossier, optionally seeding a plan.
+
+    Args may contain:
+      - ``plan_items``: optional list of investigation-plan-item dicts
+        ({question, rationale, as_sub_investigation, expected_sources}).
+      - ``plan_rationale``: optional one-sentence rationale for the plan.
+
+    If ``plan_items`` is provided and non-empty, after creating the dossier
+    we call ``storage.update_investigation_plan`` with ``approve=False`` so
+    the seeded plan is explicitly a draft the user (or the day-2 agent)
+    can approve/redirect. If validation of the plan fails, the dossier
+    still commits — the plan is best-effort seeding, not a hard commit
+    dependency. This keeps intake's contract ("get a dossier open") intact
+    even when the model drafts a malformed plan; the dossier agent can
+    draft a fresh plan on its first turn.
+    """
     session, err = _intake_or_error(intake_id)
     if err:
         return err
@@ -157,7 +173,36 @@ def commit_intake(intake_id: str, args: dict[str, Any]) -> dict[str, Any]:
     intake_storage.update_intake_status(
         intake_id, im.IntakeStatus.committed, dossier_id=dossier.id
     )
-    return {"dossier_id": dossier.id}
+
+    # Best-effort plan seeding. We treat the plan as an opening draft so
+    # failure here must NOT roll back the committed dossier. On validation
+    # errors we surface ``plan_error`` to the model alongside dossier_id
+    # so it knows the plan didn't stick and can retry via the dossier-side
+    # plan tools once the agent takes over.
+    result: dict[str, Any] = {"dossier_id": dossier.id}
+    plan_items_raw = args.get("plan_items")
+    if plan_items_raw:
+        if not isinstance(plan_items_raw, list):
+            result["plan_error"] = "plan_items must be a list"
+            return result
+        plan_rationale = args.get("plan_rationale", "") or ""
+        if not isinstance(plan_rationale, str):
+            result["plan_error"] = "plan_rationale must be a string"
+            return result
+        try:
+            items = [m.InvestigationPlanItem.model_validate(i) for i in plan_items_raw]
+            patch = m.InvestigationPlanUpdate(
+                items=items,
+                rationale=plan_rationale,
+                approve=False,
+            )
+        except Exception as exc:  # pydantic ValidationError or TypeError
+            result["plan_error"] = f"invalid plan: {type(exc).__name__}: {exc}"
+            return result
+        dossier_storage.update_investigation_plan(dossier.id, patch)
+        result["plan_seeded"] = True
+        result["plan_item_count"] = len(items)
+    return result
 
 
 def abandon_intake(intake_id: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -208,7 +253,9 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     ),
     "commit_intake": (
         "Create the dossier and end the intake. Only call when title, problem_statement, "
-        "dossier_type, and check_in_policy are set (out_of_scope is optional)."
+        "dossier_type, and check_in_policy are set (out_of_scope is optional). "
+        "May optionally seed a starter investigation plan via plan_items + plan_rationale; "
+        "if omitted, the dossier agent drafts the plan on its first turn."
     ),
     "abandon_intake": (
         "Mark the intake abandoned when the user asks to stop or the conversation has "
@@ -291,7 +338,54 @@ def tool_schemas() -> list[dict[str, Any]]:
             "description": TOOL_DESCRIPTIONS["commit_intake"],
             "input_schema": {
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "plan_items": {
+                        "type": "array",
+                        "description": (
+                            "Optional starter investigation plan — 3 to 5 concrete "
+                            "sub-questions seeded for the dossier agent to revise "
+                            "rather than draft from scratch. Omit if the problem is "
+                            "too thin to plan credibly."
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "question": {
+                                    "type": "string",
+                                    "description": "A concrete, investigable sub-question.",
+                                },
+                                "rationale": {
+                                    "type": "string",
+                                    "description": "One sentence on why this is worth investigating.",
+                                },
+                                "as_sub_investigation": {
+                                    "type": "boolean",
+                                    "description": (
+                                        "True only if this deserves its own scoped "
+                                        "sub-agent; default false for leaf questions."
+                                    ),
+                                    "default": False,
+                                },
+                                "expected_sources": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": (
+                                        "2-4 concrete source types the answer likely "
+                                        "comes from (e.g. 'FDCPA text', 'IRS Pub 559')."
+                                    ),
+                                },
+                            },
+                            "required": ["question"],
+                        },
+                    },
+                    "plan_rationale": {
+                        "type": "string",
+                        "description": (
+                            "One-sentence rationale for the plan shape (why these "
+                            "items, why in this order). Optional."
+                        ),
+                    },
+                },
                 "required": [],
             },
         },
