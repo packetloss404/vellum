@@ -72,6 +72,43 @@ class CheckInPolicy(BaseModel):
     notes: str = ""
 
 
+class InvestigationPlanItem(BaseModel):
+    id: str                               # prefix: "pli"
+    question: str
+    rationale: str = ""
+    expected_sources: list[str] = Field(default_factory=list)
+    as_sub_investigation: bool = False
+    status: Literal["planned", "in_progress", "completed", "abandoned"] = "planned"
+
+
+class InvestigationPlan(BaseModel):
+    items: list[InvestigationPlanItem] = Field(default_factory=list)
+    rationale: str = ""              # why this plan shape
+    drafted_at: datetime
+    approved_at: Optional[datetime] = None
+    revised_at: Optional[datetime] = None
+    revision_count: int = 0
+
+
+class Debrief(BaseModel):
+    what_i_did: str = ""
+    what_i_found: str = ""
+    what_you_should_do_next: str = ""
+    what_i_couldnt_figure_out: str = ""
+    last_updated: datetime
+
+
+class NextAction(BaseModel):
+    id: str                               # prefix: "act"
+    dossier_id: str
+    action: str                           # short imperative
+    rationale: str = ""
+    priority: int = 0                     # lower = higher priority; use spaced ints
+    completed: bool = False
+    completed_at: Optional[datetime] = None
+    created_at: datetime
+
+
 class Dossier(BaseModel):
     id: str
     title: str
@@ -80,6 +117,8 @@ class Dossier(BaseModel):
     dossier_type: DossierType
     status: DossierStatus = DossierStatus.active
     check_in_policy: CheckInPolicy = Field(default_factory=CheckInPolicy)
+    debrief: Optional[Debrief] = None
+    investigation_plan: Optional[InvestigationPlan] = None
     last_visited_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
@@ -174,6 +213,11 @@ ChangeKind = Literal[
     "decision_point_resolved",
     "ruled_out_added",
     "sections_reordered",
+    "debrief_updated",
+    "plan_updated",
+    "next_action_added",
+    "next_action_completed",
+    "next_action_removed",
 ]
 
 
@@ -196,6 +240,7 @@ class DossierFull(BaseModel):
     reasoning_trail: list[ReasoningTrailEntry] = Field(default_factory=list)
     ruled_out: list[RuledOut] = Field(default_factory=list)
     work_sessions: list[WorkSession] = Field(default_factory=list)
+    next_actions: list[NextAction] = Field(default_factory=list)
 
 
 # --- API request shapes ---
@@ -267,3 +312,22 @@ class RuledOutCreate(BaseModel):
 
 class WorkSessionStart(BaseModel):
     trigger: WorkSessionTrigger = WorkSessionTrigger.manual
+
+
+class DebriefUpdate(BaseModel):
+    what_i_did: Optional[str] = None
+    what_i_found: Optional[str] = None
+    what_you_should_do_next: Optional[str] = None
+    what_i_couldnt_figure_out: Optional[str] = None
+
+
+class InvestigationPlanUpdate(BaseModel):
+    items: list[InvestigationPlanItem]
+    rationale: str = ""
+    approve: bool = False                 # when True, set approved_at to now
+
+
+class NextActionCreate(BaseModel):
+    action: str
+    rationale: str = ""
+    after_action_id: Optional[str] = None # position after this one; None = end

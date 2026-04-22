@@ -38,6 +38,8 @@ def _json_list(text: str) -> list:
 
 
 def _row_to_dossier(row: sqlite3.Row) -> m.Dossier:
+    debrief_json = row["debrief"]
+    plan_json = row["investigation_plan"]
     return m.Dossier(
         id=row["id"],
         title=row["title"],
@@ -46,9 +48,26 @@ def _row_to_dossier(row: sqlite3.Row) -> m.Dossier:
         dossier_type=m.DossierType(row["dossier_type"]),
         status=m.DossierStatus(row["status"]),
         check_in_policy=m.CheckInPolicy.model_validate_json(row["check_in_policy"]),
+        debrief=m.Debrief.model_validate_json(debrief_json) if debrief_json else None,
+        investigation_plan=(
+            m.InvestigationPlan.model_validate_json(plan_json) if plan_json else None
+        ),
         last_visited_at=_dt(row["last_visited_at"]),
         created_at=_dt(row["created_at"]),
         updated_at=_dt(row["updated_at"]),
+    )
+
+
+def _row_to_next_action(row: sqlite3.Row) -> m.NextAction:
+    return m.NextAction(
+        id=row["id"],
+        dossier_id=row["dossier_id"],
+        action=row["action"],
+        rationale=row["rationale"],
+        priority=int(row["priority"]),
+        completed=bool(row["completed"]),
+        completed_at=_dt(row["completed_at"]),
+        created_at=_dt(row["created_at"]),
     )
 
 
@@ -197,8 +216,9 @@ def create_dossier(data: m.DossierCreate) -> m.Dossier:
         conn.execute(
             """
             INSERT INTO dossiers (id, title, problem_statement, out_of_scope, dossier_type,
-                                  status, check_in_policy, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  status, check_in_policy, debrief, investigation_plan,
+                                  created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 dossier.id,
@@ -208,6 +228,8 @@ def create_dossier(data: m.DossierCreate) -> m.Dossier:
                 dossier.dossier_type.value,
                 dossier.status.value,
                 dossier.check_in_policy.model_dump_json(),
+                None,
+                None,
                 _dt_str(dossier.created_at),
                 _dt_str(dossier.updated_at),
             ),
@@ -282,6 +304,7 @@ def get_dossier_full(dossier_id: str) -> Optional[m.DossierFull]:
         reasoning_trail=list_reasoning_trail(dossier_id),
         ruled_out=list_ruled_out(dossier_id),
         work_sessions=list_work_sessions(dossier_id),
+        next_actions=list_next_actions(dossier_id),
     )
 
 
@@ -790,6 +813,251 @@ def list_change_log_for_session(dossier_id: str, session_id: str) -> list[m.Chan
             (dossier_id, session_id),
         ).fetchall()
     return [_row_to_change(r) for r in rows]
+
+
+# ---------- Debrief ----------
+
+
+def update_debrief(
+    dossier_id: str,
+    patch: m.DebriefUpdate,
+    work_session_id: Optional[str] = None,
+) -> Optional[m.Dossier]:
+    """Merge non-None fields into existing debrief, set last_updated, persist, log, touch."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT debrief FROM dossiers WHERE id = ?", (dossier_id,)
+        ).fetchone()
+        if not row:
+            return None
+        existing_json = row["debrief"]
+        if existing_json:
+            current = m.Debrief.model_validate_json(existing_json)
+        else:
+            current = m.Debrief(last_updated=m.utc_now())
+        merged = current.model_copy(
+            update={
+                k: v
+                for k, v in patch.model_dump(exclude_none=True).items()
+            }
+        )
+        merged = merged.model_copy(update={"last_updated": m.utc_now()})
+        conn.execute(
+            "UPDATE dossiers SET debrief = ? WHERE id = ?",
+            (merged.model_dump_json(), dossier_id),
+        )
+        note_parts = [k for k, v in patch.model_dump(exclude_none=True).items()]
+        note = "Debrief updated: " + (", ".join(note_parts) if note_parts else "(no changes)")
+        _log_change(conn, dossier_id, work_session_id, "debrief_updated", note)
+        _touch_dossier(conn, dossier_id)
+    return get_dossier(dossier_id)
+
+
+# ---------- InvestigationPlan ----------
+
+
+def update_investigation_plan(
+    dossier_id: str,
+    data: m.InvestigationPlanUpdate,
+    work_session_id: Optional[str] = None,
+) -> Optional[m.Dossier]:
+    """Replace items + rationale. Sets revised_at + increments revision_count if
+    plan exists; sets drafted_at if new. Sets approved_at to now if approve=True
+    and approved_at is None. Logs ``plan_updated``."""
+    now = m.utc_now()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT investigation_plan FROM dossiers WHERE id = ?", (dossier_id,)
+        ).fetchone()
+        if not row:
+            return None
+        existing_json = row["investigation_plan"]
+        if existing_json:
+            current = m.InvestigationPlan.model_validate_json(existing_json)
+            new_plan = m.InvestigationPlan(
+                items=data.items,
+                rationale=data.rationale,
+                drafted_at=current.drafted_at,
+                approved_at=current.approved_at,
+                revised_at=now,
+                revision_count=current.revision_count + 1,
+            )
+        else:
+            new_plan = m.InvestigationPlan(
+                items=data.items,
+                rationale=data.rationale,
+                drafted_at=now,
+                approved_at=None,
+                revised_at=None,
+                revision_count=0,
+            )
+        if data.approve and new_plan.approved_at is None:
+            new_plan = new_plan.model_copy(update={"approved_at": now})
+        conn.execute(
+            "UPDATE dossiers SET investigation_plan = ? WHERE id = ?",
+            (new_plan.model_dump_json(), dossier_id),
+        )
+        if existing_json:
+            note = f"Plan revised (rev {new_plan.revision_count}, {len(new_plan.items)} items)"
+        else:
+            note = f"Plan drafted ({len(new_plan.items)} items)"
+        if data.approve:
+            note += " — approved"
+        _log_change(conn, dossier_id, work_session_id, "plan_updated", note)
+        _touch_dossier(conn, dossier_id)
+    return get_dossier(dossier_id)
+
+
+# ---------- NextAction ----------
+
+
+def _compute_next_action_priority(
+    conn: sqlite3.Connection, dossier_id: str, after_action_id: Optional[str]
+) -> float:
+    """Place the new action right after ``after_action_id``, or at the end if None.
+    Mirrors _compute_order for sections."""
+    rows = conn.execute(
+        "SELECT id, priority FROM next_actions WHERE dossier_id = ? ORDER BY priority",
+        (dossier_id,),
+    ).fetchall()
+    if not rows:
+        return _ORDER_STEP
+    if after_action_id is None:
+        return rows[-1]["priority"] + _ORDER_STEP
+    for i, row in enumerate(rows):
+        if row["id"] == after_action_id:
+            next_p = (
+                rows[i + 1]["priority"]
+                if i + 1 < len(rows)
+                else row["priority"] + 2 * _ORDER_STEP
+            )
+            return (row["priority"] + next_p) / 2
+    # after_action_id not found — fall back to end
+    return rows[-1]["priority"] + _ORDER_STEP
+
+
+def add_next_action(
+    dossier_id: str,
+    data: m.NextActionCreate,
+    work_session_id: Optional[str] = None,
+) -> m.NextAction:
+    now = m.utc_now()
+    action_id = m.new_id("act")
+    with connect() as conn:
+        priority = _compute_next_action_priority(conn, dossier_id, data.after_action_id)
+        conn.execute(
+            """
+            INSERT INTO next_actions (id, dossier_id, action, rationale, priority,
+                                      completed, completed_at, created_at)
+            VALUES (?, ?, ?, ?, ?, 0, NULL, ?)
+            """,
+            (
+                action_id,
+                dossier_id,
+                data.action,
+                data.rationale,
+                priority,
+                _dt_str(now),
+            ),
+        )
+        _log_change(
+            conn, dossier_id, work_session_id, "next_action_added",
+            f"Next action: {data.action}",
+        )
+        _touch_dossier(conn, dossier_id)
+        row = conn.execute(
+            "SELECT * FROM next_actions WHERE id = ?", (action_id,)
+        ).fetchone()
+    return _row_to_next_action(row)
+
+
+def list_next_actions(
+    dossier_id: str, include_completed: bool = True
+) -> list[m.NextAction]:
+    q = "SELECT * FROM next_actions WHERE dossier_id = ?"
+    if not include_completed:
+        q += " AND completed = 0"
+    q += " ORDER BY priority"
+    with connect() as conn:
+        rows = conn.execute(q, (dossier_id,)).fetchall()
+    return [_row_to_next_action(r) for r in rows]
+
+
+def complete_next_action(
+    dossier_id: str,
+    action_id: str,
+    work_session_id: Optional[str] = None,
+) -> Optional[m.NextAction]:
+    now_s = _dt_str(m.utc_now())
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM next_actions WHERE id = ? AND dossier_id = ?",
+            (action_id, dossier_id),
+        ).fetchone()
+        if not row:
+            return None
+        conn.execute(
+            "UPDATE next_actions SET completed = 1, completed_at = ? WHERE id = ?",
+            (now_s, action_id),
+        )
+        _log_change(
+            conn, dossier_id, work_session_id, "next_action_completed",
+            f"Completed: {row['action']}",
+        )
+        _touch_dossier(conn, dossier_id)
+        row = conn.execute(
+            "SELECT * FROM next_actions WHERE id = ?", (action_id,)
+        ).fetchone()
+    return _row_to_next_action(row)
+
+
+def remove_next_action(
+    dossier_id: str,
+    action_id: str,
+    work_session_id: Optional[str] = None,
+) -> bool:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM next_actions WHERE id = ? AND dossier_id = ?",
+            (action_id, dossier_id),
+        ).fetchone()
+        if not row:
+            return False
+        conn.execute("DELETE FROM next_actions WHERE id = ?", (action_id,))
+        _log_change(
+            conn, dossier_id, work_session_id, "next_action_removed",
+            f"Removed: {row['action']}",
+        )
+        _touch_dossier(conn, dossier_id)
+    return True
+
+
+def reorder_next_actions(
+    dossier_id: str,
+    action_ids: list[str],
+    work_session_id: Optional[str] = None,
+) -> list[m.NextAction]:
+    with connect() as conn:
+        existing_ids = {
+            r["id"]
+            for r in conn.execute(
+                "SELECT id FROM next_actions WHERE dossier_id = ?", (dossier_id,)
+            ).fetchall()
+        }
+        if set(action_ids) != existing_ids:
+            raise ValueError(
+                "reorder action_ids must match existing next_action set exactly"
+            )
+        for i, aid in enumerate(action_ids, start=1):
+            conn.execute(
+                "UPDATE next_actions SET priority = ? WHERE id = ?",
+                (i * _ORDER_STEP, aid),
+            )
+        _touch_dossier(conn, dossier_id)
+    return list_next_actions(dossier_id)
+
+
+# ---------- ChangeLog ----------
 
 
 def list_change_log_since_last_visit(dossier_id: str) -> list[m.ChangeLogEntry]:

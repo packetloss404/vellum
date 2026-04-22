@@ -197,3 +197,94 @@ def end_work_session(session_id: str) -> m.WorkSession:
     if not result:
         raise HTTPException(404, "work_session not found")
     return result
+
+
+# ---------- debrief ----------
+
+
+@router.put("/dossiers/{dossier_id}/debrief", response_model=m.Dossier)
+def update_debrief(
+    dossier_id: str,
+    patch: m.DebriefUpdate,
+    work_session_id: Optional[str] = None,
+) -> m.Dossier:
+    result = storage.update_debrief(dossier_id, patch, work_session_id)
+    if not result:
+        raise HTTPException(404, "dossier not found")
+    return result
+
+
+# ---------- investigation_plan ----------
+
+
+@router.put("/dossiers/{dossier_id}/investigation-plan", response_model=m.Dossier)
+def update_investigation_plan(
+    dossier_id: str,
+    data: m.InvestigationPlanUpdate,
+    work_session_id: Optional[str] = None,
+) -> m.Dossier:
+    result = storage.update_investigation_plan(dossier_id, data, work_session_id)
+    if not result:
+        raise HTTPException(404, "dossier not found")
+    return result
+
+
+# ---------- next_actions ----------
+
+
+@router.post("/dossiers/{dossier_id}/next-actions", response_model=m.NextAction)
+def add_next_action(
+    dossier_id: str,
+    data: m.NextActionCreate,
+    work_session_id: Optional[str] = None,
+) -> m.NextAction:
+    return storage.add_next_action(dossier_id, data, work_session_id)
+
+
+@router.get("/dossiers/{dossier_id}/next-actions", response_model=list[m.NextAction])
+def list_next_actions(
+    dossier_id: str,
+    include_completed: bool = True,
+) -> list[m.NextAction]:
+    return storage.list_next_actions(dossier_id, include_completed=include_completed)
+
+
+@router.post(
+    "/dossiers/{dossier_id}/next-actions/{action_id}/complete",
+    response_model=m.NextAction,
+)
+def complete_next_action(
+    dossier_id: str,
+    action_id: str,
+    work_session_id: Optional[str] = None,
+) -> m.NextAction:
+    result = storage.complete_next_action(dossier_id, action_id, work_session_id)
+    if not result:
+        raise HTTPException(404, "next_action not found")
+    return result
+
+
+@router.delete("/dossiers/{dossier_id}/next-actions/{action_id}")
+def remove_next_action(
+    dossier_id: str,
+    action_id: str,
+    work_session_id: Optional[str] = None,
+) -> dict:
+    if not storage.remove_next_action(dossier_id, action_id, work_session_id):
+        raise HTTPException(404, "next_action not found")
+    return {"ok": True}
+
+
+@router.post(
+    "/dossiers/{dossier_id}/next-actions/reorder",
+    response_model=list[m.NextAction],
+)
+def reorder_next_actions(
+    dossier_id: str,
+    action_ids: list[str],
+    work_session_id: Optional[str] = None,
+) -> list[m.NextAction]:
+    try:
+        return storage.reorder_next_actions(dossier_id, action_ids, work_session_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
