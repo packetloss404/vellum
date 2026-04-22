@@ -533,8 +533,11 @@ async def _amain(args: argparse.Namespace) -> int:
     else:
         stats.status = reason
 
+    error_msg = run_result.get("error") if isinstance(run_result, dict) else None
     print()
     print(format_digest(stats), flush=True)
+    if error_msg:
+        print(f"\nError: {error_msg}", flush=True)
     return 0 if stats.all_pass else 1
 
 

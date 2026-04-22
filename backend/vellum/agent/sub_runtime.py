@@ -340,13 +340,15 @@ async def run_sub_investigation(
         while turns < max_turns:
             turns += 1
 
-            response = await client.messages.create(
+            # Streaming is required for long operations (see runtime.py).
+            async with client.messages.stream(
                 model=resolved_model,
                 max_tokens=32000,
                 system=system_prompt,
                 tools=tools,
                 messages=messages,
-            )
+            ) as stream:
+                response = await stream.get_final_message()
 
             if response.usage is not None:
                 input_tokens = getattr(response.usage, "input_tokens", 0) or 0

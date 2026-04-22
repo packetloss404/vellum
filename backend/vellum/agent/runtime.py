@@ -114,13 +114,18 @@ class DossierAgent:
             while state.turns < max_turns:
                 state.turns += 1
 
-                response = await self._client.messages.create(
+                # anthropic SDK requires streaming for operations that may
+                # exceed 10 minutes. With max_tokens=32000 + web_search the
+                # SDK guards against the non-streaming path. Use the stream
+                # context manager and aggregate via `get_final_message`.
+                async with self._client.messages.stream(
                     model=self.model,
                     max_tokens=32000,
                     system=system_prompt,
                     tools=self._tools,
                     messages=state.messages,
-                )
+                ) as stream:
+                    response = await stream.get_final_message()
 
                 if response.usage is not None:
                     input_tokens = response.usage.input_tokens or 0

@@ -76,9 +76,15 @@ def _message(
 def make_mock_client(scripted_turns: list[SimpleNamespace]) -> MagicMock:
     """Build an AsyncAnthropic-shaped mock.
 
-    ``client.messages.create(...)`` returns the next scripted message on each
-    call. If the script runs dry, raises ``IndexError`` so tests fail loudly
-    rather than hanging.
+    The real SDK requires streaming for long operations; the runtime therefore
+    uses ``async with client.messages.stream(...) as stream:`` +
+    ``await stream.get_final_message()``. This mock emulates that shape and
+    returns the next scripted message on each ``__aenter__``. If the script
+    runs dry, raises ``IndexError`` so tests fail loudly rather than hanging.
+
+    We also expose ``client.messages.create`` as an ``AsyncMock`` pointing at
+    the same dispatcher so legacy tests that assert on ``.await_count`` still
+    work (each stream call also increments this counter).
 
     We deep-snapshot kwargs at call time — the runtime reuses the same
     ``messages`` list object and keeps mutating it, so by the time a test
@@ -90,22 +96,43 @@ def make_mock_client(scripted_turns: list[SimpleNamespace]) -> MagicMock:
     calls: list[dict[str, Any]] = []
     script = list(scripted_turns)
 
-    async def _create(**kwargs: Any) -> SimpleNamespace:
-        # Copy messages specifically; everything else (tools, system str)
-        # is fine by reference.
+    def _snapshot(kwargs: dict[str, Any]) -> dict[str, Any]:
         snap = dict(kwargs)
         if "messages" in snap:
             snap["messages"] = copy.deepcopy(snap["messages"])
-        calls.append(snap)
+        return snap
+
+    def _next_message() -> SimpleNamespace:
         if not script:
             raise IndexError(
                 f"mock client ran out of scripted turns at call #{len(calls)}"
             )
         return script.pop(0)
 
+    async def _create(**kwargs: Any) -> SimpleNamespace:
+        calls.append(_snapshot(kwargs))
+        return _next_message()
+
+    def _stream(**kwargs: Any) -> Any:
+        calls.append(_snapshot(kwargs))
+        msg = _next_message()
+
+        class _StreamCM:
+            async def __aenter__(self):
+                class _Stream:
+                    async def get_final_message(self_inner):
+                        return msg
+                return _Stream()
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _StreamCM()
+
     client = MagicMock()
     client.messages = MagicMock()
     client.messages.create = AsyncMock(side_effect=_create)
+    client.messages.stream = MagicMock(side_effect=_stream)
     # Stash the call log so tests can inspect what was sent to the model.
     client._calls = calls  # type: ignore[attr-defined]
     return client
@@ -219,7 +246,7 @@ def test_ended_turn_with_no_tool_calls(fresh_db):
 
     assert result.reason == "ended_turn"
     assert result.turns == 1
-    assert client.messages.create.await_count == 1
+    assert client.messages.stream.call_count == 1
 
 
 def test_turn_limit_reached(fresh_db):
@@ -391,7 +418,7 @@ def test_pause_turn_does_not_count_as_ended(fresh_db):
 
     assert result.reason == "ended_turn"
     assert result.turns == 2
-    assert client.messages.create.await_count == 2
+    assert client.messages.stream.call_count == 2
 
 
 # ---------------------------------------------------------------------------

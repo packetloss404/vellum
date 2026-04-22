@@ -61,6 +61,10 @@ def _tool_use(name: str, input_: dict, id_: str = "tu_1") -> _Block:
 def _make_mock_client(responses: list[_Response]) -> AsyncMock:
     """Return a mock AsyncAnthropic client that yields ``responses`` in order.
 
+    Emulates the streaming API the runtime now uses: ``async with
+    client.messages.stream(...) as stream:`` then
+    ``await stream.get_final_message()``.
+
     When responses run out, it repeats an empty-turn (no tool_use) so the
     loop's prod-then-force-complete path exercises predictably.
     """
@@ -71,15 +75,36 @@ def _make_mock_client(responses: list[_Response]) -> AsyncMock:
         usage=_Usage(),
     )
 
-    async def _create(**kwargs) -> _Response:
+    def _next() -> _Response:
         try:
             return next(iterator)
         except StopIteration:
             return fallback
 
+    def _stream(**kwargs):
+        msg = _next()
+
+        class _StreamCM:
+            async def __aenter__(self):
+                class _Stream:
+                    async def get_final_message(self_inner):
+                        return msg
+                return _Stream()
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _StreamCM()
+
+    async def _create(**kwargs) -> _Response:
+        # Legacy fallback — keep so any test that mocks .create directly
+        # still works. The runtime uses stream() in production.
+        return _next()
+
     client = AsyncMock()
     client.messages = AsyncMock()
     client.messages.create = _create
+    client.messages.stream = _stream
     return client
 
 

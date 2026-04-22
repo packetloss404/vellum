@@ -59,23 +59,48 @@ def _message(
 
 
 class _ScriptedMessages:
-    """The ``.messages`` attribute on a mock AsyncAnthropic client."""
+    """The ``.messages`` attribute on a mock AsyncAnthropic client.
+
+    Supports both ``create`` (legacy) and ``stream`` (current runtime). Both
+    pop from the same scripted queue.
+    """
 
     def __init__(self, script: list[SimpleNamespace]) -> None:
         self._script = list(script)
         self.calls: list[dict[str, Any]] = []
 
-    async def create(self, **kwargs: Any) -> SimpleNamespace:
-        # Snapshot messages arg — runtimes mutate the list in place.
+    def _snapshot(self, kwargs: dict[str, Any]) -> None:
         snap = dict(kwargs)
         if "messages" in snap:
             snap["messages"] = copy.deepcopy(snap["messages"])
         self.calls.append(snap)
+
+    def _next(self) -> SimpleNamespace:
         if not self._script:
             raise IndexError(
                 f"scripted anthropic client ran out at call #{len(self.calls)}"
             )
         return self._script.pop(0)
+
+    async def create(self, **kwargs: Any) -> SimpleNamespace:
+        self._snapshot(kwargs)
+        return self._next()
+
+    def stream(self, **kwargs: Any) -> Any:
+        self._snapshot(kwargs)
+        msg = self._next()
+
+        class _StreamCM:
+            async def __aenter__(self_inner):
+                class _Stream:
+                    async def get_final_message(self_inner2):
+                        return msg
+                return _Stream()
+
+            async def __aexit__(self_inner, *exc):
+                return False
+
+        return _StreamCM()
 
 
 class _ScriptedClient:
