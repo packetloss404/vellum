@@ -73,7 +73,7 @@ class CheckInPolicy(BaseModel):
 
 
 class InvestigationPlanItem(BaseModel):
-    id: str                               # prefix: "pli"
+    id: str = Field(default_factory=lambda: new_id("pli"))  # prefix: "pli"
     question: str
     rationale: str = ""
     expected_sources: list[str] = Field(default_factory=list)

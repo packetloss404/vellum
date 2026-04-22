@@ -123,17 +123,17 @@ def test_day1_roundtrip(client) -> None:
     plan_draft_body = {
         "items": [
             {
-                "title": "Map the current HTTP surface",
+                "question": "Map the current HTTP surface",
                 "rationale": "We need to know what v1 already gives us before extending.",
                 "as_sub_investigation": False,
             },
             {
-                "title": "Audit sub-investigation lifecycle invariants",
+                "question": "Audit sub-investigation lifecycle invariants",
                 "rationale": "Spawn/complete transitions must be exhaustive.",
                 "as_sub_investigation": True,
             },
             {
-                "title": "Decide artifact revision strategy",
+                "question": "Decide artifact revision strategy",
                 "rationale": "PATCH vs POST-new-revision is load-bearing.",
                 "as_sub_investigation": False,
             },
@@ -149,7 +149,7 @@ def test_day1_roundtrip(client) -> None:
     resp = client.get(f"/api/dossiers/{dossier_id}")
     assert resp.status_code == 200
     full = resp.json()
-    plan = full.get("investigation_plan")
+    plan = full["dossier"].get("investigation_plan")
     assert plan is not None, "investigation_plan missing from dossier full"
     assert len(plan["items"]) == 3, f"expected 3 plan items, got {len(plan['items'])}"
     assert plan.get("drafted_at"), "drafted_at should be set after initial draft"
@@ -159,22 +159,22 @@ def test_day1_roundtrip(client) -> None:
     plan_revision_body = {
         "items": [
             {
-                "title": "Map the current HTTP surface",
+                "question": "Map the current HTTP surface",
                 "rationale": "Keep from v1 — still valid.",
                 "as_sub_investigation": False,
             },
             {
-                "title": "Audit sub-investigation lifecycle invariants",
+                "question": "Audit sub-investigation lifecycle invariants",
                 "rationale": "Still needed; now explicitly a sub-investigation.",
                 "as_sub_investigation": True,
             },
             {
-                "title": "Specify artifact revision semantics in docs",
+                "question": "Specify artifact revision semantics in docs",
                 "rationale": "Replaced: decision → specify-and-document.",
                 "as_sub_investigation": False,
             },
             {
-                "title": "Wire investigation_log counts endpoint",
+                "question": "Wire investigation_log counts endpoint",
                 "rationale": "Added after realizing we lacked an aggregate view.",
                 "as_sub_investigation": False,
             },
@@ -187,7 +187,7 @@ def test_day1_roundtrip(client) -> None:
     )
     assert resp.status_code == 200, f"revise plan failed: {resp.status_code} {resp.text}"
     full = client.get(f"/api/dossiers/{dossier_id}").json()
-    plan = full["investigation_plan"]
+    plan = full["dossier"]["investigation_plan"]
     assert plan["revision_count"] == 1, f"expected revision_count=1 after first revise, got {plan['revision_count']}"
     assert plan.get("revised_at"), "revised_at should be set after revision"
 
@@ -199,7 +199,7 @@ def test_day1_roundtrip(client) -> None:
     )
     assert resp.status_code == 200, f"approve plan failed: {resp.status_code} {resp.text}"
     full = client.get(f"/api/dossiers/{dossier_id}").json()
-    plan = full["investigation_plan"]
+    plan = full["dossier"]["investigation_plan"]
     assert plan.get("approved_at"), "approved_at should be set after approval"
 
     # -------- 6. Add a section --------
@@ -223,30 +223,32 @@ def test_day1_roundtrip(client) -> None:
     source_payloads = [
         {
             "entry_type": "source_consulted",
-            "source": {
-                "kind": "web",
-                "url": "https://fastapi.tiangolo.com/tutorial/testing/",
-                "title": "FastAPI TestClient docs",
-                "snippet": "TestClient uses HTTPX under the hood.",
+            "summary": "fastapi.tiangolo.com/tutorial/testing — TestClient uses HTTPX under the hood",
+            "payload": {
+                "citation": "https://fastapi.tiangolo.com/tutorial/testing/",
+                "why_consulted": "Confirm the testing shape we're using.",
+                "what_learned": "TestClient uses HTTPX under the hood.",
+                "supports_section_ids": [],
             },
-            "note": "Confirms the testing shape.",
         },
         {
             "entry_type": "source_consulted",
-            "source": {
-                "kind": "user_paste",
-                "title": "Product brief v2",
-                "snippet": "Sub-investigations, artifacts, debrief, next_actions…",
+            "summary": "Product brief v2 — anchor on exact object list",
+            "payload": {
+                "citation": "Internal: product brief v2",
+                "why_consulted": "Anchor on exact object list from brief.",
+                "what_learned": "Sub-investigations, artifacts, debrief, next_actions are all first-class.",
+                "supports_section_ids": [section_id],
             },
-            "note": "Anchor on exact object list from brief.",
-            "supports_section_ids": [section_id],
         },
         {
             "entry_type": "source_consulted",
-            "source": {
-                "kind": "reasoning",
-                "title": "Internal: lifecycle semantics",
-                "snippet": "work_sessions auto-close on boot if orphaned.",
+            "summary": "Internal lifecycle semantics — work_sessions auto-close on boot",
+            "payload": {
+                "citation": "Internal: lifecycle.py docstring",
+                "why_consulted": "Verify session cleanup on crash recovery.",
+                "what_learned": "work_sessions auto-close on boot if orphaned.",
+                "supports_section_ids": [],
             },
         },
     ]
@@ -411,14 +413,12 @@ def test_day1_roundtrip(client) -> None:
     # -------- 16. Add 2 next_actions --------
     next_action_bodies = [
         {
-            "title": "Wire frontend to /investigation-plan",
-            "owner": "frontend-agent",
-            "due": "2026-04-29",
+            "action": "Wire frontend to /investigation-plan",
+            "rationale": "Frontend-agent task, target 2026-04-29.",
         },
         {
-            "title": "Write docs for artifact PATCH semantics",
-            "owner": "docs-agent",
-            "due": "2026-04-30",
+            "action": "Write docs for artifact PATCH semantics",
+            "rationale": "Docs-agent task, target 2026-04-30.",
         },
     ]
     for i, body in enumerate(next_action_bodies):
@@ -437,8 +437,8 @@ def test_day1_roundtrip(client) -> None:
     full = resp.json()
 
     assert full.get("dossier"), "dossier key missing from full payload"
-    assert full.get("debrief"), "debrief missing from full payload"
-    assert full.get("investigation_plan"), "investigation_plan missing from full payload"
+    assert full["dossier"].get("debrief"), "debrief missing from full payload"
+    assert full["dossier"].get("investigation_plan"), "investigation_plan missing from full payload"
 
     sections = full.get("sections") or []
     assert len(sections) >= 1, f"expected >=1 section, got {len(sections)}"

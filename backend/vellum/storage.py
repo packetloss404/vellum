@@ -1214,6 +1214,15 @@ def delete_artifact(
             "SELECT * FROM artifacts WHERE id = ? AND dossier_id = ?",
             (artifact_id, dossier_id),
         ).fetchone()
+        if not existing:
+            return False
+        conn.execute("DELETE FROM artifacts WHERE id = ?", (artifact_id,))
+        _log_change(
+            conn, dossier_id, work_session_id, "artifact_updated",
+            f"Deleted artifact: {existing['title']}",
+        )
+        _touch_dossier(conn, dossier_id)
+    return True
 
 
 # ---------- SubInvestigations ----------
