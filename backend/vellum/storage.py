@@ -1754,3 +1754,183 @@ def list_considered_and_rejected(dossier_id: str) -> list[m.ConsideredAndRejecte
             (dossier_id,),
         ).fetchall()
     return [_row_to_considered_and_rejected(r) for r in rows]
+
+
+# ---------- day 3: computed dossier status ----------
+
+
+def _decision_point_is_plan_approval(row: sqlite3.Row) -> bool:
+    """Decide whether a decision_points row is a plan-approval gate.
+
+    The plan-approval agent (running in parallel) is adding a ``kind`` column
+    to ``decision_points``. When that column exists and is populated we trust
+    it directly. Until then we fall back to a best-effort title heuristic:
+    the title contains both "plan" AND "approve" (case-insensitive), or just
+    "plan_approval"/"plan approval". Documented in the public function's
+    docstring so callers know the fallback exists.
+    """
+    try:
+        kind = row["kind"]
+    except (IndexError, KeyError):
+        kind = None
+    if kind == "plan_approval":
+        return True
+    # kind missing (legacy row) or "generic" → fall back to title heuristic so
+    # unclassified-but-obviously-plan-approval titles still trigger.
+    title = (row["title"] or "").lower()
+    if "plan_approval" in title or "plan approval" in title:
+        return True
+    return "plan" in title and ("approve" in title or "approval" in title)
+
+
+def get_dossier_status(dossier_id: str) -> dict:
+    """Single authoritative computed read for the dossier status indicator.
+
+    Returns a dict with a ``status`` field whose value is determined by the
+    following precedence (first match wins):
+
+      1. ``delivered`` - ``dossier.status == delivered``
+      2. ``running`` - orchestrator has an active run for this dossier
+      3. ``waiting_plan_approval`` - plan has been drafted, is not approved,
+         and there is an unresolved decision_point that is a plan-approval
+         gate (see below for how that is identified).
+      4. ``waiting_input`` - at least one unresolved needs_input OR at least
+         one unresolved decision_point that is NOT a plan-approval gate.
+      5. ``stuck`` - the most recent ``stuck_declared`` investigation_log
+         entry is newer than ``last_visited_at`` (or within the last 24h if
+         the dossier has never been visited).
+      6. ``idle`` - none of the above.
+      7. ``not_found`` - the dossier does not exist.
+
+    The orchestrator check is guarded with a broad try/except so that a
+    runtime import issue cannot take the status endpoint down.
+
+    DecisionPoint.kind fallback: a parallel agent is adding a ``kind`` column
+    to ``decision_points`` to distinguish plan-approval gates from regular
+    decisions. When that column is present and populated we trust it
+    (``kind == "plan_approval"``); when it is missing we fall back to a
+    title heuristic - the title contains "plan_approval", "plan approval",
+    or both "plan" AND "approve"/"approval" (case-insensitive).
+    """
+    dossier = get_dossier(dossier_id)
+    if dossier is None:
+        return {
+            "dossier_id": dossier_id,
+            "status": "not_found",
+            "status_detail": "dossier not found",
+            "active_work_session_id": None,
+            "unresolved_plan_approval_id": None,
+            "open_needs_input_count": 0,
+            "open_decision_point_count": 0,
+            "last_stuck_at": None,
+            "delivered": False,
+        }
+
+    # Active work session (if any). Used to populate the response even when
+    # the orchestrator does not report a "running" status (e.g. the run is
+    # between turns, or we are on a different process).
+    active_ws = get_active_work_session(dossier_id)
+    active_ws_id = active_ws.id if active_ws else None
+
+    # Gather unresolved decision_points and classify.
+    with connect() as conn:
+        dp_rows = conn.execute(
+            "SELECT * FROM decision_points WHERE dossier_id = ? AND resolved_at IS NULL",
+            (dossier_id,),
+        ).fetchall()
+        ni_rows = conn.execute(
+            "SELECT id FROM needs_input WHERE dossier_id = ? AND answered_at IS NULL",
+            (dossier_id,),
+        ).fetchall()
+        stuck_row = conn.execute(
+            """
+            SELECT created_at FROM investigation_log
+             WHERE dossier_id = ? AND entry_type = ?
+             ORDER BY created_at DESC LIMIT 1
+            """,
+            (dossier_id, m.InvestigationLogEntryType.stuck_declared.value),
+        ).fetchone()
+
+    unresolved_plan_approval_id: Optional[str] = None
+    open_non_plan_dp_count = 0
+    for row in dp_rows:
+        if _decision_point_is_plan_approval(row):
+            if unresolved_plan_approval_id is None:
+                unresolved_plan_approval_id = row["id"]
+        else:
+            open_non_plan_dp_count += 1
+
+    open_needs_input_count = len(ni_rows)
+    last_stuck_at = _dt(stuck_row["created_at"]) if stuck_row else None
+
+    delivered = dossier.status == m.DossierStatus.delivered
+
+    # 1. delivered
+    if delivered:
+        status = "delivered"
+        detail = "dossier is delivered"
+    else:
+        # 2. running (orchestrator)
+        running = False
+        try:
+            from .agent.orchestrator import ORCHESTRATOR  # local import; guard below
+            running = any(
+                r.get("dossier_id") == dossier_id and r.get("status") == "running"
+                for r in ORCHESTRATOR.list_active()
+            )
+        except Exception:  # noqa: BLE001 - status must not raise
+            running = False
+
+        if running:
+            status = "running"
+            detail = "agent is actively running"
+        elif (
+            dossier.investigation_plan is not None
+            and dossier.investigation_plan.approved_at is None
+            and unresolved_plan_approval_id is not None
+        ):
+            # 3. waiting_plan_approval
+            status = "waiting_plan_approval"
+            detail = "plan drafted; waiting for approval"
+        elif open_needs_input_count > 0 or open_non_plan_dp_count > 0:
+            # 4. waiting_input
+            status = "waiting_input"
+            parts = []
+            if open_needs_input_count > 0:
+                parts.append(f"{open_needs_input_count} open question(s)")
+            if open_non_plan_dp_count > 0:
+                parts.append(f"{open_non_plan_dp_count} unresolved decision(s)")
+            detail = "waiting on: " + ", ".join(parts)
+        elif last_stuck_at is not None and _stuck_is_recent(
+            last_stuck_at, dossier.last_visited_at
+        ):
+            # 5. stuck
+            status = "stuck"
+            detail = "agent declared stuck and has not recovered"
+        else:
+            # 6. idle
+            status = "idle"
+            detail = "no active work"
+
+    return {
+        "dossier_id": dossier_id,
+        "status": status,
+        "status_detail": detail,
+        "active_work_session_id": active_ws_id,
+        "unresolved_plan_approval_id": unresolved_plan_approval_id,
+        "open_needs_input_count": open_needs_input_count,
+        "open_decision_point_count": open_non_plan_dp_count,
+        "last_stuck_at": last_stuck_at,
+        "delivered": delivered,
+    }
+
+
+def _stuck_is_recent(last_stuck_at: datetime, last_visited_at: Optional[datetime]) -> bool:
+    """stuck wins if the most recent stuck_declared is after the user's last
+    visit (they haven't seen it yet), or — if they've never visited — within
+    the last 24h (so that a long-abandoned dossier doesn't stay "stuck"
+    forever)."""
+    from datetime import timedelta
+    if last_visited_at is not None:
+        return last_stuck_at > last_visited_at
+    return (m.utc_now() - last_stuck_at) <= timedelta(hours=24)
