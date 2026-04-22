@@ -45,6 +45,45 @@ def test_main_prompt_contains_required_tokens() -> None:
     assert not missing, f"main prompt missing tokens: {missing}"
 
 
+# ---------- day 5 pressure-test additions ----------
+
+
+def test_main_prompt_has_smell_tests_for_premise_pushback() -> None:
+    """Premise pushback must be concrete, not abstract — the prompt should cue
+    the agent to check specific categories of assumption in the question."""
+    lower = MAIN_AGENT_SYSTEM_PROMPT.lower()
+    assert "smell test" in lower or "smell tests" in lower, (
+        "main prompt should reference 'smell tests' for premise pushback"
+    )
+    assert "assumes" in lower, (
+        "main prompt should talk about what the question 'assumes'"
+    )
+
+
+def test_main_prompt_emphasises_cost_of_error() -> None:
+    """cost_of_error is the load-bearing field on considered_and_rejected —
+    the prompt must call this out, not just list the tool."""
+    lower = MAIN_AGENT_SYSTEM_PROMPT.lower()
+    assert "cost_of_error" in lower or "cost of error" in lower or "cost-of-error" in lower, (
+        "main prompt should emphasise cost_of_error on considered-and-rejected"
+    )
+
+
+def test_main_prompt_mentions_key_tool_names_explicitly() -> None:
+    """Core tools must be called out by exact name so the agent knows to invoke
+    them, not just describe them."""
+    required = [
+        "update_investigation_plan",
+        "spawn_sub_investigation",
+        "mark_considered_and_rejected",
+        "add_artifact",
+        "flag_decision_point",
+        "flag_needs_input",
+    ]
+    missing = [t for t in required if t not in MAIN_AGENT_SYSTEM_PROMPT]
+    assert not missing, f"main prompt missing explicit tool names: {missing}"
+
+
 _SUB_REQUIRED_TOKENS = [
     "complete_sub_investigation",
     "return_summary",
