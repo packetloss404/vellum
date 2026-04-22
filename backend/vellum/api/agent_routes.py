@@ -77,3 +77,21 @@ def status(dossier_id: str) -> dict:
 @router.get("/agents/running")
 def list_running() -> list[dict]:
     return ORCHESTRATOR.list_running()
+
+
+# ---------- day 3: computed dossier status ----------
+
+
+@router.get("/dossiers/{dossier_id}/status")
+def dossier_status(dossier_id: str) -> dict:
+    """Single authoritative computed status for the dossier page indicator.
+
+    See ``storage.get_dossier_status`` for the precedence rules. Returns 404
+    if the dossier does not exist; otherwise returns the full status dict
+    (``status`` is one of delivered/running/waiting_plan_approval/
+    waiting_input/stuck/idle).
+    """
+    result = storage.get_dossier_status(dossier_id)
+    if result["status"] == "not_found":
+        raise HTTPException(404, "dossier not found")
+    return result
