@@ -18,12 +18,7 @@ import pytest
 
 @pytest.fixture
 def fresh_db(monkeypatch):
-    """Point vellum.config.DB_PATH at a fresh tempfile and re-init the schema.
-
-    Each test that touches storage should depend on this fixture. We patch both
-    the env var (for any late-reading code) and ``vellum.config.DB_PATH``
-    directly (since config already read the env var on first import).
-    """
+    """Point vellum.config.DB_PATH at a fresh tempfile and re-init the schema."""
     tmpdir = Path(tempfile.gettempdir()) / "vellum_tests"
     tmpdir.mkdir(parents=True, exist_ok=True)
     db_path = tmpdir / f"test_{os.getpid()}_{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}.db"

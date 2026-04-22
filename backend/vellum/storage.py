@@ -772,6 +772,15 @@ def start_work_session(
     return session
 
 
+def get_work_session(session_id: str) -> Optional[m.WorkSession]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM work_sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+    return _row_to_work_session(row) if row else None
+
+
 def end_work_session(session_id: str) -> Optional[m.WorkSession]:
     now_s = _dt_str(m.utc_now())
     with connect() as conn:
@@ -807,6 +816,27 @@ def increment_session_tokens(session_id: str, tokens: int) -> None:
             "UPDATE work_sessions SET token_budget_used = token_budget_used + ? WHERE id = ?",
             (tokens, session_id),
         )
+
+
+# ---------- v2: InvestigationLog ----------
+#
+# Typed, append-only "evidence of work" and stuck-signal surface. Separate from
+# change_log (user-visit-diff) by design — appends here do NOT write to
+# change_log, so the "47 sources consulted" counter doesn't pollute the
+# since-last-visit plan-diff the user reads on return.
+
+
+def _row_to_investigation_log(row: sqlite3.Row) -> m.InvestigationLogEntry:
+    return m.InvestigationLogEntry(
+        id=row["id"],
+        dossier_id=row["dossier_id"],
+        work_session_id=row["work_session_id"],
+        sub_investigation_id=row["sub_investigation_id"],
+        entry_type=m.InvestigationLogEntryType(row["entry_type"]),
+        payload=json.loads(row["payload"]) if row["payload"] else {},
+        summary=row["summary"],
+        created_at=_dt(row["created_at"]),
+    )
 
 
 # ---------- ChangeLog ----------
