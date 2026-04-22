@@ -232,7 +232,11 @@ export default function DossierPage() {
           {/* Main document body. */}
           <SectionList sections={sections ?? []} />
 
-          <SubInvestigationList subs={sub_investigations ?? []} />
+          <SubInvestigationList
+            subs={sub_investigations ?? []}
+            sections={sections ?? []}
+            artifacts={artifacts ?? []}
+          />
 
           <ArtifactList artifacts={artifacts ?? []} />
 
