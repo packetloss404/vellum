@@ -120,3 +120,19 @@ CREATE TABLE IF NOT EXISTS intake_messages (
     FOREIGN KEY (intake_id) REFERENCES intake_sessions(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_intake_messages_intake ON intake_messages(intake_id, created_at);
+
+CREATE TABLE IF NOT EXISTS artifacts (
+    id TEXT PRIMARY KEY,
+    dossier_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    intended_use TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'draft',
+    kind_note TEXT,
+    supersedes TEXT,
+    last_updated TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_artifacts_dossier ON artifacts(dossier_id, created_at);
