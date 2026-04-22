@@ -1,12 +1,21 @@
 import React from "react";
 import type { Debrief } from "../../api/types";
-import { Card } from "../common/Card";
+import { relativeTime } from "../../utils/time";
 
 /**
- * DebriefBlock — the "here's what I did, here's what I found" summary at
- * the top of a reopened dossier. Four labeled fields, each rendered as
- * flowing serif prose. Empty fields show as "—" so the shape of the
- * debrief is always legible. Renders nothing if no debrief is populated.
+ * DebriefBlock — the two-minute "here's what I did, here's what I found"
+ * block that lives immediately under the hero.
+ *
+ * Visual choice: no card fill, horizontal rules top and bottom. The debrief
+ * reads like a printed case-file summary page — paper shows through, the
+ * rules frame it. Four labeled fields (mono small-caps labels, serif
+ * body), each generous enough to be read at a glance.
+ *
+ * Empty policy:
+ *   - `debrief === null | undefined` → fine-print "hasn't posted" note.
+ *   - debrief exists but all four fields blank → same fine-print note.
+ *   - individual empty field → muted em-dash under the label (we keep
+ *     the label so the shape of the four-field debrief is legible).
  */
 
 export interface DebriefBlockProps {
@@ -29,37 +38,46 @@ function valueFor(debrief: Debrief, key: keyof Debrief): string {
   return trimmed.length > 0 ? trimmed : EMPTY;
 }
 
-export function DebriefBlock({ debrief }: DebriefBlockProps) {
-  if (!debrief) return null;
+function EmptyNote() {
+  return (
+    <div className="border-y border-rule py-4">
+      <p className="font-mono text-xs text-ink-faint">
+        The agent hasn&apos;t posted a debrief yet.
+      </p>
+    </div>
+  );
+}
 
-  // If every field is empty, still skip — we don't render four dashes
-  // with no context.
+export function DebriefBlock({ debrief }: DebriefBlockProps) {
+  if (!debrief) {
+    return <EmptyNote />;
+  }
+
   const anyPopulated = FIELDS.some(
     ({ key }) =>
       typeof debrief[key] === "string" &&
       (debrief[key] as string).trim().length > 0,
   );
-  if (!anyPopulated) return null;
+  if (!anyPopulated) {
+    return <EmptyNote />;
+  }
 
   return (
-    <Card className="space-y-5">
-      <h2 className="font-mono text-xs uppercase tracking-wide text-ink-faint">
-        Debrief
-      </h2>
-      <dl className="space-y-5">
+    <section className="border-y border-rule py-8">
+      <dl className="space-y-7">
         {FIELDS.map(({ key, label }) => {
           const value = valueFor(debrief, key);
           const isEmpty = value === EMPTY;
           return (
             <div key={key}>
-              <dt className="font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">
+              <dt className="font-sans text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-2">
                 {label}
               </dt>
               <dd
                 className={
                   isEmpty
-                    ? "font-serif text-base text-ink-faint italic"
-                    : "font-serif text-base text-ink leading-relaxed whitespace-pre-wrap"
+                    ? "font-serif text-lg text-ink-faint"
+                    : "font-serif text-lg text-ink leading-relaxed whitespace-pre-wrap"
                 }
               >
                 {value}
@@ -68,7 +86,12 @@ export function DebriefBlock({ debrief }: DebriefBlockProps) {
           );
         })}
       </dl>
-    </Card>
+      {debrief.last_updated ? (
+        <p className="mt-8 font-mono text-[11px] text-ink-faint">
+          Last updated {relativeTime(debrief.last_updated)}
+        </p>
+      ) : null}
+    </section>
   );
 }
 
