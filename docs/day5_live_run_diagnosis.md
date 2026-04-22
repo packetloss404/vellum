@@ -466,3 +466,43 @@ lands. Specifically:
    place, against a fresh resume of this same dossier (the facts
    answered in the `needs_input` are rich and worth preserving).
    Expect this to surface whatever the real exception was in step 2.
+
+---
+
+## Post-streaming-fix live run (manual auto-resolve)
+
+Run date: 2026-04-22 (after streaming migration + prompt tightening)
+Dossier id: `dos_83702bf49194` (continued from the first post-approval attempt)
+Entry point: direct `DossierAgent.run(max_turns=15)` against the already-approved, fact-answered state.
+
+### Result
+
+- Turns used: 10 (`reason=delivered`)
+- **Substance bar**:
+  - sub-investigations ≥ 3: **PASS** (3 spawned)
+  - sources consulted ≥ 20: close but FAIL (15 — debrief claims "~20")
+  - artifacts ≥ 1: **PASS** (2)
+- Sections: 6 (first one: "The question is almost certainly the wrong question" — premise pushback in the title itself)
+- Considered-and-rejected: 3
+- Next actions: 5
+- Debrief: populated, decisive
+
+### What worked
+
+1. **Premise pushback is real and visible.** The first section title is "The question is almost certainly the wrong question" and the debrief opens with "Pushed back on the premise and investigated whether the friend owes this debt at all before answering 'what opening percentage.'"
+2. **Sub-investigations were spawned on the right questions**: (i) risks of negotiating/paying non-probate debt, (ii) FDCPA/Reg F/CFPB on collector behavior, (iii) state-specific exposure including non-probate asset clawback. These are credible scoped dives.
+3. **Usable artifacts produced**: a letter and a checklist. The user can act on these.
+4. **Considered-and-rejected logged** (3 paths). Visible wrestling.
+
+### New failure modes
+
+1. **Sub-investigations stay in `running` state.** All 3 spawned subs show `state=running`, `return_summary=null`. The main agent's `spawn_sub_investigation` handler blocks until the sub returns, then should persist `state=delivered` via `storage.complete_sub_investigation`. The subs produced output (15 source_consulted entries exist, attributed via context) but the completion call never landed. Likely: the sub-agent loop errored mid-turn (streaming exception, tool dispatch error, etc.) and the force-complete path ALSO failed — leaving the subs pristine. Severity: **quality/demo** — subs visibly "never finished" even though their work did inform the main. Day-6 fix candidate.
+2. **`delivered` status while subs running.** The main agent self-declared `mark_investigation_delivered` with 3 subs still in `running` — violates the updated prompt's "not done while blocked/incomplete" rule. Likely the prompt strengthening is not strong enough on the "subs are part of substance bar" read. Day-6 fix candidate.
+3. **Source-log underreporting** (15 actual vs. ~20 claimed in debrief). The model is undercounting its per-source-logging. Likely a prompt/tool-description follow-up — `log_source_consulted` needs to be reinforced as non-optional.
+
+### Day-6 priorities (derived from this run)
+
+- Investigate why sub_runtime's completion path doesn't persist (add more logging; instrument the force-complete). The 3 running subs on the demo dossier are the most visible imperfection.
+- Tighten `mark_investigation_delivered` to check sub-investigation states: refuse if any sub is `running`.
+- Consider a backend sanity-check on delivered: reject the transition if any sub is running (defence in depth beyond the prompt).
+- Otherwise: the dossier at `dos_83702bf49194` is demo-worthy as-is.
