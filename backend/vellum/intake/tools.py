@@ -127,6 +127,23 @@ def commit_intake(intake_id: str, args: dict[str, Any]) -> dict[str, Any]:
         ({question, rationale, as_sub_investigation, expected_sources}).
       - ``plan_rationale``: optional one-sentence rationale for the plan.
 
+    Return shape (day-3 polish):
+      - On successful commit:
+          {
+              "intake_session_id": str,
+              "dossier_id": str,
+              "plan_seeded": bool,
+              "plan_error"?: str,   # only present when plan provided but rejected
+          }
+      - On missing-required-field:
+          {"error": ..., "missing": [...]}  — the model can recover by calling
+          the appropriate set_* tools, then retrying commit_intake.
+      - On intake-not-found:
+          {"error": "intake not found"}
+      - Idempotent: if this intake was already committed, echoes the same
+        dossier_id with ``plan_seeded=False`` (we don't overwrite the plan
+        on a re-commit; the first commit wins).
+
     If ``plan_items`` is provided and non-empty, after creating the dossier
     we call ``storage.update_investigation_plan`` with ``approve=False`` so
     the seeded plan is explicitly a draft the user (or the day-2 agent)
@@ -140,9 +157,17 @@ def commit_intake(intake_id: str, args: dict[str, Any]) -> dict[str, Any]:
     if err:
         return err
 
-    # Idempotency: if already committed, just echo the dossier_id.
+    # Idempotency: if already committed, echo the dossier_id with the
+    # day-3 shape. plan_seeded=False on the re-commit reflects that THIS
+    # call did not seed a plan (we don't overwrite on re-commit); callers
+    # that need to know whether a plan was ever seeded should read the
+    # dossier directly.
     if session.status == im.IntakeStatus.committed and session.dossier_id:
-        return {"dossier_id": session.dossier_id}
+        return {
+            "intake_session_id": intake_id,
+            "dossier_id": session.dossier_id,
+            "plan_seeded": False,
+        }
 
     state = session.state
     missing: list[str] = []
@@ -154,11 +179,18 @@ def commit_intake(intake_id: str, args: dict[str, Any]) -> dict[str, Any]:
         missing.append("dossier_type")
     if state.check_in_policy is None:
         missing.append("check_in_policy")
+    # out_of_scope is allowed to be an empty list — the user genuinely may
+    # have nothing to exclude — but the FIELD must have been considered.
+    # We don't enforce that here; the intake agent's prompt already asks.
 
     if missing:
+        # Recoverable error: model can call set_* tools for the named
+        # fields and retry. ``intake_session_id`` echoed so the model has
+        # the ID in its local context if it needs to reference it.
         return {
-            "error": f"missing fields: {', '.join(missing)}",
+            "error": f"missing required fields: {', '.join(missing)}",
             "missing": missing,
+            "intake_session_id": intake_id,
         }
 
     # All required fields present — construct and persist.
@@ -179,7 +211,11 @@ def commit_intake(intake_id: str, args: dict[str, Any]) -> dict[str, Any]:
     # errors we surface ``plan_error`` to the model alongside dossier_id
     # so it knows the plan didn't stick and can retry via the dossier-side
     # plan tools once the agent takes over.
-    result: dict[str, Any] = {"dossier_id": dossier.id}
+    result: dict[str, Any] = {
+        "intake_session_id": intake_id,
+        "dossier_id": dossier.id,
+        "plan_seeded": False,
+    }
     plan_items_raw = args.get("plan_items")
     if plan_items_raw:
         if not isinstance(plan_items_raw, list):
@@ -253,9 +289,15 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     ),
     "commit_intake": (
         "Create the dossier and end the intake. Only call when title, problem_statement, "
-        "dossier_type, and check_in_policy are set (out_of_scope is optional). "
-        "May optionally seed a starter investigation plan via plan_items + plan_rationale; "
-        "if omitted, the dossier agent drafts the plan on its first turn."
+        "dossier_type, and check_in_policy are set (out_of_scope is optional — "
+        "but confirm the user has nothing to exclude before calling). "
+        "Returns intake_session_id, dossier_id, plan_seeded: bool, and plan_error (optional). "
+        "If required fields are missing, returns an error with a ``missing`` list — "
+        "call the matching set_* tool(s), then retry commit_intake. "
+        "May optionally seed a starter investigation plan via plan_items (3-5 items) "
+        "+ plan_rationale; if omitted, the dossier agent drafts the plan on its first turn. "
+        "Plan seeding is best-effort: a malformed plan returns plan_error but the dossier "
+        "still commits."
     ),
     "abandon_intake": (
         "Mark the intake abandoned when the user asks to stop or the conversation has "

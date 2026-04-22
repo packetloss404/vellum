@@ -45,8 +45,11 @@ def test_commit_without_plan_leaves_plan_none(fresh_db):
 
     result = commit_intake(intake_id, {})
 
+    # Day-3 return shape: always includes intake_session_id, dossier_id,
+    # and plan_seeded: bool. plan_error is absent on the happy path.
+    assert result["intake_session_id"] == intake_id, result
     assert "dossier_id" in result, result
-    assert "plan_seeded" not in result
+    assert result["plan_seeded"] is False
     assert "plan_error" not in result
 
     dossier = dossier_storage.get_dossier(result["dossier_id"])
@@ -60,8 +63,9 @@ def test_commit_with_empty_plan_list_skips_seeding(fresh_db):
 
     result = commit_intake(intake_id, {"plan_items": []})
 
+    assert result["intake_session_id"] == intake_id
     assert "dossier_id" in result
-    assert "plan_seeded" not in result
+    assert result["plan_seeded"] is False
     assert "plan_error" not in result
 
     dossier = dossier_storage.get_dossier(result["dossier_id"])
@@ -113,8 +117,9 @@ def test_commit_with_plan_seeds_dossier(fresh_db):
         },
     )
 
+    assert result["intake_session_id"] == intake_id, result
     assert "dossier_id" in result, result
-    assert result.get("plan_seeded") is True
+    assert result["plan_seeded"] is True
     assert result.get("plan_item_count") == 3
     assert "plan_error" not in result
 
@@ -149,8 +154,9 @@ def test_commit_with_plan_routes_through_handler_registry(fresh_db):
         },
     )
 
+    assert result["intake_session_id"] == intake_id
     assert "dossier_id" in result
-    assert result.get("plan_seeded") is True
+    assert result["plan_seeded"] is True
     dossier = dossier_storage.get_dossier(result["dossier_id"])
     assert dossier is not None
     assert dossier.investigation_plan is not None
@@ -181,9 +187,10 @@ def test_commit_with_invalid_plan_item_commits_dossier_without_plan(fresh_db):
 
     result = commit_intake(intake_id, {"plan_items": bad_items})
 
+    assert result["intake_session_id"] == intake_id
     assert "dossier_id" in result
     assert "plan_error" in result
-    assert "plan_seeded" not in result
+    assert result["plan_seeded"] is False
 
     dossier = dossier_storage.get_dossier(result["dossier_id"])
     assert dossier is not None
@@ -196,8 +203,10 @@ def test_commit_with_non_list_plan_items_surfaces_error(fresh_db):
 
     result = commit_intake(intake_id, {"plan_items": "not a list"})
 
+    assert result["intake_session_id"] == intake_id
     assert "dossier_id" in result
     assert "plan_error" in result
+    assert result["plan_seeded"] is False
     dossier = dossier_storage.get_dossier(result["dossier_id"])
     assert dossier is not None
     assert dossier.investigation_plan is None
@@ -240,6 +249,9 @@ def test_commit_without_required_fields_still_errors(fresh_db):
     )
     assert "error" in result
     assert "missing" in result
+    # Missing-field errors echo the intake_session_id so the model has it
+    # in context; no dossier was created.
+    assert result["intake_session_id"] == session.id
     assert "dossier_id" not in result
 
 
@@ -261,6 +273,8 @@ def test_commit_is_idempotent_with_plan_args(fresh_db):
     assert len(first_plan.items) == 1
 
     # Second call: different plan args, but idempotent commit returns same id.
+    # plan_seeded=False on the re-commit because THIS call did not seed a plan
+    # (the first one did, but we don't overwrite on re-commit).
     second = commit_intake(
         intake_id,
         {
@@ -270,7 +284,11 @@ def test_commit_is_idempotent_with_plan_args(fresh_db):
             ],
         },
     )
-    assert second == {"dossier_id": dossier_id}
+    assert second == {
+        "intake_session_id": intake_id,
+        "dossier_id": dossier_id,
+        "plan_seeded": False,
+    }
 
     # Plan on disk must still be the first one — idempotent commit does not
     # overwrite.
