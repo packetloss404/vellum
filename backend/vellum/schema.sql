@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS dossiers (
     dossier_type TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
     check_in_policy TEXT NOT NULL DEFAULT '{"cadence":"on_demand","notes":""}',
+    debrief TEXT,
+    investigation_plan TEXT,
     last_visited_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -100,6 +102,19 @@ CREATE TABLE IF NOT EXISTS change_log (
     FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_change_log_dossier ON change_log(dossier_id, work_session_id, created_at);
+
+CREATE TABLE IF NOT EXISTS next_actions (
+    id TEXT PRIMARY KEY,
+    dossier_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    rationale TEXT NOT NULL DEFAULT '',
+    priority REAL NOT NULL,
+    completed INTEGER NOT NULL DEFAULT 0,
+    completed_at TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_next_actions_dossier ON next_actions(dossier_id, priority);
 
 CREATE TABLE IF NOT EXISTS intake_sessions (
     id TEXT PRIMARY KEY,
