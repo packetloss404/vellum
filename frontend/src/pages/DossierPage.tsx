@@ -6,6 +6,7 @@ import { RuledOutList } from "../components/sections/RuledOutList";
 import { ReasoningTrail } from "../components/sections/ReasoningTrail";
 import { NeedsInputBlock } from "../components/needs-input/NeedsInputBlock";
 import { DecisionPointBlock } from "../components/decision-points/DecisionPointBlock";
+import { PlanApprovalBlock } from "../components/plan-approval/PlanApprovalBlock";
 import { PlanDiffSidebar } from "../components/plan-diff/PlanDiffSidebar";
 import { Pill } from "../components/common/Pill";
 import { DossierHero } from "../components/common/DossierHero";
@@ -130,8 +131,17 @@ export default function DossierPage() {
   const openDecisions = (decision_points ?? []).filter(
     (d) => d.resolved_at == null,
   );
+  // A drafted-but-unapproved investigation_plan also counts as content —
+  // PlanApprovalBlock is on-page in that case, so suppress the "nothing
+  // written yet" empty state.
+  const hasPendingPlan =
+    !!dossier.investigation_plan &&
+    dossier.investigation_plan.approved_at == null;
   const isEmpty =
-    !hasSections && openNeeds.length === 0 && openDecisions.length === 0;
+    !hasSections &&
+    openNeeds.length === 0 &&
+    openDecisions.length === 0 &&
+    !hasPendingPlan;
 
   const typeLabel = dossier.dossier_type.replace(/_/g, " ");
   const cadenceLabel = dossier.check_in_policy?.cadence?.replace(/_/g, " ");
@@ -174,7 +184,13 @@ export default function DossierPage() {
           {/* NEEDS YOU — at the top, a single crisp amber block per open item. */}
           <NeedsInputBlock items={needs_input ?? []} dossierId={id} />
 
-          {/* DECIDE — decision points that the agent wants the user to resolve. */}
+          {/* APPROVE THE PLAN — Day-3 gate. Renders when the intake-seeded
+              investigation_plan is awaiting user approval. Null otherwise. */}
+          <PlanApprovalBlock dossier={data} />
+
+          {/* DECIDE — decision points that the agent wants the user to resolve.
+              The plan-approval decision is routed to PlanApprovalBlock above
+              and filtered out here. */}
           <DecisionPointBlock items={decision_points ?? []} dossierId={id} />
 
           {isEmpty ? (

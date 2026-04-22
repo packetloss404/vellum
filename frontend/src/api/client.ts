@@ -98,10 +98,15 @@ export const api = {
       { answer },
     ),
 
-  resolveDecisionPoint: (dossierId: string, dpId: string, chosen: string) =>
+  resolveDecisionPoint: (
+    dossierId: string,
+    dpId: string,
+    chosen: string,
+    workSessionId?: string,
+  ) =>
     request<DecisionPoint>(
       "POST",
-      `/api/dossiers/${dossierId}/decision-points/${dpId}/resolve`,
+      `/api/dossiers/${dossierId}/decision-points/${dpId}/resolve${qs({ work_session_id: workSessionId })}`,
       { chosen },
     ),
 
