@@ -227,14 +227,27 @@ def commit_intake(intake_id: str, args: dict[str, Any]) -> dict[str, Any]:
             return result
         try:
             items = [m.InvestigationPlanItem.model_validate(i) for i in plan_items_raw]
-            patch = m.InvestigationPlanUpdate(
-                items=items,
-                rationale=plan_rationale,
-                approve=False,
-            )
         except Exception as exc:  # pydantic ValidationError or TypeError
             result["plan_error"] = f"invalid plan: {type(exc).__name__}: {exc}"
             return result
+        # Intake-layer quality gate: rationale must be non-blank on every
+        # item. The model has `rationale: str = ""` as a schema default so
+        # a missing field would pass pydantic; we reject here so a plan
+        # with bland/blank rationale is surfaced to the agent as plan_error
+        # rather than silently seeded.
+        for idx, item in enumerate(items):
+            if not item.rationale.strip():
+                result["plan_error"] = (
+                    f"plan_items[{idx}] ({item.question[:60]!r}) has blank "
+                    "rationale; every item must include a one-sentence "
+                    "rationale."
+                )
+                return result
+        patch = m.InvestigationPlanUpdate(
+            items=items,
+            rationale=plan_rationale,
+            approve=False,
+        )
         dossier_storage.update_investigation_plan(dossier.id, patch)
         result["plan_seeded"] = True
         result["plan_item_count"] = len(items)

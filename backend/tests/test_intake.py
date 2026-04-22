@@ -14,6 +14,7 @@ from vellum import models as m
 from vellum import storage as dossier_storage
 from vellum.intake import storage as intake_storage
 from vellum.intake.models import IntakeState, IntakeStatus
+from vellum.intake.prompt import SYSTEM_PROMPT
 from vellum.intake.tools import HANDLERS, commit_intake, tool_schemas
 
 
@@ -253,6 +254,181 @@ def test_commit_without_required_fields_still_errors(fresh_db):
     # in context; no dossier was created.
     assert result["intake_session_id"] == session.id
     assert "dossier_id" not in result
+
+
+# ---------- day-5: plan quality bar ----------
+
+
+def test_commit_with_good_plan(fresh_db):
+    """Day-5 quality bar: a plan with 4 concrete investigable items + real
+    rationales + named source types seeds cleanly. All 4 items end up on the
+    dossier with rationale populated."""
+    intake_id = _populate_intake_fully()
+
+    plan_items = [
+        {
+            "question": (
+                "Under which state's law is heir liability assessed given "
+                "decedent's CA domicile and heir's AZ residence?"
+            ),
+            "rationale": (
+                "Heir liability rules differ sharply between CA (community "
+                "property) and AZ; the answer changes whether we negotiate at all."
+            ),
+            "as_sub_investigation": True,
+            "expected_sources": [
+                "CA Probate Code §13050",
+                "AZ Revised Statutes Title 14",
+                "state bar quickreference",
+            ],
+        },
+        {
+            "question": "Was probate opened, and what assets passed outside probate?",
+            "rationale": (
+                "Without an estate there's nothing to collect against; joint "
+                "accounts or beneficiary-designated assets may still be at risk."
+            ),
+            "as_sub_investigation": False,
+            "expected_sources": [
+                "county probate court records",
+                "bank-account POD/TOD documentation",
+            ],
+        },
+        {
+            "question": (
+                "Can we force debt validation under FDCPA §1692g before any "
+                "negotiation with the three creditors?"
+            ),
+            "rationale": (
+                "Validation demands freeze collector contact and force the "
+                "debt to be proven — essential footing before any settlement."
+            ),
+            "as_sub_investigation": False,
+            "expected_sources": [
+                "FDCPA §1692g text",
+                "CFPB validation-notice guidance",
+            ],
+        },
+        {
+            "question": (
+                "Do Chase, Capital One, and Discover have published "
+                "decedent-account handling policies that bind their behavior?"
+            ),
+            "rationale": (
+                "Creditor-specific policy shapes whether we get a clean "
+                "write-off or a hard-ball collections referral."
+            ),
+            "as_sub_investigation": True,
+            "expected_sources": [
+                "Chase published decedent-account policy",
+                "Capital One bereavement policy page",
+                "Discover cardmember agreement §death-of-cardholder",
+            ],
+        },
+    ]
+
+    result = commit_intake(
+        intake_id,
+        {
+            "plan_items": plan_items,
+            "plan_rationale": (
+                "Gate on jurisdiction and estate existence, then force "
+                "validation footing, then pin creditor-specific behavior."
+            ),
+        },
+    )
+
+    assert result["plan_seeded"] is True, result
+    assert result.get("plan_item_count") == 4
+    assert "plan_error" not in result
+
+    dossier = dossier_storage.get_dossier(result["dossier_id"])
+    assert dossier is not None
+    plan = dossier.investigation_plan
+    assert plan is not None
+    assert len(plan.items) == 4
+    # Every item has a real (non-blank) rationale.
+    for item in plan.items:
+        assert item.rationale.strip(), f"item {item.question!r} has blank rationale"
+    # The two flagged-as-sub items round-trip correctly.
+    sub_questions = [i for i in plan.items if i.as_sub_investigation]
+    assert len(sub_questions) == 2
+    # Rationale on the plan itself is the agent's shape-justification.
+    assert plan.rationale.startswith("Gate on jurisdiction")
+
+
+def test_commit_with_blank_rationale_rejected(fresh_db):
+    """Day-5: an item with a blank rationale is rejected at the intake layer.
+    The dossier still commits (plan seeding is best-effort), but the plan
+    is NOT seeded and plan_error names the offending item."""
+    intake_id = _populate_intake_fully()
+
+    plan_items = [
+        {
+            "question": "Does the FDCPA apply here?",
+            "rationale": "Gatekeeps collector contact.",
+            "expected_sources": ["FDCPA §1692g text"],
+        },
+        {
+            "question": "What's the statute of limitations in CA?",
+            "rationale": "",  # <-- blank; must be rejected
+            "expected_sources": ["CA Code of Civil Procedure §337"],
+        },
+    ]
+
+    result = commit_intake(
+        intake_id,
+        {"plan_items": plan_items, "plan_rationale": "test"},
+    )
+
+    # Dossier commits regardless — intake's contract is "get a dossier open".
+    assert result["intake_session_id"] == intake_id
+    assert "dossier_id" in result
+    assert result["plan_seeded"] is False
+    assert "plan_error" in result
+    # The error must name the field (rationale) so the agent can self-correct.
+    assert "rationale" in result["plan_error"].lower()
+
+    dossier = dossier_storage.get_dossier(result["dossier_id"])
+    assert dossier is not None
+    # Plan wasn't seeded — agent will draft one on first turn.
+    assert dossier.investigation_plan is None
+
+
+def test_intake_prompt_plan_quality_guidance(fresh_db):
+    """Day-5: the intake prompt must carry the quality bar guidance so the
+    agent knows what a good plan item looks like without having to learn
+    it from examples alone.
+
+    These are content assertions; they don't pin exact wording, just the
+    load-bearing phrases that signal the guidance exists.
+    """
+    lower = SYSTEM_PROMPT.lower()
+
+    # Plan items must be INVESTIGABLE (has a concrete answer).
+    assert "investigable" in lower, "prompt must teach the 'investigable' bar"
+
+    # Rationale is required and must be one sentence. The prompt may wrap
+    # the field name in backticks, so assert on a loose match.
+    import re
+    assert re.search(
+        r"rationale`*\s*must be\s+(one|exactly one)\s+sentence", lower
+    ), "prompt must teach the one-sentence rationale rule"
+
+    # At most ONE clarifier — not a questionnaire.
+    assert "at most one" in lower, "prompt must carry the one-clarifier rule"
+
+    # Concrete source-type guidance: examples of named sources + banned
+    # placeholders. A couple of named examples are enough to prove the
+    # guidance is present.
+    assert "fdcpa" in lower, "prompt should name concrete source examples"
+    # Vague-placeholder callout.
+    assert (
+        "\"the web\"" in lower or "the web" in lower
+    ), "prompt must call out 'the web' / generic placeholders as insufficient"
+
+
+# ---------- idempotency ----------
 
 
 def test_commit_is_idempotent_with_plan_args(fresh_db):
