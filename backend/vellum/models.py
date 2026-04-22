@@ -267,3 +267,13 @@ class RuledOutCreate(BaseModel):
 
 class WorkSessionStart(BaseModel):
     trigger: WorkSessionTrigger = WorkSessionTrigger.manual
+
+
+class MarkDeliveredArgs(BaseModel):
+    """Args for the `mark_investigation_delivered` agent tool.
+
+    `why_enough` is the self-justification the agent writes when it decides
+    an investigation has met the substance bar: what was covered, what was
+    explicitly left open, what the next real action is.
+    """
+    why_enough: str
