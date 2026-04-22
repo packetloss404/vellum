@@ -1,40 +1,23 @@
 import React from "react";
 import { Link } from "react-router-dom";
 import { Header } from "../components/layout/Header";
-import { Card } from "../components/common/Card";
-import { Pill } from "../components/common/Pill";
 import { EmptyState } from "../components/common/EmptyState";
+import { DossierCard } from "../components/dossier/DossierCard";
 import { useDossierList } from "../api/hooks";
-import { relativeTime } from "../utils/time";
 import { useDocumentTitle } from "../utils/useDocumentTitle";
-import type { Dossier, DossierStatus } from "../api/types";
 
 /**
  * DossierListPage — the landing view at "/".
  *
  * A quiet index of the user's dossiers: one line of encouragement, one
- * CTA to start a new one, and below it a stack of cards with the title,
- * a truncated problem_statement, and a terse metadata row. No nav chrome
- * beyond the Header. No spinners, no skeletons.
+ * CTA to start a new one, and below it a stack of DossierCards. Day 3
+ * is scaffold; day 4 polishes the presentation.
+ *
+ * Dossier counts (sections / sub-investigations / artifacts) are read
+ * from whatever the list endpoint returns. If the backend doesn't yet
+ * serialize them onto the row (reasonable — DossierFull is the richer
+ * payload), the card simply omits the counts chip.
  */
-
-const TRUNCATE_LIMIT = 180;
-
-function truncate(s: string, n: number): string {
-  if (!s) return "";
-  if (s.length <= n) return s;
-  // Trim to last word boundary under the limit so we don't break mid-word.
-  const sliced = s.slice(0, n);
-  const lastSpace = sliced.lastIndexOf(" ");
-  const clean = (lastSpace > 40 ? sliced.slice(0, lastSpace) : sliced).trimEnd();
-  return clean + "…";
-}
-
-function statusPillVariant(
-  status: string,
-): "default" | "accent" | "attention" {
-  return (status as DossierStatus) === "active" ? "accent" : "default";
-}
 
 function NewDossierButton({ className = "" }: { className?: string }) {
   return (
@@ -45,42 +28,49 @@ function NewDossierButton({ className = "" }: { className?: string }) {
         className
       }
     >
-      New dossier
+      Open a new dossier
     </Link>
   );
 }
 
-function DossierRow({ dossier }: { dossier: Dossier }) {
-  const preview = truncate(dossier.problem_statement ?? "", TRUNCATE_LIMIT);
-  const updated = relativeTime(dossier.updated_at);
-  const typeLabel = dossier.dossier_type.replace(/_/g, " ");
+// The backend Dossier row may carry counts on extra fields in the future.
+// Until then, we pick them off defensively so we don't add a `Dossier &
+// { counts?: ... }` type to the shared types file for a maybe-field.
+function extractCounts(
+  row: unknown,
+): { sections?: number; sub_investigations?: number; artifacts?: number } | undefined {
+  if (!row || typeof row !== "object") return undefined;
+  const r = row as Record<string, unknown>;
+  const maybeCounts =
+    (r.counts as Record<string, unknown> | undefined) ?? undefined;
+  const source = maybeCounts ?? r;
+  const sections =
+    typeof source.sections === "number"
+      ? source.sections
+      : typeof source.section_count === "number"
+      ? source.section_count
+      : undefined;
+  const subs =
+    typeof source.sub_investigations === "number"
+      ? source.sub_investigations
+      : typeof source.sub_investigation_count === "number"
+      ? source.sub_investigation_count
+      : undefined;
+  const artifacts =
+    typeof source.artifacts === "number"
+      ? source.artifacts
+      : typeof source.artifact_count === "number"
+      ? source.artifact_count
+      : undefined;
 
-  return (
-    <Link
-      to={`/dossiers/${dossier.id}`}
-      className="block group focus:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
-    >
-      <Card className="transition-colors group-hover:border-rule-strong">
-        <div className="text-xl font-serif text-ink group-hover:text-accent transition-colors">
-          {dossier.title}
-        </div>
-        {preview ? (
-          <p className="text-sm font-serif text-ink-muted mt-2 leading-relaxed">
-            {preview}
-          </p>
-        ) : null}
-        <div className="flex items-center gap-2 text-xs font-mono text-ink-faint mt-4">
-          <span className="lowercase tracking-wide">{typeLabel}</span>
-          <span aria-hidden="true">·</span>
-          <span>updated {updated}</span>
-          <span aria-hidden="true">·</span>
-          <Pill variant={statusPillVariant(dossier.status)}>
-            {dossier.status}
-          </Pill>
-        </div>
-      </Card>
-    </Link>
-  );
+  if (sections === undefined && subs === undefined && artifacts === undefined) {
+    return undefined;
+  }
+  return {
+    sections,
+    sub_investigations: subs,
+    artifacts,
+  };
 }
 
 export default function DossierListPage() {
@@ -108,7 +98,7 @@ export default function DossierListPage() {
         ) : !data || data.length === 0 ? (
           <EmptyState
             title="No dossiers yet."
-            hint="Start one to see it here."
+            hint="Open a new one to begin."
           >
             <NewDossierButton />
           </EmptyState>
@@ -120,7 +110,7 @@ export default function DossierListPage() {
             <ul className="space-y-6 list-none p-0 m-0">
               {data.map((d) => (
                 <li key={d.id}>
-                  <DossierRow dossier={d} />
+                  <DossierCard dossier={d} counts={extractCounts(d)} />
                 </li>
               ))}
             </ul>

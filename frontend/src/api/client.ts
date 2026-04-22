@@ -137,6 +137,23 @@ export const api = {
   agentStatus: (dossierId: string) =>
     request<AgentStatus>("GET", `/api/dossiers/${dossierId}/agent/status`),
 
+  // ---------- v2: Resume ----------
+  // Resume kicks the agent back on for an existing dossier. The backend
+  // route is being added by another agent in parallel; the detail page
+  // gracefully degrades (shows "Resume" unconditionally) if getResumeState
+  // 404s, so this call is tolerant of that transition.
+  resumeAgent: (dossierId: string) =>
+    request<unknown>("POST", `/api/dossiers/${dossierId}/resume`),
+
+  // Returns { active_work_session_id: string | null, ... }. If the
+  // endpoint doesn't exist yet (404) the caller will receive an ApiError
+  // and must degrade gracefully.
+  getResumeState: (dossierId: string) =>
+    request<{ active_work_session_id: string | null }>(
+      "GET",
+      `/api/dossiers/${dossierId}/resume-state`,
+    ),
+
   // ---------- v2: Artifacts ----------
   createArtifact: (
     dossierId: string,
