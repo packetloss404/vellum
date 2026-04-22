@@ -242,14 +242,10 @@ def test_sub_investigation_smoke(fresh_db):
         pytest.skip("storage.spawn/complete_sub_investigation not merged yet")
     from vellum.tools import handlers
     dossier_id = _make_dossier()
-    try:
-        spawn_args = m.SubInvestigationSpawn.model_validate({
-            "title": "CA statute of limitations",
-            "question": "Does CA SOL bar this collection?",
-            "rationale": "jurisdictional gate on the whole ask",
-        }).model_dump()
-    except Exception as e:
-        pytest.skip(f"SubInvestigationSpawn shape differs: {e}")
+    spawn_args = m.SubInvestigationSpawn.model_validate({
+        "scope": "CA statute of limitations — does SOL bar this collection?",
+        "questions": ["Does CA SOL bar this collection?"],
+    }).model_dump()
     out = handlers.spawn_sub_investigation(dossier_id, spawn_args)
     assert "sub_investigation_id" in out
     assert out["state"] == "running"
