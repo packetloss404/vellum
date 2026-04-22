@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from .. import models as m
 from .. import storage
+from ..agent import telemetry
 
 router = APIRouter(prefix="/api")
 
@@ -475,3 +476,14 @@ def add_considered_and_rejected(
 )
 def list_considered_and_rejected(dossier_id: str) -> list[m.ConsideredAndRejected]:
     return storage.list_considered_and_rejected(dossier_id)
+
+
+# ---------- telemetry / stats ----------
+
+
+@router.get("/work-sessions/{session_id}/stats")
+def work_session_stats(session_id: str) -> dict:
+    stats = telemetry.session_stats(session_id)
+    if stats is None:
+        raise HTTPException(404, "work_session not found")
+    return stats

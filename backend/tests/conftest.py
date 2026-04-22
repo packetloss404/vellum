@@ -24,15 +24,12 @@ def fresh_db(monkeypatch):
     the env var (for any late-reading code) and ``vellum.config.DB_PATH``
     directly (since config already read the env var on first import).
     """
-    # Isolate sqlite files across tests — temp dir + pid + uuid avoids collisions
-    # if pytest runs in parallel or a previous run left WAL sidecar files.
     tmpdir = Path(tempfile.gettempdir()) / "vellum_tests"
     tmpdir.mkdir(parents=True, exist_ok=True)
     db_path = tmpdir / f"test_{os.getpid()}_{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}.db"
 
     monkeypatch.setenv("VELLUM_DB_PATH", str(db_path))
 
-    # Late import so we don't cache at collection time.
     from vellum import config as _config
     from vellum import db as _db
 
@@ -41,7 +38,6 @@ def fresh_db(monkeypatch):
 
     yield db_path
 
-    # Best-effort cleanup — WAL/SHM sidecars tag along.
     for suffix in ("", "-wal", "-shm", "-journal"):
         p = Path(str(db_path) + suffix)
         try:
