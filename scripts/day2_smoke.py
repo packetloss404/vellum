@@ -43,6 +43,32 @@ From the repo root, with the backend venv active::
         --problem "Your own hard problem here" --max-turns 100
     ./backend/.venv/Scripts/python.exe scripts/day2_smoke.py \
         --dossier-id dos_abc123  # resume an existing dossier
+    ./backend/.venv/Scripts/python.exe scripts/day2_smoke.py --auto-resolve
+
+--auto-resolve
+--------------
+The agent typically stalls after drafting a plan and flagging needs_input
+(the plan-approval decision point is a hard gate; missing facts block
+sub-investigations). ``--auto-resolve`` simulates a user for the canned
+credit-card-debt demo problem:
+
+  - auto-approves any unresolved plan_approval decision points ("Approve",
+    which flips ``plan.approved_at`` via the storage auto-approve hook);
+  - answers any unresolved needs_input questions whose text matches a set
+    of keyword heuristics, using canned facts tuned to the demo problem
+    (state of decedent, estate status, account relationship, prior
+    creditor contact, amounts/creditors, who is asking).
+
+After each resolve round the orchestrator is kicked again. The loop caps
+at 3 iterations; if the agent keeps surfacing unresolved questions the
+harness can't answer, the loop exits and the digest reports whatever
+state was reached.
+
+WARNING: the canned matchers are tuned for the credit-card-debt demo
+problem. On other problems, keyword matches will typically not fire and
+the loop will stall after the first agent turn. Use ``--auto-resolve``
+only against the demo problem (or problems you've extended the matcher
+for).
 
 Digest semantics
 ----------------
@@ -324,6 +350,19 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default="Credit card debt negotiation - deceased parent, no estate",
         help="Title for a newly-created dossier.",
     )
+    ap.add_argument(
+        "--auto-resolve",
+        action="store_true",
+        default=False,
+        help=(
+            "After each agent turn ends waiting on the user, auto-approve "
+            "plan-approval decision points and answer needs_input with a "
+            "canned set of facts tuned to the credit-card-debt demo problem, "
+            "then kick the agent again. Caps at 3 rounds. On non-demo "
+            "problems the canned matchers will likely not fire and the "
+            "loop will stall after the first agent turn."
+        ),
+    )
     return ap.parse_args(argv)
 
 
@@ -435,6 +474,198 @@ async def _run_agent(
     return {"reason": "unknown", "result": repr(result)}
 
 
+# ---------- auto-resolve (simulated user) ----------
+
+
+# Canned facts for the credit-card-debt demo problem. Each entry is a short
+# natural-language answer that will be returned when a needs_input question's
+# lowercased text contains one of the listed keywords. A single question may
+# match multiple categories, in which case the fragments are concatenated.
+_AUTO_ANSWER_RULES: list[tuple[tuple[str, ...], str]] = [
+    (
+        ("state", "jurisdiction", "domicile"),
+        (
+            "Decedent was domiciled in Arizona. The heir (my friend) lives "
+            "in California. Decedent was unmarried at time of death."
+        ),
+    ),
+    (
+        ("estate", "probate", "assets"),
+        (
+            "No probate has been opened. The decedent had no titled assets "
+            "(no house, no car in her name). Cash balances in a single "
+            "checking account (~$2,400) passed to my friend as joint owner "
+            "outside probate."
+        ),
+    ),
+    (
+        (
+            "cosigner", "co-signer", "joint", "authorized user",
+            "account holder", "relationship",
+        ),
+        (
+            "My friend is not a co-signer or authorized user on any of the "
+            "three credit card accounts. The accounts were solely in the "
+            "decedent's name."
+        ),
+    ),
+    (
+        ("contact", "collector", "called", "calls", "spoken", "talked", "engagement"),
+        (
+            "Two calls from a Capital One collections rep, to my friend "
+            "personally. No payments made. Nothing in writing. No verbal "
+            "acknowledgment of the debt."
+        ),
+    ),
+    (
+        (
+            "amount", "balance", "creditor", "which", "three accounts",
+            "chase", "capital one", "discover",
+        ),
+        (
+            "Chase ~$8k, Capital One ~$7k, Discover ~$3k. All accounts were "
+            "active in the month before death. No payments since the last "
+            "statement prior to death (~2 months ago)."
+        ),
+    ),
+    (
+        ("who", "yourself", "your friend", "asking"),
+        (
+            "I'm asking on behalf of my friend. My friend wants to understand "
+            "their legal exposure first, and only then consider negotiation "
+            "if there is any exposure at all."
+        ),
+    ),
+]
+
+
+def _pick_auto_answer(question_text: str) -> Optional[str]:
+    """Return a canned answer for a needs_input question, or None.
+
+    Substring match on the lowercased question text. If multiple categories
+    match, the canned fragments are concatenated (whitespace-separated) so
+    a compound question like "What state? Was probate opened?" picks up
+    both the jurisdictional and estate fragments.
+    """
+    if not question_text:
+        return None
+    lc = question_text.lower()
+    matched: list[str] = []
+    for keywords, answer in _AUTO_ANSWER_RULES:
+        for kw in keywords:
+            if kw in lc:
+                if answer not in matched:
+                    matched.append(answer)
+                break
+    if not matched:
+        return None
+    return " ".join(matched)
+
+
+_PLAN_APPROVAL_TITLE_PATTERNS = ("approve plan", "approve the plan", "plan approval")
+
+
+def _title_matches_plan_approval(title: str) -> bool:
+    """Fallback heuristic: if ``kind`` isn't set but the title looks like
+    a plan-approval ask, treat it as one. Defensive - all new DPs should
+    carry ``kind`` today, but storage/back-compat DPs might not.
+    """
+    if not title:
+        return False
+    lc = title.lower()
+    return any(p in lc for p in _PLAN_APPROVAL_TITLE_PATTERNS)
+
+
+def _auto_resolve_round(
+    dossier_id: str,
+    work_session_id: Optional[str] = None,
+) -> tuple[int, int, int]:
+    """Resolve all resolvable plan-approval DPs and needs_input in one pass.
+
+    Returns ``(dps_resolved, ni_resolved, ni_skipped)``. A skipped ni is one
+    we couldn't find a canned answer for - the caller should treat any
+    ``ni_skipped > 0`` and ``dps_resolved == 0 and ni_resolved == 0`` as
+    ``nothing could be resolved``.
+    """
+    from vellum import storage
+
+    dps_resolved = 0
+    ni_resolved = 0
+    ni_skipped = 0
+
+    for dp in storage.list_decision_points(dossier_id, open_only=True):
+        if dp.kind == "plan_approval" or _title_matches_plan_approval(dp.title):
+            storage.resolve_decision_point(
+                dossier_id, dp.id, chosen="Approve",
+                work_session_id=work_session_id,
+            )
+            dps_resolved += 1
+
+    for ni in storage.list_needs_input(dossier_id, open_only=True):
+        answer = _pick_auto_answer(ni.question)
+        if answer is None:
+            ni_skipped += 1
+            continue
+        storage.resolve_needs_input(
+            dossier_id, ni.id, answer=answer,
+            work_session_id=work_session_id,
+        )
+        ni_resolved += 1
+
+    return dps_resolved, ni_resolved, ni_skipped
+
+
+async def _auto_resolve_loop(
+    dossier_id: str,
+    max_turns: int,
+    model: Optional[str],
+    max_rounds: int = 3,
+) -> dict:
+    """Drive plan-approve + needs_input-answer rounds, kicking the agent
+    between each. Returns the final run_result dict.
+
+    Terminates when:
+      - the agent ends with a reason other than ``ended_turn`` (stuck,
+        delivered, turn_limit, error), OR
+      - a resolve round finds nothing to resolve, OR
+      - ``max_rounds`` iterations have elapsed.
+    """
+    rounds = 0
+    last_result: dict = {"reason": "error", "turns": 0, "session_id": ""}
+    while rounds < max_rounds:
+        rounds += 1
+        dps, nis, skipped = _auto_resolve_round(dossier_id)
+        print(
+            f"[day2-smoke] auto-resolve round {rounds}: "
+            f"plan_dps={dps} needs_input_answered={nis} "
+            f"needs_input_skipped={skipped}",
+            flush=True,
+        )
+        if dps == 0 and nis == 0:
+            # Nothing we could simulate. Give up and let the digest
+            # report whatever state the dossier is in.
+            print(
+                "[day2-smoke] auto-resolve: nothing to resolve - stopping.",
+                flush=True,
+            )
+            break
+        # Kick the agent again.
+        last_result = await _run_agent(dossier_id, max_turns, model)
+        if last_result.get("reason") != "ended_turn":
+            print(
+                f"[day2-smoke] auto-resolve: agent finished with reason="
+                f"{last_result.get('reason')} - stopping.",
+                flush=True,
+            )
+            return last_result
+    if rounds >= max_rounds:
+        print(
+            f"[day2-smoke] auto-resolve: hit max_rounds={max_rounds} cap.",
+            flush=True,
+        )
+    return last_result
+
+
 # ---------- main ----------
 
 
@@ -501,9 +732,30 @@ async def _amain(args: argparse.Namespace) -> int:
 
     run_result: dict = {"reason": "error"}
     try:
-        run_result = await run_task
-    except asyncio.CancelledError:
-        run_result = {"reason": "cancelled"}
+        try:
+            run_result = await run_task
+        except asyncio.CancelledError:
+            run_result = {"reason": "cancelled"}
+
+        # --auto-resolve: if the agent ended a turn still waiting on the
+        # user, simulate a user for the canned demo problem and kick the
+        # agent again, up to 3 rounds. Only runs if the initial run didn't
+        # already finish with a terminal reason and wasn't user-cancelled.
+        if (
+            getattr(args, "auto_resolve", False)
+            and not cancelled_by_user["flag"]
+            and run_result.get("reason") == "ended_turn"
+        ):
+            try:
+                resolved = await _auto_resolve_loop(
+                    dossier_id, args.max_turns, args.model, max_rounds=3,
+                )
+            except asyncio.CancelledError:
+                resolved = {"reason": "cancelled"}
+            # Keep the resolved result if auto-resolve did any work;
+            # otherwise fall back to the original run_result.
+            if resolved and resolved.get("reason"):
+                run_result = resolved
     finally:
         stop_event.set()
         try:
