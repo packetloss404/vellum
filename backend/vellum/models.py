@@ -220,6 +220,9 @@ ChangeKind = Literal[
     "next_action_removed",
     "artifact_added",
     "artifact_updated",
+    "sub_investigation_spawned",
+    "sub_investigation_completed",
+    "sub_investigation_abandoned",
 ]
 
 
@@ -244,6 +247,7 @@ class DossierFull(BaseModel):
     work_sessions: list[WorkSession] = Field(default_factory=list)
     next_actions: list[NextAction] = Field(default_factory=list)
     artifacts: list["Artifact"] = Field(default_factory=list)
+    sub_investigations: list["SubInvestigation"] = Field(default_factory=list)
 
 
 # --- API request shapes ---
@@ -386,6 +390,47 @@ class ArtifactUpdate(BaseModel):
     intended_use: Optional[str] = None
     state: Optional[ArtifactState] = None
     change_note: str   # required — shown in plan-diff sidebar
+
+
+# --- SubInvestigations ---
+
+
+class SubInvestigationState(str, Enum):
+    running = "running"
+    delivered = "delivered"
+    blocked = "blocked"
+    abandoned = "abandoned"
+
+
+class SubInvestigation(BaseModel):
+    id: str                               # prefix: "sub"
+    dossier_id: str
+    parent_section_id: Optional[str] = None    # optional link to a parent dossier section
+    scope: str                            # short scope statement
+    questions: list[str] = Field(default_factory=list)
+    state: SubInvestigationState = SubInvestigationState.running
+    return_summary: Optional[str] = None  # populated on complete
+    findings_section_ids: list[str] = Field(default_factory=list)  # sections produced by sub
+    findings_artifact_ids: list[str] = Field(default_factory=list) # artifacts produced by sub
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+
+
+class SubInvestigationSpawn(BaseModel):
+    scope: str
+    questions: list[str] = Field(default_factory=list)
+    parent_section_id: Optional[str] = None
+
+
+class SubInvestigationComplete(BaseModel):
+    return_summary: str
+    findings_section_ids: list[str] = Field(default_factory=list)
+    findings_artifact_ids: list[str] = Field(default_factory=list)
+
+
+class SubInvestigationStateUpdate(BaseModel):
+    new_state: SubInvestigationState  # typically `blocked`
+    reason: str
 
 
 DossierFull.model_rebuild()

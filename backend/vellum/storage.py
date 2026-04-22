@@ -306,6 +306,7 @@ def get_dossier_full(dossier_id: str) -> Optional[m.DossierFull]:
         work_sessions=list_work_sessions(dossier_id),
         next_actions=list_next_actions(dossier_id),
         artifacts=list_artifacts(dossier_id),
+        sub_investigations=list_sub_investigations(dossier_id),
     )
 
 
@@ -1080,6 +1081,7 @@ def list_change_log_since_last_visit(dossier_id: str) -> list[m.ChangeLogEntry]:
     return [_row_to_change(r) for r in rows]
 
 
+
 # ---------- Artifacts ----------
 
 
@@ -1209,12 +1211,189 @@ def delete_artifact(
             "SELECT * FROM artifacts WHERE id = ? AND dossier_id = ?",
             (artifact_id, dossier_id),
         ).fetchone()
-        if not existing:
-            return False
-        conn.execute("DELETE FROM artifacts WHERE id = ?", (artifact_id,))
+
+
+# ---------- SubInvestigations ----------
+
+
+def _row_to_sub_investigation(row: sqlite3.Row) -> m.SubInvestigation:
+    return m.SubInvestigation(
+        id=row["id"],
+        dossier_id=row["dossier_id"],
+        parent_section_id=row["parent_section_id"],
+        scope=row["scope"],
+        questions=_json_list(row["questions"]),
+        state=m.SubInvestigationState(row["state"]),
+        return_summary=row["return_summary"],
+        findings_section_ids=_json_list(row["findings_section_ids"]),
+        findings_artifact_ids=_json_list(row["findings_artifact_ids"]),
+        started_at=_dt(row["started_at"]),
+        completed_at=_dt(row["completed_at"]),
+    )
+
+
+def spawn_sub_investigation(
+    dossier_id: str,
+    data: m.SubInvestigationSpawn,
+    work_session_id: Optional[str] = None,
+) -> m.SubInvestigation:
+    now = m.utc_now()
+    sub = m.SubInvestigation(
+        id=m.new_id("sub"),
+        dossier_id=dossier_id,
+        parent_section_id=data.parent_section_id,
+        scope=data.scope,
+        questions=data.questions,
+        state=m.SubInvestigationState.running,
+        started_at=now,
+    )
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO sub_investigations (id, dossier_id, parent_section_id, scope, questions,
+                                            state, return_summary, findings_section_ids,
+                                            findings_artifact_ids, started_at, completed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sub.id,
+                dossier_id,
+                sub.parent_section_id,
+                sub.scope,
+                json.dumps(sub.questions),
+                sub.state.value,
+                sub.return_summary,
+                json.dumps(sub.findings_section_ids),
+                json.dumps(sub.findings_artifact_ids),
+                _dt_str(sub.started_at),
+                None,
+            ),
+        )
         _log_change(
-            conn, dossier_id, work_session_id, "artifact_updated",
-            f"Deleted artifact: {existing['title']}",
+            conn, dossier_id, work_session_id, "sub_investigation_spawned",
+            f"Spawned sub-investigation: {sub.scope}",
         )
         _touch_dossier(conn, dossier_id)
-    return True
+    return sub
+
+
+def get_sub_investigation(sub_id: str) -> Optional[m.SubInvestigation]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM sub_investigations WHERE id = ?", (sub_id,)
+        ).fetchone()
+    return _row_to_sub_investigation(row) if row else None
+
+
+def list_sub_investigations(
+    dossier_id: str,
+    state: Optional[m.SubInvestigationState] = None,
+) -> list[m.SubInvestigation]:
+    q = "SELECT * FROM sub_investigations WHERE dossier_id = ?"
+    params: list[object] = [dossier_id]
+    if state is not None:
+        q += " AND state = ?"
+        params.append(state.value)
+    q += " ORDER BY started_at"
+    with connect() as conn:
+        rows = conn.execute(q, params).fetchall()
+    return [_row_to_sub_investigation(r) for r in rows]
+
+
+def update_sub_investigation_state(
+    dossier_id: str,
+    sub_id: str,
+    patch: m.SubInvestigationStateUpdate,
+    work_session_id: Optional[str] = None,
+) -> Optional[m.SubInvestigation]:
+    with connect() as conn:
+        existing = conn.execute(
+            "SELECT * FROM sub_investigations WHERE id = ? AND dossier_id = ?",
+            (sub_id, dossier_id),
+        ).fetchone()
+        if not existing:
+            return None
+        conn.execute(
+            "UPDATE sub_investigations SET state = ? WHERE id = ?",
+            (patch.new_state.value, sub_id),
+        )
+        _log_change(
+            conn, dossier_id, work_session_id, "state_changed",
+            f"sub-investigation '{existing['scope']}': "
+            f"{existing['state']} → {patch.new_state.value} ({patch.reason})",
+        )
+        _touch_dossier(conn, dossier_id)
+        row = conn.execute(
+            "SELECT * FROM sub_investigations WHERE id = ?", (sub_id,)
+        ).fetchone()
+    return _row_to_sub_investigation(row)
+
+
+def complete_sub_investigation(
+    dossier_id: str,
+    sub_id: str,
+    data: m.SubInvestigationComplete,
+    work_session_id: Optional[str] = None,
+) -> Optional[m.SubInvestigation]:
+    now_s = _dt_str(m.utc_now())
+    with connect() as conn:
+        existing = conn.execute(
+            "SELECT * FROM sub_investigations WHERE id = ? AND dossier_id = ?",
+            (sub_id, dossier_id),
+        ).fetchone()
+        if not existing:
+            return None
+        conn.execute(
+            """
+            UPDATE sub_investigations
+            SET state = ?, return_summary = ?, findings_section_ids = ?,
+                findings_artifact_ids = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (
+                m.SubInvestigationState.delivered.value,
+                data.return_summary,
+                json.dumps(data.findings_section_ids),
+                json.dumps(data.findings_artifact_ids),
+                now_s,
+                sub_id,
+            ),
+        )
+        _log_change(
+            conn, dossier_id, work_session_id, "sub_investigation_completed",
+            f"Completed sub-investigation '{existing['scope']}': {data.return_summary}",
+        )
+        _touch_dossier(conn, dossier_id)
+        row = conn.execute(
+            "SELECT * FROM sub_investigations WHERE id = ?", (sub_id,)
+        ).fetchone()
+    return _row_to_sub_investigation(row)
+
+
+def abandon_sub_investigation(
+    dossier_id: str,
+    sub_id: str,
+    reason: str,
+    work_session_id: Optional[str] = None,
+) -> Optional[m.SubInvestigation]:
+    now_s = _dt_str(m.utc_now())
+    with connect() as conn:
+        existing = conn.execute(
+            "SELECT * FROM sub_investigations WHERE id = ? AND dossier_id = ?",
+            (sub_id, dossier_id),
+        ).fetchone()
+        if not existing:
+            return None
+        conn.execute(
+            "UPDATE sub_investigations SET state = ?, completed_at = ? WHERE id = ?",
+            (m.SubInvestigationState.abandoned.value, now_s, sub_id),
+        )
+        _log_change(
+            conn, dossier_id, work_session_id, "sub_investigation_abandoned",
+            f"Abandoned sub-investigation '{existing['scope']}': {reason}",
+        )
+        _touch_dossier(conn, dossier_id)
+        row = conn.execute(
+            "SELECT * FROM sub_investigations WHERE id = ?", (sub_id,)
+        ).fetchone()
+    return _row_to_sub_investigation(row)
