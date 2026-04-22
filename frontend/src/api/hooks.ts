@@ -196,6 +196,39 @@ export function useStopAgent() {
   });
 }
 
+// ---------- v2: Resume ----------
+
+/**
+ * useResumeState — lightweight probe used by the dossier detail page to
+ * decide whether to show a "Resume" CTA. The underlying endpoint is being
+ * added by another agent; until it lands, the query will 404 and the
+ * caller should treat that as "unknown" and show the CTA unconditionally.
+ * `retry: false` keeps us from hammering the missing route.
+ */
+export const useResumeState = (dossierId: string) =>
+  useQuery({
+    queryKey: ["dossier", dossierId, "resume-state"] as const,
+    queryFn: () => api.getResumeState(dossierId),
+    enabled: !!dossierId,
+    retry: false,
+  });
+
+export function useResumeAgent() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (dossierId: string) => api.resumeAgent(dossierId),
+    onSuccess: (_data, dossierId) => {
+      qc.invalidateQueries({
+        queryKey: ["dossier", dossierId, "agent-status"],
+      });
+      qc.invalidateQueries({
+        queryKey: ["dossier", dossierId, "resume-state"],
+      });
+      qc.invalidateQueries({ queryKey: qk.dossier(dossierId) });
+    },
+  });
+}
+
 // ---------- v2 read hooks ----------
 
 export const useArtifacts = (dossierId: string) =>

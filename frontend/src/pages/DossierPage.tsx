@@ -1,34 +1,40 @@
 import React, { useEffect, useRef } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Header } from "../components/layout/Header";
-import { SectionsList } from "../components/sections/SectionsList";
-import { RuledOutList } from "../components/sections/RuledOutList";
-import { ReasoningTrail } from "../components/sections/ReasoningTrail";
 import { NeedsInputBlock } from "../components/needs-input/NeedsInputBlock";
 import { DecisionPointBlock } from "../components/decision-points/DecisionPointBlock";
-import { PlanDiffSidebar } from "../components/plan-diff/PlanDiffSidebar";
 import { Pill } from "../components/common/Pill";
 import { DossierHero } from "../components/common/DossierHero";
-import { EmptyState } from "../components/common/EmptyState";
+import { DebriefBlock } from "../components/dossier/DebriefBlock";
+import { PlanBlock } from "../components/dossier/PlanBlock";
+import { SectionList } from "../components/dossier/SectionList";
+import { SubInvestigationList } from "../components/dossier/SubInvestigationList";
+import { ArtifactList } from "../components/dossier/ArtifactList";
+import { ConsideredRejectedList } from "../components/dossier/ConsideredRejectedList";
+import { NextActionsList } from "../components/dossier/NextActionsList";
+import { InvestigationLogSidebar } from "../components/dossier/InvestigationLogSidebar";
 import {
-  useAgentStatus,
   useDossier,
-  useStartAgent,
+  useResumeAgent,
+  useResumeState,
+  useVisitDossier,
 } from "../api/hooks";
 import { relativeTime } from "../utils/time";
 import { useDocumentTitle } from "../utils/useDocumentTitle";
 import type { DossierStatus } from "../api/types";
 
 /**
- * DossierPage — the hero view at /dossiers/:id.
+ * DossierPage — the read-only hero view at /dossiers/:id. Day 3 scaffold.
  *
- * The dossier IS the page. A wide left column for the document (title,
- * needs_input, decision_points, sections, ruled out) and a narrow right
- * column for the "since yesterday" plan-diff sidebar. No nav chrome.
+ * The dossier IS the page. Blocks render top-to-bottom in the left column
+ * (debrief, plan, needs_input, decision_points, sections, sub_investigations,
+ * artifacts, considered_and_rejected, next_actions). The right column is
+ * the investigation-log sidebar.
  *
- * Loading and error states render in the main content area, below the
- * Header — we keep the Header default-mode in those states since we
- * don't yet know the dossier title.
+ * We POST /visit once per mount (abort-guarded) to reset the "since last
+ * visit" window. A prominent "Resume" button appears top-right when the
+ * resume-state endpoint says there's no active session; if that endpoint
+ * isn't live yet we degrade to showing Resume unconditionally.
  */
 
 function statusPillVariant(
@@ -49,35 +55,23 @@ function CenteredMessage({ children }: { children: React.ReactNode }) {
 
 export default function DossierPage() {
   const { id } = useParams<{ id: string }>();
-  const { data, isLoading, error } = useDossier(id ?? "");
-  const agentStatus = useAgentStatus(id ?? "");
-  const startAgent = useStartAgent();
+  const dossierId = id ?? "";
+  const { data, isLoading, error } = useDossier(dossierId);
+  const resumeState = useResumeState(dossierId);
+  const resumeAgent = useResumeAgent();
+  const visit = useVisitDossier();
   useDocumentTitle(data?.dossier ? `${data.dossier.title} · Vellum` : "Vellum");
 
-  // Auto-resume the agent when the user opens an active dossier that has
-  // no in-flight session. Matches the product story: the dossier is a
-  // destination, and arriving at it should trigger fresh thinking. Fires
-  // at most once per mount (the ref guard prevents a retry loop even if
-  // agentStatus reports not-running again after the mutation error-recovers).
-  const autoStartedRef = useRef(false);
-  const dossierStatus = data?.dossier?.status;
-  const agentRunning = agentStatus.data?.running;
+  // POST /visit once per mount. A ref guards against StrictMode double-fire
+  // and against the visit mutation resolving after the component unmounts.
+  const visitedRef = useRef(false);
   useEffect(() => {
-    if (autoStartedRef.current) return;
-    if (!id) return;
-    if (dossierStatus !== "active") return;
-    if (agentStatus.data === undefined) return; // wait for first status
-    if (agentRunning) return;
-    if (startAgent.isPending) return;
-    autoStartedRef.current = true;
-    startAgent.mutate({ dossierId: id });
-  }, [
-    id,
-    dossierStatus,
-    agentRunning,
-    agentStatus.data,
-    startAgent,
-  ]);
+    if (!dossierId) return;
+    if (visitedRef.current) return;
+    visitedRef.current = true;
+    visit.mutate(dossierId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dossierId]);
 
   if (!id) {
     return (
@@ -121,20 +115,33 @@ export default function DossierPage() {
     sections,
     needs_input,
     decision_points,
-    ruled_out,
-    reasoning_trail,
+    artifacts,
+    sub_investigations,
+    considered_and_rejected,
+    next_actions,
   } = data;
 
-  const hasSections = sections && sections.length > 0;
-  const openNeeds = (needs_input ?? []).filter((n) => n.answered_at == null);
-  const openDecisions = (decision_points ?? []).filter(
-    (d) => d.resolved_at == null,
-  );
-  const isEmpty =
-    !hasSections && openNeeds.length === 0 && openDecisions.length === 0;
+  // Filter out plan_approval decision points — those are owned by the
+  // plan-approval component (mounted inside PlanBlock via data-slot).
+  // We match on title prefix defensively since `kind` isn't a field on
+  // DecisionPoint; the intake/agent conventionally prefixes these.
+  const visibleDecisionPoints = (decision_points ?? []).filter((dp) => {
+    const t = (dp.title ?? "").toLowerCase();
+    return !t.startsWith("approve plan") && !t.includes("plan approval");
+  });
 
   const typeLabel = dossier.dossier_type.replace(/_/g, " ");
   const cadenceLabel = dossier.check_in_policy?.cadence?.replace(/_/g, " ");
+
+  // Resume CTA — show when:
+  //   - dossier is not delivered, AND
+  //   - resume-state says there's no active session, OR the endpoint 404s
+  //     (another agent is adding it; graceful degrade = show CTA).
+  const isDelivered = dossier.status === "delivered";
+  const resumeStateKnown = resumeState.data !== undefined;
+  const hasActiveSession =
+    resumeStateKnown && !!resumeState.data?.active_work_session_id;
+  const showResume = !isDelivered && !hasActiveSession;
 
   return (
     <div className="min-h-screen bg-paper">
@@ -148,57 +155,72 @@ export default function DossierPage() {
 
       <main className="mx-auto max-w-page px-6 py-10 grid grid-cols-1 md:grid-cols-[1fr_320px] gap-12">
         <div className="space-y-10 max-w-prose min-w-0">
-          {/* TITLE — page-lead block, distinct from the header's compact title. */}
-          <DossierHero
-            title={dossier.title}
-            subtitle={dossier.problem_statement ?? undefined}
-            meta={
-              <>
-                <span className="lowercase tracking-wide">{typeLabel}</span>
-                <span aria-hidden="true">·</span>
-                <Pill variant={statusPillVariant(dossier.status)}>
-                  {dossier.status}
-                </Pill>
-                <span aria-hidden="true">·</span>
-                <span>created {relativeTime(dossier.created_at)}</span>
-                {cadenceLabel ? (
+          {/* TITLE + meta + Resume CTA. Flex row so the CTA anchors top-right. */}
+          <div className="flex items-start justify-between gap-6">
+            <div className="min-w-0 flex-1">
+              <DossierHero
+                title={dossier.title}
+                subtitle={dossier.problem_statement ?? undefined}
+                meta={
                   <>
+                    <span className="lowercase tracking-wide">{typeLabel}</span>
                     <span aria-hidden="true">·</span>
-                    <span>check-in: {cadenceLabel}</span>
+                    <Pill variant={statusPillVariant(dossier.status)}>
+                      {dossier.status}
+                    </Pill>
+                    <span aria-hidden="true">·</span>
+                    <span>created {relativeTime(dossier.created_at)}</span>
+                    {cadenceLabel ? (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span>check-in: {cadenceLabel}</span>
+                      </>
+                    ) : null}
                   </>
-                ) : null}
-              </>
-            }
+                }
+              />
+            </div>
+            {showResume ? (
+              <button
+                type="button"
+                onClick={() => resumeAgent.mutate(dossierId)}
+                disabled={resumeAgent.isPending}
+                className="shrink-0 bg-accent text-paper px-4 py-2 font-sans text-sm rounded hover:bg-accent-hover transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {resumeAgent.isPending ? "Resuming…" : "Resume"}
+              </button>
+            ) : null}
+          </div>
+
+          {/* Debrief — only renders if populated. */}
+          <DebriefBlock debrief={dossier.debrief} />
+
+          {/* Plan — renders placeholder slot for plan-approval when unapproved. */}
+          <PlanBlock plan={dossier.investigation_plan} />
+
+          {/* NEEDS YOU — open needs_input items. */}
+          <NeedsInputBlock items={needs_input ?? []} dossierId={dossierId} />
+
+          {/* DECIDE — decision_points, excluding plan_approval (owned elsewhere). */}
+          <DecisionPointBlock
+            items={visibleDecisionPoints}
+            dossierId={dossierId}
           />
 
-          {/* NEEDS YOU — at the top, a single crisp amber block per open item. */}
-          <NeedsInputBlock items={needs_input ?? []} dossierId={id} />
+          {/* Main document body. */}
+          <SectionList sections={sections ?? []} />
 
-          {/* DECIDE — decision points that the agent wants the user to resolve. */}
-          <DecisionPointBlock items={decision_points ?? []} dossierId={id} />
+          <SubInvestigationList subs={sub_investigations ?? []} />
 
-          {isEmpty ? (
-            <EmptyState
-              title="Nothing written yet."
-              hint="The agent is still thinking."
-            />
-          ) : (
-            <>
-              {/* Main document body. */}
-              {hasSections ? <SectionsList sections={sections} /> : null}
+          <ArtifactList artifacts={artifacts ?? []} />
 
-              {/* Ruled-out ledger, collapsible; renders nothing if empty. */}
-              <RuledOutList ruledOut={ruled_out ?? []} />
+          <ConsideredRejectedList items={considered_and_rejected ?? []} />
 
-              {/* Reasoning trail — "show your work." Collapsed by default. */}
-              <ReasoningTrail entries={reasoning_trail ?? []} />
-            </>
-          )}
+          <NextActionsList items={next_actions ?? []} />
         </div>
 
-        {/* Sidebar: PlanDiffSidebar renders its own <aside> with sticky. */}
         <div className="min-w-0">
-          <PlanDiffSidebar dossierId={id} />
+          <InvestigationLogSidebar dossierId={dossierId} />
         </div>
       </main>
     </div>
