@@ -120,3 +120,36 @@ CREATE TABLE IF NOT EXISTS intake_messages (
     FOREIGN KEY (intake_id) REFERENCES intake_sessions(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_intake_messages_intake ON intake_messages(intake_id, created_at);
+
+-- v2: typed, append-only log of everything the agent did (the "47 sources consulted"
+-- evidence-of-work counter). Separate from reasoning_trail (freeform narrative notes)
+-- and change_log (user-visit-diff surface). This is the count-of-work surface.
+CREATE TABLE IF NOT EXISTS investigation_log (
+    id TEXT PRIMARY KEY,
+    dossier_id TEXT NOT NULL,
+    work_session_id TEXT,
+    sub_investigation_id TEXT,
+    entry_type TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    summary TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_investigation_log_dossier ON investigation_log(dossier_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_investigation_log_type ON investigation_log(dossier_id, entry_type);
+
+-- v2: enriched "considered and rejected" — paths the agent seriously explored and
+-- dismissed, with visible reasoning. Richer than ruled_out (which is just subject+reason).
+CREATE TABLE IF NOT EXISTS considered_and_rejected (
+    id TEXT PRIMARY KEY,
+    dossier_id TEXT NOT NULL,
+    sub_investigation_id TEXT,
+    path TEXT NOT NULL,
+    why_compelling TEXT NOT NULL,
+    why_rejected TEXT NOT NULL,
+    cost_of_error TEXT NOT NULL DEFAULT '',
+    sources TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_crj_dossier ON considered_and_rejected(dossier_id, created_at);

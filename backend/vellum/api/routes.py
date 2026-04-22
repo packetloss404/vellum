@@ -197,3 +197,58 @@ def end_work_session(session_id: str) -> m.WorkSession:
     if not result:
         raise HTTPException(404, "work_session not found")
     return result
+
+
+# ---------- v2: investigation_log ----------
+
+
+@router.post(
+    "/dossiers/{dossier_id}/investigation-log",
+    response_model=m.InvestigationLogEntry,
+)
+def append_investigation_log(
+    dossier_id: str,
+    data: m.InvestigationLogAppend,
+    work_session_id: Optional[str] = None,
+) -> m.InvestigationLogEntry:
+    return storage.append_investigation_log(dossier_id, data, work_session_id)
+
+
+@router.get(
+    "/dossiers/{dossier_id}/investigation-log",
+    response_model=list[m.InvestigationLogEntry],
+)
+def list_investigation_log(
+    dossier_id: str,
+    entry_type: Optional[m.InvestigationLogEntryType] = None,
+    limit: int = 500,
+) -> list[m.InvestigationLogEntry]:
+    return storage.list_investigation_log(dossier_id, entry_type, limit)
+
+
+@router.get("/dossiers/{dossier_id}/investigation-log/counts")
+def investigation_log_counts(dossier_id: str) -> dict[str, int]:
+    return storage.count_investigation_log_by_type(dossier_id)
+
+
+# ---------- v2: considered_and_rejected ----------
+
+
+@router.post(
+    "/dossiers/{dossier_id}/considered-and-rejected",
+    response_model=m.ConsideredAndRejected,
+)
+def add_considered_and_rejected(
+    dossier_id: str,
+    data: m.ConsideredAndRejectedCreate,
+    work_session_id: Optional[str] = None,
+) -> m.ConsideredAndRejected:
+    return storage.add_considered_and_rejected(dossier_id, data, work_session_id)
+
+
+@router.get(
+    "/dossiers/{dossier_id}/considered-and-rejected",
+    response_model=list[m.ConsideredAndRejected],
+)
+def list_considered_and_rejected(dossier_id: str) -> list[m.ConsideredAndRejected]:
+    return storage.list_considered_and_rejected(dossier_id)
