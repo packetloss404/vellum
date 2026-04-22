@@ -5,18 +5,20 @@ import { EmptyState } from "../components/common/EmptyState";
 import { DossierCard } from "../components/dossier/DossierCard";
 import { useDossierList } from "../api/hooks";
 import { useDocumentTitle } from "../utils/useDocumentTitle";
+import type { Dossier } from "../api/types";
 
 /**
  * DossierListPage — the landing view at "/".
  *
- * A quiet index of the user's dossiers: one line of encouragement, one
- * CTA to start a new one, and below it a stack of DossierCards. Day 3
- * is scaffold; day 4 polishes the presentation.
+ * Visually a "shelf of notebooks" rather than a SaaS table: each dossier
+ * is a card in a responsive grid (1 col on narrow, 2 on lg, 3 on xl),
+ * anchored by a serif title, its problem statement excerpt, and a quiet
+ * mono metadata strip.
  *
- * Dossier counts (sections / sub-investigations / artifacts) are read
- * from whatever the list endpoint returns. If the backend doesn't yet
- * serialize them onto the row (reasonable — DossierFull is the richer
- * payload), the card simply omits the counts chip.
+ * Counts (sections / sub-investigations / artifacts) are read from the
+ * list row if the backend serializes them there; the list page does NOT
+ * fan out per-dossier count fetches — that would be N network calls for
+ * a landing view, which is never worth it.
  */
 
 function NewDossierButton({ className = "" }: { className?: string }) {
@@ -73,21 +75,54 @@ function extractCounts(
   };
 }
 
+function sortByUpdated(list: readonly Dossier[]): Dossier[] {
+  return [...list].sort(
+    (a, b) =>
+      new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+  );
+}
+
+function formatSubhead(list: readonly Dossier[]): string {
+  const total = list.length;
+  const delivered = list.filter((d) => d.status === "delivered").length;
+  const noun = total === 1 ? "investigation" : "investigations";
+  const verb = delivered === 1 ? "delivered" : "delivered";
+  return `${total} ${noun} · ${delivered} ${verb}`;
+}
+
 export default function DossierListPage() {
   useDocumentTitle("Vellum");
   const { data, isLoading, error } = useDossierList();
+
+  const sorted = React.useMemo(
+    () => (data ? sortByUpdated(data) : []),
+    [data],
+  );
 
   return (
     <div className="min-h-screen bg-paper">
       <Header />
 
-      <main className="max-w-prose mx-auto py-16 px-6">
-        <h1 className="text-3xl font-serif text-ink mb-2 tracking-tight">
-          Your dossiers.
-        </h1>
-        <p className="text-ink-muted font-serif mb-10">
-          Durable thinking on problems that deserve it.
-        </p>
+      <main className="mx-auto max-w-page py-16 px-6">
+        <div className="flex flex-wrap items-end justify-between gap-6 mb-12">
+          <div className="min-w-0">
+            <h1 className="text-4xl font-serif text-ink tracking-tight">
+              Your dossiers.
+            </h1>
+            {data && data.length > 0 ? (
+              <p className="mt-2 text-sm font-mono text-ink-faint">
+                {formatSubhead(data)}
+              </p>
+            ) : (
+              <p className="mt-2 font-serif text-ink-muted">
+                Durable thinking on problems that deserve it.
+              </p>
+            )}
+          </div>
+          {data && data.length > 0 ? (
+            <NewDossierButton className="shrink-0" />
+          ) : null}
+        </div>
 
         {isLoading ? (
           <p className="text-ink-faint font-mono text-sm">Loading…</p>
@@ -103,18 +138,13 @@ export default function DossierListPage() {
             <NewDossierButton />
           </EmptyState>
         ) : (
-          <>
-            <div className="mb-10">
-              <NewDossierButton />
-            </div>
-            <ul className="space-y-6 list-none p-0 m-0">
-              {data.map((d) => (
-                <li key={d.id}>
-                  <DossierCard dossier={d} counts={extractCounts(d)} />
-                </li>
-              ))}
-            </ul>
-          </>
+          <ul className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 list-none p-0 m-0">
+            {sorted.map((d) => (
+              <li key={d.id} className="h-full">
+                <DossierCard dossier={d} counts={extractCounts(d)} />
+              </li>
+            ))}
+          </ul>
         )}
       </main>
     </div>

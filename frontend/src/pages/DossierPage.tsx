@@ -13,7 +13,9 @@ import { ArtifactList } from "../components/dossier/ArtifactList";
 import { ConsideredRejectedList } from "../components/dossier/ConsideredRejectedList";
 import { NextActionsList } from "../components/dossier/NextActionsList";
 import { InvestigationLogSidebar } from "../components/dossier/InvestigationLogSidebar";
+import { PlanDiffSidebar } from "../components/plan-diff/PlanDiffSidebar";
 import {
+  useChangeLog,
   useDossier,
   useInvestigationLogCounts,
   useResumeAgent,
@@ -23,17 +25,38 @@ import {
 import { useDocumentTitle } from "../utils/useDocumentTitle";
 
 /**
- * DossierPage — the read-only hero view at /dossiers/:id. Day 3 scaffold.
+ * DossierPage — the case-file cover at /dossiers/:id.
  *
- * The dossier IS the page. Blocks render top-to-bottom in the left column
- * (debrief, plan, needs_input, decision_points, sections, sub_investigations,
- * artifacts, considered_and_rejected, next_actions). The right column is
- * the investigation-log sidebar.
+ * Layout (wide ≥1280px):
+ *   ┌─────────────────────────────────────────────────┐
+ *   │ Hero (title, meta, Resume CTA) · full width     │
+ *   │ Debrief · full width                            │
+ *   ├─────────────────────────────┬───────────────────┤
+ *   │ Plan + PlanApproval         │ Plan-diff sidebar │
+ *   │ Needs input                 │ Investigation log │
+ *   │ Decision points             │                   │
+ *   │ Sections                    │ (sticky,          │
+ *   │ Sub-investigations          │  scrolls          │
+ *   │ Artifacts                   │  independently)   │
+ *   │ Considered & rejected       │                   │
+ *   │ Next actions                │                   │
+ *   └─────────────────────────────┴───────────────────┘
  *
- * We POST /visit once per mount (abort-guarded) to reset the "since last
- * visit" window. A prominent "Resume" button appears top-right when the
- * resume-state endpoint says there's no active session; if that endpoint
- * isn't live yet we degrade to showing Resume unconditionally.
+ * Below `lg` the two columns collapse — sidebars stack after the main
+ * content.
+ *
+ * VISIT-BEFORE-DIFF TIMING. The "since your last visit" sidebar must
+ * render entries captured BEFORE we POST /visit (which resets
+ * last_visited_at server-side). We achieve this by:
+ *   1. Firing both GET /dossier and GET /change-log immediately (they
+ *      both read from pre-visit state).
+ *   2. Holding off on POST /visit until useChangeLog has completed.
+ *      The change-log entries are now cached under the query key.
+ *   3. POST /visit invalidates the change-log query; the refetch after
+ *      visit returns the empty post-visit window, but the user has
+ *      already seen the diff for this session. The sidebar gracefully
+ *      transitions to "nothing new since you were last here" — which
+ *      matches the user's mental model (they just saw it).
  */
 
 function CenteredMessage({ children }: { children: React.ReactNode }) {
@@ -50,22 +73,28 @@ export default function DossierPage() {
   const { id } = useParams<{ id: string }>();
   const dossierId = id ?? "";
   const { data, isLoading, error } = useDossier(dossierId);
+  const changeLog = useChangeLog(dossierId);
   const resumeState = useResumeState(dossierId);
   const resumeAgent = useResumeAgent();
   const visit = useVisitDossier();
   const logCounts = useInvestigationLogCounts(dossierId);
   useDocumentTitle(data?.dossier ? `${data.dossier.title} · Vellum` : "Vellum");
 
-  // POST /visit once per mount. A ref guards against StrictMode double-fire
-  // and against the visit mutation resolving after the component unmounts.
+  // VISIT TIMING. Fire /visit exactly once per mount, and only AFTER the
+  // change-log query has completed — so the diff sidebar captures the
+  // pre-visit window before last_visited_at is bumped. If the change-log
+  // query errors, we still visit (the diff sidebar shows its own error;
+  // we don't want a broken log hook to stall the visit forever).
   const visitedRef = useRef(false);
+  const changeLogSettled = changeLog.isSuccess || changeLog.isError;
   useEffect(() => {
     if (!dossierId) return;
     if (visitedRef.current) return;
+    if (!changeLogSettled) return;
     visitedRef.current = true;
     visit.mutate(dossierId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dossierId]);
+  }, [dossierId, changeLogSettled]);
 
   if (!id) {
     return (
@@ -124,23 +153,6 @@ export default function DossierPage() {
     return !t.startsWith("approve plan") && !t.includes("plan approval");
   });
 
-  const hasSections = sections && sections.length > 0;
-  const openNeeds = (needs_input ?? []).filter((n) => n.answered_at == null);
-  const openDecisions = visibleDecisionPoints.filter(
-    (d) => d.resolved_at == null,
-  );
-  // A drafted-but-unapproved investigation_plan also counts as content —
-  // PlanApprovalBlock is on-page in that case, so suppress the "nothing
-  // written yet" empty state.
-  const hasPendingPlan =
-    !!dossier.investigation_plan &&
-    dossier.investigation_plan.approved_at == null;
-  const isEmpty =
-    !hasSections &&
-    openNeeds.length === 0 &&
-    openDecisions.length === 0 &&
-    !hasPendingPlan;
-
   // Resume CTA — show when:
   //   - dossier is not delivered, AND
   //   - resume-state says there's no active session, OR the endpoint 404s
@@ -161,34 +173,38 @@ export default function DossierPage() {
         }}
       />
 
-      <main className="mx-auto max-w-page px-6 py-10 grid grid-cols-1 md:grid-cols-[1fr_320px] gap-12">
-        <div className="space-y-10 max-w-prose min-w-0">
-          {/* HERO — case-file cover. The Resume button sits top-right as a
-              visually subordinate CTA so the title + problem statement own
-              the first glance. */}
-          <div className="relative">
-            <DossierHero dossier={data} counts={logCounts.data} />
-            {showResume ? (
-              <button
-                type="button"
-                onClick={() => resumeAgent.mutate(dossierId)}
-                disabled={resumeAgent.isPending}
-                className="absolute right-0 top-0 shrink-0 border border-rule-strong text-ink-muted hover:text-ink hover:border-accent px-3 py-1.5 font-sans text-xs rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed bg-surface"
-              >
-                {resumeAgent.isPending ? "Resuming…" : "Resume"}
-              </button>
-            ) : null}
-          </div>
+      {/* Top band — hero + debrief run the full page width. The Resume
+          button sits top-right as a visually subordinate CTA so the title +
+          problem statement own the first glance. */}
+      <div className="mx-auto max-w-page px-6 pt-10">
+        <div className="relative">
+          <DossierHero dossier={data} counts={logCounts.data} />
+          {showResume ? (
+            <button
+              type="button"
+              onClick={() => resumeAgent.mutate(dossierId)}
+              disabled={resumeAgent.isPending}
+              className="absolute right-0 top-0 shrink-0 border border-rule-strong text-ink-muted hover:text-ink hover:border-accent px-3 py-1.5 font-sans text-xs rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed bg-surface"
+            >
+              {resumeAgent.isPending ? "Resuming…" : "Resume"}
+            </button>
+          ) : null}
+        </div>
 
-          {/* Debrief — four-field summary. Always renders a placeholder if
-              empty so the page shape is predictable. */}
+        <div className="mt-10">
           <DebriefBlock debrief={dossier.debrief} />
+        </div>
+      </div>
 
-          {/* Plan — lists the items. */}
+      {/* Two-column band. Main column is content-width (max-w-prose via
+          the inner wrapper); the right rail is 320-360px, sticky, and
+          scrolls independently when its content exceeds the viewport. */}
+      <main className="mx-auto max-w-page px-6 py-10 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-12">
+        <div className="space-y-10 max-w-prose min-w-0">
+          {/* Plan — the agent's investigation plan. PlanApprovalBlock
+              renders inline directly after, only when there's an
+              unapproved plan. */}
           <PlanBlock plan={dossier.investigation_plan} />
-
-          {/* APPROVE THE PLAN — Day-3 gate. Renders when the intake-seeded
-              investigation_plan is awaiting user approval. Null otherwise. */}
           <PlanApprovalBlock dossier={data} />
 
           {/* NEEDS YOU — open needs_input items. */}
@@ -216,9 +232,15 @@ export default function DossierPage() {
           <NextActionsList items={next_actions ?? []} />
         </div>
 
-        <div className="min-w-0">
-          <InvestigationLogSidebar dossierId={dossierId} />
-        </div>
+        {/* Right rail. `sticky top-6` with max-h computed against the
+            viewport and overflow-y-auto means it scrolls on its own when
+            the log + diff overflow. On narrow it collapses below main. */}
+        <aside className="min-w-0 lg:sticky lg:top-6 lg:self-start lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto">
+          <div className="space-y-10">
+            <PlanDiffSidebar dossierId={dossierId} />
+            <InvestigationLogSidebar dossierId={dossierId} />
+          </div>
+        </aside>
       </main>
     </div>
   );
