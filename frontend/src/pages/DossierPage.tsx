@@ -178,13 +178,17 @@ export default function DossierPage() {
           problem statement own the first glance. */}
       <div className="mx-auto max-w-page px-6 pt-10">
         <div className="relative">
-          <DossierHero dossier={data} counts={logCounts.data} />
+          {/* Reserve space to the right of the hero so a long title never
+              collides with the Resume CTA at top-right. */}
+          <div className={showResume ? "pr-24" : undefined}>
+            <DossierHero dossier={data} counts={logCounts.data} />
+          </div>
           {showResume ? (
             <button
               type="button"
               onClick={() => resumeAgent.mutate(dossierId)}
               disabled={resumeAgent.isPending}
-              className="absolute right-0 top-0 shrink-0 border border-rule-strong text-ink-muted hover:text-ink hover:border-accent px-3 py-1.5 font-sans text-xs rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed bg-surface"
+              className="absolute right-0 top-0 z-10 shrink-0 border border-rule-strong text-ink-muted hover:text-ink hover:border-accent px-3 py-1.5 font-sans text-xs rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed bg-surface"
             >
               {resumeAgent.isPending ? "Resuming…" : "Resume"}
             </button>

@@ -107,7 +107,7 @@ function RichHero({
         <div className="text-[11px] font-mono uppercase tracking-[0.18em] text-ink-faint mb-3">
           {typeLabel}
         </div>
-        <h1 className="font-serif text-ink tracking-tight leading-[1.1] text-4xl md:text-5xl">
+        <h1 className="font-serif text-ink tracking-tight leading-[1.1] text-4xl md:text-5xl break-words">
           {dossier.title}
         </h1>
       </div>

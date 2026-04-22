@@ -26,6 +26,11 @@ import { relativeTime } from "../../utils/time";
  */
 
 const LOG_LIMIT = 500;
+// Render cap per window — kept below total fetched so at 200+ entries
+// we don't inflate the DOM beyond what the sidebar can comfortably
+// scroll. "Show more" pages additional entries in at VISIBLE_PAGE.
+const VISIBLE_INITIAL = 100;
+const VISIBLE_PAGE = 100;
 
 // All entry types we know about. Drives filter chips and glyphs. The
 // `label` is what appears on the filter chip; `glyph` is the timeline
@@ -369,6 +374,7 @@ export function InvestigationLogSidebar({
   const [selected, setSelected] = useState<Set<InvestigationLogEntryType>>(
     new Set(),
   );
+  const [visibleCount, setVisibleCount] = useState<number>(VISIBLE_INITIAL);
 
   const toggle = (t: InvestigationLogEntryType) => {
     setSelected((prev) => {
@@ -377,39 +383,57 @@ export function InvestigationLogSidebar({
       else next.add(t);
       return next;
     });
+    // Reset pagination when the filter changes — otherwise the user can
+    // land on a filtered set where everything they want is beyond the
+    // current visibleCount.
+    setVisibleCount(VISIBLE_INITIAL);
   };
-  const reset = () => setSelected(new Set());
+  const reset = () => {
+    setSelected(new Set());
+    setVisibleCount(VISIBLE_INITIAL);
+  };
 
-  // Sort newest-first, apply filter, group by day.
-  const grouped = useMemo(() => {
-    const entries = (logQ.data ?? [])
+  // Sort newest-first + filter is the expensive part when the log is big;
+  // paginate afterward so "Show more" doesn't re-sort.
+  const sortedFiltered = useMemo(() => {
+    return (logQ.data ?? [])
       .slice()
       .sort(
         (a, b) =>
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
       )
       .filter((e) => selected.size === 0 || selected.has(e.entry_type));
+  }, [logQ.data, selected]);
 
+  const visible = useMemo(
+    () => sortedFiltered.slice(0, visibleCount),
+    [sortedFiltered, visibleCount],
+  );
+
+  const grouped = useMemo(() => {
     const groups = new Map<string, InvestigationLogEntry[]>();
-    for (const e of entries) {
+    for (const e of visible) {
       const k = dayKey(e.created_at);
       const bucket = groups.get(k);
       if (bucket) bucket.push(e);
       else groups.set(k, [e]);
     }
-    // Map preserves insertion order, and since entries are already sorted
-    // newest-first, the first bucket we create is the newest day.
     return Array.from(groups.entries());
-  }, [logQ.data, selected]);
+  }, [visible]);
 
   const totalEntries = logQ.data?.length ?? 0;
+  const matchedEntries = sortedFiltered.length;
   const atLimit = totalEntries >= LOG_LIMIT;
+  const hasMore = matchedEntries > visible.length;
 
   return (
-    <aside className="sticky top-6 self-start max-h-[calc(100vh-3rem)] flex flex-col">
-      {/* Counts hero — sticky within the sidebar so it stays visible while
-          the timeline body scrolls. */}
-      <div className="shrink-0 bg-paper pb-4 border-b border-rule">
+    // Outer DossierPage aside already handles sticky + vertical scroll.
+    // Keep this section a plain flex column so the hero and timeline
+    // coexist without introducing a second scroll container.
+    <aside className="flex flex-col">
+      {/* Counts hero — sticks to the top of the scroll container (the
+          parent aside) so it stays visible while the timeline scrolls. */}
+      <div className="shrink-0 sticky top-0 z-[1] bg-paper pb-4 border-b border-rule">
         <div className="font-mono text-xs uppercase tracking-wide text-ink-faint mb-3">
           Investigation log
         </div>
@@ -425,7 +449,7 @@ export function InvestigationLogSidebar({
       </div>
 
       {/* Timeline */}
-      <div className="flex-1 overflow-y-auto pt-3">
+      <div className="flex-1 pt-3">
         {logQ.isLoading ? (
           <div className="font-mono text-xs text-ink-faint">Loading log…</div>
         ) : logQ.error ? (
@@ -442,7 +466,7 @@ export function InvestigationLogSidebar({
           <div className="space-y-5">
             {grouped.map(([key, entries]) => (
               <section key={key}>
-                <h3 className="font-mono text-[11px] uppercase tracking-wide text-ink-faint mb-1 sticky top-0 bg-paper pb-1">
+                <h3 className="font-mono text-[11px] uppercase tracking-wide text-ink-faint mb-1 pb-1">
                   {dayLabel(key)}
                 </h3>
                 <ul className="list-none p-0 m-0">
@@ -452,7 +476,23 @@ export function InvestigationLogSidebar({
                 </ul>
               </section>
             ))}
-            {atLimit && (
+            {hasMore && (
+              <div className="pt-3 border-t border-rule text-center">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setVisibleCount((v) => v + VISIBLE_PAGE)
+                  }
+                  className="font-mono text-[11px] text-accent hover:text-accent-hover underline"
+                >
+                  Show {Math.min(VISIBLE_PAGE, matchedEntries - visible.length)} more
+                  <span className="text-ink-faint ml-1 no-underline">
+                    ({visible.length} of {matchedEntries})
+                  </span>
+                </button>
+              </div>
+            )}
+            {atLimit && !hasMore && (
               <p className="font-mono text-[11px] text-ink-faint italic pt-2 border-t border-rule">
                 Showing the most recent {LOG_LIMIT} entries.
               </p>

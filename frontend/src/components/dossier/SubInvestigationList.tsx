@@ -135,8 +135,8 @@ function SubCard({
 
   const abandoned = sub.state === "abandoned";
   const scopeClass = abandoned
-    ? "font-serif text-lg text-ink-muted leading-snug line-through"
-    : "font-serif text-lg text-ink leading-snug";
+    ? "font-serif text-lg text-ink-muted leading-snug line-through break-words"
+    : "font-serif text-lg text-ink leading-snug break-words";
 
   const chevron = expanded ? "▾" : "▸";
 
