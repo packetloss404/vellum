@@ -497,5 +497,15 @@ class ConsideredAndRejectedCreate(BaseModel):
     sub_investigation_id: Optional[str] = None
 
 
+class MarkDeliveredArgs(BaseModel):
+    """Args for the `mark_investigation_delivered` agent tool.
+
+    `why_enough` is the self-justification the agent writes when it decides
+    an investigation has met the substance bar: what was covered, what was
+    explicitly left open, what the next real action is.
+    """
+    why_enough: str
+
+
 # Resolve forward references for DossierFull.
 DossierFull.model_rebuild()
