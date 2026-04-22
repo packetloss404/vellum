@@ -10,7 +10,22 @@ except ImportError:
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
-DB_PATH = Path(os.getenv("VELLUM_DB_PATH", BACKEND_DIR / "vellum.db")).resolve()
+
+def _resolve_db_path() -> Path:
+    """Resolve VELLUM_DB_PATH. Relative paths anchor to BACKEND_DIR — not CWD —
+    so scripts run from the repo root (e.g. ``scripts/day2_smoke.py``) use the
+    same DB as ``uvicorn`` started from ``backend/``. Absolute paths pass
+    through untouched."""
+    raw = os.getenv("VELLUM_DB_PATH")
+    if not raw:
+        return (BACKEND_DIR / "vellum.db").resolve()
+    p = Path(raw)
+    if p.is_absolute():
+        return p.resolve()
+    return (BACKEND_DIR / p).resolve()
+
+
+DB_PATH = _resolve_db_path()
 
 MODEL = os.getenv("VELLUM_MODEL", "claude-opus-4-7")
 MODEL_ALT = os.getenv("VELLUM_MODEL_ALT", "claude-sonnet-4-6")
