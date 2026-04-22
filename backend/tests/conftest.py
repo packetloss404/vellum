@@ -16,6 +16,30 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_tool_hooks():
+    """Snapshot/restore vellum.tools.handlers.TOOL_HOOKS around every test.
+
+    Importing ``vellum.agent.telemetry`` (which happens transitively via
+    ``vellum.main.create_app``) appends its logger to ``TOOL_HOOKS``.
+    Without this isolation, tests that import the app leak that hook into
+    downstream tests, which breaks the hook-cleanup sentinel in
+    ``test_runtime_hooks.py``. Autouse + session-safe."""
+    try:
+        from vellum.tools import handlers
+    except ImportError:
+        yield
+        return
+    snapshot = list(handlers.TOOL_HOOKS)
+    overrides = dict(handlers.HANDLER_OVERRIDES)
+    try:
+        yield
+    finally:
+        handlers.TOOL_HOOKS[:] = snapshot
+        handlers.HANDLER_OVERRIDES.clear()
+        handlers.HANDLER_OVERRIDES.update(overrides)
+
+
 @pytest.fixture
 def fresh_db(monkeypatch):
     """Point vellum.config.DB_PATH at a fresh tempfile and re-init the schema."""
