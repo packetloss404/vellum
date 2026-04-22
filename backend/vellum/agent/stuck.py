@@ -12,6 +12,37 @@ v2 (day 2): every surfaced StuckSignal also emits an investigation_log entry
 of type ``stuck_declared``. The v1 ``check_stuck`` tool call continues to
 fire separately for backwards compatibility; the investigation_log emission
 is additive.
+
+Calibration rationale (day 5)
+-----------------------------
+The thresholds and exemptions here are tuned against a realistic 40-turn
+demo run (3-6 sub-investigations, 30-80 source logs, 3+ artifacts). The
+goal: don't trip on healthy iteration, but still catch genuine spins fast.
+
+* ``_EXEMPT_FROM_LOOP`` — some tools are by-design iterative. An agent will
+  legitimately call ``update_debrief`` and ``update_investigation_plan``
+  several times with near-identical args as the investigation matures.
+  Treating those as loops was producing false alarms, so they're skipped
+  from the exact-args loop detector.
+* ``_EXEMPT_FROM_NO_PROGRESS`` — source-reading bursts are work, not spin.
+  ``log_source_consulted`` and ``web_search`` routinely fire 10-30 times
+  during a research phase before the agent returns to drafting a section.
+  The same-tool-no-progress heuristic was originally meant for synthesis
+  tools stuck in a loop; exempting reading tools keeps it honest. (Note:
+  args differ per call for these anyway, so the exact-args loop detector
+  still catches true repeats.)
+* ``_REVISION_STALL_THRESHOLD`` was 3, raised to 5 (config-driven). A
+  finding section revised 4-5 times as evidence accumulates is good, not
+  stall. Any storage mutation that indicates progress — a needs_input
+  resolve, a new artifact, or a spawned sub-investigation — resets the
+  per-section revision counter, via ``mark_progress`` (called from the
+  relevant storage-mutating handlers).
+* ``_SESSION_BUDGET_MULTIPLIER`` was 10, raised to 15 (config-driven). A
+  40-turn session with cached prompts + ~30k input avg could legitimately
+  brush 300k; 450k gives day-5 comfort without giving up the sanity bound.
+
+All numbers are still SOFT signals. We detect and report; the runtime
+surfaces a decision_point; the agent and user decide whether to continue.
 """
 
 from __future__ import annotations
@@ -83,10 +114,29 @@ _SESSION_STATE: dict[str, _SessionState] = {}
 
 # Upsert tools that count as revisions against the same section.
 _UPSERT_TOOL_NAMES = {"upsert_section"}
-# Threshold for revision stall — per spec, strictly more than 3 revisions.
-_REVISION_STALL_THRESHOLD = 3
-# Session budget hard-coded sanity bound: 10x SECTION_TOKEN_BUDGET.
-_SESSION_BUDGET_MULTIPLIER = 10
+# Tools whose purpose is ITERATIVE refinement — calling them repeatedly with
+# near-identical args is expected, not loop behavior. Exempted from the
+# exact-args loop detector.
+_EXEMPT_FROM_LOOP: set = {"update_debrief", "update_investigation_plan"}
+# Tools whose purpose is source-reading / research; calling them many times
+# in a research burst is WORK, not spin. Exempted from the
+# same_tool_no_progress heuristic. Args usually differ per call anyway, so
+# the exact-args loop detector still catches true repeats.
+_EXEMPT_FROM_NO_PROGRESS: set = {"log_source_consulted", "web_search"}
+# Tools beyond needs_input whose execution counts as "analytic progress"
+# for the revision-stall counter: a new artifact or a new sub-investigation
+# within the same session means the agent is moving forward, so any
+# accumulated upsert-counts are reset.
+_PROGRESS_MUTATION_TOOL_NAMES = {"add_artifact", "spawn_sub_investigation"}
+# Threshold for revision stall — strictly more than this many revisions on
+# the same section without progress fires the signal. Overridable via
+# ``VELLUM_STUCK_REVISION_STALL_THRESHOLD``. Default raised from 3 → 5
+# (day 5): real findings legitimately revise 4-5 times as evidence lands.
+_REVISION_STALL_THRESHOLD = config.STUCK_REVISION_STALL_THRESHOLD
+# Session budget sanity bound: N x SECTION_TOKEN_BUDGET. Overridable via
+# ``VELLUM_STUCK_SESSION_BUDGET_MULT``. Default raised from 10 → 15
+# (day 5) to cover realistic 40-turn cached-prompt runs.
+_SESSION_BUDGET_MULTIPLIER = config.STUCK_SESSION_BUDGET_MULT
 # v2: same_tool_no_progress threshold — same tool name (any args) called
 # this many times in a session without creating any new section fires.
 _SAME_TOOL_NO_PROGRESS_THRESHOLD = 8
@@ -208,7 +258,22 @@ def record_tool_call(session_id: str, tool_name: str, args: dict) -> Optional[St
             if section_id:
                 st.upsert_counts_since_resolve[section_id] += 1
 
-        if count >= config.LOOP_DETECTION_THRESHOLD and key not in st.loop_reported:
+        # Day 5: any storage mutation that represents ANALYTIC PROGRESS
+        # (new artifact, spawned sub-investigation) resets the
+        # revision-stall counters — the agent is clearly moving forward.
+        if tool_name in _PROGRESS_MUTATION_TOOL_NAMES:
+            st.upsert_counts_since_resolve.clear()
+            st.revision_stall_reported.clear()
+
+        # Day 5: exempt iterative-by-design tools from the exact-args loop
+        # detector. update_debrief / update_investigation_plan are designed
+        # to be called repeatedly with similar args as the run matures.
+        if tool_name in _EXEMPT_FROM_LOOP:
+            loop_detection_enabled = False
+        else:
+            loop_detection_enabled = True
+
+        if loop_detection_enabled and count >= config.LOOP_DETECTION_THRESHOLD and key not in st.loop_reported:
             st.loop_reported.add(key)
             pretty = _pretty_args(args)
             detail = (
@@ -256,8 +321,11 @@ def record_tool_call(session_id: str, tool_name: str, args: dict) -> Optional[St
         # in that span" — if even one section has been created since the
         # first call, we assume the agent is making progress and skip.
         # Checked only if no higher-priority loop signal already fired.
+        # Day 5: source-reading tools (log_source_consulted, web_search) are
+        # exempt — reading many sources is WORK, not spin.
         if (
             signal is None
+            and tool_name not in _EXEMPT_FROM_NO_PROGRESS
             and tool_count >= _SAME_TOOL_NO_PROGRESS_THRESHOLD
             and tool_name not in st.same_tool_no_progress_reported
         ):
@@ -562,18 +630,20 @@ def _run_self_test() -> None:
     # Does not re-fire for the same section.
     assert check_section_budget(did, sid) is None, "section_budget should not re-fire"
 
-    # 5. Revision stall: 4 upserts on same section -> fires.
+    # 5. Revision stall: (_REVISION_STALL_THRESHOLD + 1) upserts on same
+    # section -> fires. Use distinct args to avoid also tripping the
+    # exact-args loop signal.
     reset_session(sid)
-    for _ in range(4):
-        record_tool_call(sid, "upsert_section", {"section_id": "sec_open"})
+    for i in range(_REVISION_STALL_THRESHOLD + 1):
+        record_tool_call(sid, "upsert_section", {"section_id": "sec_open", "i": i})
     sig = check_revision_stall(did, sid)
     assert sig is not None and sig.kind == "revision_stall", "revision_stall should fire"
 
     # 6. After mark_needs_input_resolved, the stall counter resets — more
     # upserts within the reset window (up to threshold) should NOT fire again.
     mark_needs_input_resolved(sid)
-    for _ in range(_REVISION_STALL_THRESHOLD):  # 3 more — at threshold, not past it
-        record_tool_call(sid, "upsert_section", {"section_id": "sec_open"})
+    for i in range(_REVISION_STALL_THRESHOLD):  # at threshold, not past it
+        record_tool_call(sid, "upsert_section", {"section_id": "sec_open", "j": i})
     assert check_revision_stall(did, sid) is None, (
         "revision_stall must not fire immediately after needs_input resolution"
     )
