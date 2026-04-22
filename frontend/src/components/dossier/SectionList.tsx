@@ -29,7 +29,10 @@ function SectionRow({ section }: { section: Section }) {
   const chevron = expanded ? "▾" : "▸";
 
   return (
-    <li className="border-t border-rule pt-5 first:border-t-0 first:pt-0">
+    <li
+      id={`section-${section.id}`}
+      className="scroll-mt-24 border-t border-rule pt-5 first:border-t-0 first:pt-0"
+    >
       <button
         type="button"
         onClick={() => setExpanded((e) => !e)}

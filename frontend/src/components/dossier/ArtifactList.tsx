@@ -25,7 +25,10 @@ function ArtifactRow({ artifact }: { artifact: Artifact }) {
   const chevron = expanded ? "▾" : "▸";
 
   return (
-    <li className="border-t border-rule pt-4 first:border-t-0 first:pt-0">
+    <li
+      id={`artifact-${artifact.id}`}
+      className="scroll-mt-24 border-t border-rule pt-4 first:border-t-0 first:pt-0"
+    >
       <button
         type="button"
         onClick={() => setExpanded((e) => !e)}
