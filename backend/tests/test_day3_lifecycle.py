@@ -330,6 +330,7 @@ def test_day3_full_lifecycle(lifecycle_app) -> None:
                 "flag_decision_point",
                 {
                     "title": "Approve the plan?",
+                    "kind": "plan_approval",
                     "options": [
                         {
                             "label": "Approve",
