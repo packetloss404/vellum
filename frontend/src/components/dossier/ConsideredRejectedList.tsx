@@ -30,7 +30,7 @@ export function ConsideredRejectedList({
             key={item.id}
             className="border-t border-rule pt-4 first:border-t-0 first:pt-0"
           >
-            <div className="font-serif text-base text-ink leading-snug">
+            <div className="font-serif text-base text-ink leading-snug break-words">
               <s className="text-ink-muted">{item.path}</s>
             </div>
             <dl className="mt-2 space-y-2">

@@ -80,10 +80,13 @@ export function PlanDiffSidebarView({
 
   return (
     <aside
-      className="w-full max-w-[320px] self-start"
+      className="w-full max-w-[340px] self-start"
       aria-label="What changed since your last visit"
     >
-      <div className="sticky top-6 bg-paper pb-3 -mb-1 z-10">
+      {/* Sticky header inside an already-scrolling parent (DossierPage's
+          right aside). top-0 keeps it pinned to the scroll container,
+          not to the viewport, avoiding a double-sticky offset. */}
+      <div className="sticky top-0 bg-paper pb-3 -mb-1 z-10">
         <h2 className="font-serif text-lg text-ink leading-tight">
           {HEADER_LABEL}
         </h2>
