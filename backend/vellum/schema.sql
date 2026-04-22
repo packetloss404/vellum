@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS dossiers (
     dossier_type TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
     check_in_policy TEXT NOT NULL DEFAULT '{"cadence":"on_demand","notes":""}',
+    investigation_plan TEXT,
     last_visited_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL

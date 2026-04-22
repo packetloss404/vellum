@@ -38,6 +38,8 @@ def _json_list(text: str) -> list:
 
 
 def _row_to_dossier(row: sqlite3.Row) -> m.Dossier:
+    plan_raw = row["investigation_plan"] if "investigation_plan" in row.keys() else None
+    plan = m.InvestigationPlan.model_validate_json(plan_raw) if plan_raw else None
     return m.Dossier(
         id=row["id"],
         title=row["title"],
@@ -46,6 +48,7 @@ def _row_to_dossier(row: sqlite3.Row) -> m.Dossier:
         dossier_type=m.DossierType(row["dossier_type"]),
         status=m.DossierStatus(row["status"]),
         check_in_policy=m.CheckInPolicy.model_validate_json(row["check_in_policy"]),
+        investigation_plan=plan,
         last_visited_at=_dt(row["last_visited_at"]),
         created_at=_dt(row["created_at"]),
         updated_at=_dt(row["updated_at"]),
@@ -266,6 +269,43 @@ def mark_dossier_visited(dossier_id: str) -> Optional[m.Dossier]:
         conn.execute(
             "UPDATE dossiers SET last_visited_at = ?, updated_at = ? WHERE id = ?",
             (now, now, dossier_id),
+        )
+    return get_dossier(dossier_id)
+
+
+def update_investigation_plan(
+    dossier_id: str,
+    patch: m.InvestigationPlanUpdate,
+) -> Optional[m.Dossier]:
+    """Write (or rewrite) a dossier's investigation plan.
+
+    Called by intake on initial draft (``approve=False``) and by the dossier
+    agent on subsequent revisions. Preserves ``drafted_at`` across revisions
+    so the original draft timestamp isn't lost; bumps ``revision_count``
+    on each overwrite after the first. Sets ``approved_at`` to now when
+    ``approve=True`` and it isn't already set.
+    """
+    existing = get_dossier(dossier_id)
+    if existing is None:
+        return None
+    now = m.utc_now()
+    prior = existing.investigation_plan
+    drafted_at = prior.drafted_at if prior is not None else now
+    revision_count = (prior.revision_count + 1) if prior is not None else 0
+    approved_at: Optional[datetime] = prior.approved_at if prior is not None else None
+    if patch.approve and approved_at is None:
+        approved_at = now
+    plan = m.InvestigationPlan(
+        items=patch.items,
+        rationale=patch.rationale,
+        drafted_at=drafted_at,
+        approved_at=approved_at,
+        revision_count=revision_count,
+    )
+    with connect() as conn:
+        conn.execute(
+            "UPDATE dossiers SET investigation_plan = ?, updated_at = ? WHERE id = ?",
+            (plan.model_dump_json(), _dt_str(now), dossier_id),
         )
     return get_dossier(dossier_id)
 

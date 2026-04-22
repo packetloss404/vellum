@@ -72,6 +72,40 @@ class CheckInPolicy(BaseModel):
     notes: str = ""
 
 
+class InvestigationPlanItem(BaseModel):
+    """One investigable sub-question in a dossier's opening plan.
+
+    Intake drafts these so the dossier agent's first turn has something to
+    revise instead of starting from scratch. The dossier agent can also
+    create / edit / delete items later via its own tool surface.
+    """
+
+    question: str
+    rationale: str = ""
+    as_sub_investigation: bool = False
+    expected_sources: list[str] = Field(default_factory=list)
+
+
+class InvestigationPlan(BaseModel):
+    """The plan attached to a dossier. ``approved_at`` and ``revision_count``
+    are lifecycle markers managed by the dossier-side agent; intake only
+    sets the initial draft (``approve=False``)."""
+
+    items: list[InvestigationPlanItem] = Field(default_factory=list)
+    rationale: str = ""
+    drafted_at: datetime
+    approved_at: Optional[datetime] = None
+    revision_count: int = 0
+
+
+class InvestigationPlanUpdate(BaseModel):
+    """Request shape for writing / revising a dossier's investigation plan."""
+
+    items: list[InvestigationPlanItem]
+    rationale: str = ""
+    approve: bool = False
+
+
 class Dossier(BaseModel):
     id: str
     title: str
@@ -80,6 +114,7 @@ class Dossier(BaseModel):
     dossier_type: DossierType
     status: DossierStatus = DossierStatus.active
     check_in_policy: CheckInPolicy = Field(default_factory=CheckInPolicy)
+    investigation_plan: Optional[InvestigationPlan] = None
     last_visited_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
