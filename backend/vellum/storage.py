@@ -743,6 +743,15 @@ def start_work_session(
     return session
 
 
+def get_work_session(session_id: str) -> Optional[m.WorkSession]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM work_sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+    return _row_to_work_session(row) if row else None
+
+
 def end_work_session(session_id: str) -> Optional[m.WorkSession]:
     now_s = _dt_str(m.utc_now())
     with connect() as conn:
@@ -778,6 +787,100 @@ def increment_session_tokens(session_id: str, tokens: int) -> None:
             "UPDATE work_sessions SET token_budget_used = token_budget_used + ? WHERE id = ?",
             (tokens, session_id),
         )
+
+
+# ---------- v2: InvestigationLog ----------
+#
+# Typed, append-only "evidence of work" and stuck-signal surface. Separate from
+# change_log (user-visit-diff) by design — appends here do NOT write to
+# change_log, so the "47 sources consulted" counter doesn't pollute the
+# since-last-visit plan-diff the user reads on return.
+
+
+def _row_to_investigation_log(row: sqlite3.Row) -> m.InvestigationLogEntry:
+    return m.InvestigationLogEntry(
+        id=row["id"],
+        dossier_id=row["dossier_id"],
+        work_session_id=row["work_session_id"],
+        sub_investigation_id=row["sub_investigation_id"],
+        entry_type=m.InvestigationLogEntryType(row["entry_type"]),
+        payload=json.loads(row["payload"]) if row["payload"] else {},
+        summary=row["summary"],
+        created_at=_dt(row["created_at"]),
+    )
+
+
+def append_investigation_log(
+    *,
+    entry_type: m.InvestigationLogEntryType,
+    summary: str,
+    payload: Optional[dict] = None,
+    work_session_id: Optional[str] = None,
+    dossier_id: Optional[str] = None,
+    sub_investigation_id: Optional[str] = None,
+) -> m.InvestigationLogEntry:
+    """Append a typed entry to the investigation_log.
+
+    Either ``dossier_id`` must be supplied directly, or ``work_session_id`` must
+    reference a work session from which the dossier can be resolved.
+    """
+    payload = payload or {}
+    if dossier_id is None:
+        if work_session_id is None:
+            raise ValueError("append_investigation_log requires dossier_id or work_session_id")
+        ws = get_work_session(work_session_id)
+        if ws is None:
+            raise ValueError(f"work_session {work_session_id} not found")
+        dossier_id = ws.dossier_id
+
+    now = m.utc_now()
+    entry = m.InvestigationLogEntry(
+        id=m.new_id("ilg"),
+        dossier_id=dossier_id,
+        work_session_id=work_session_id,
+        sub_investigation_id=sub_investigation_id,
+        entry_type=entry_type,
+        payload=payload,
+        summary=summary,
+        created_at=now,
+    )
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO investigation_log (id, dossier_id, work_session_id, sub_investigation_id,
+                                           entry_type, payload, summary, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry.id,
+                dossier_id,
+                work_session_id,
+                sub_investigation_id,
+                entry_type.value,
+                json.dumps(payload),
+                summary,
+                _dt_str(now),
+            ),
+        )
+        # Intentionally no _log_change: investigation_log is a separate surface.
+    return entry
+
+
+def list_investigation_log(
+    dossier_id: str,
+    entry_type: Optional[m.InvestigationLogEntryType] = None,
+    limit: int = 500,
+) -> list[m.InvestigationLogEntry]:
+    q = "SELECT * FROM investigation_log WHERE dossier_id = ?"
+    params: list[object] = [dossier_id]
+    if entry_type is not None:
+        q += " AND entry_type = ?"
+        params.append(entry_type.value)
+    q += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    with connect() as conn:
+        rows = conn.execute(q, params).fetchall()
+    return [_row_to_investigation_log(r) for r in rows]
 
 
 # ---------- ChangeLog ----------

@@ -101,6 +101,23 @@ CREATE TABLE IF NOT EXISTS change_log (
 );
 CREATE INDEX IF NOT EXISTS idx_change_log_dossier ON change_log(dossier_id, work_session_id, created_at);
 
+-- v2: typed, append-only log of evidence-of-work and stuck signals. Separate
+-- from reasoning_trail (freeform) and change_log (user-visit-diff): appends
+-- here do NOT write to change_log.
+CREATE TABLE IF NOT EXISTS investigation_log (
+    id TEXT PRIMARY KEY,
+    dossier_id TEXT NOT NULL,
+    work_session_id TEXT,
+    sub_investigation_id TEXT,
+    entry_type TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    summary TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_investigation_log_dossier ON investigation_log(dossier_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_investigation_log_type ON investigation_log(dossier_id, entry_type);
+
 CREATE TABLE IF NOT EXISTS intake_sessions (
     id TEXT PRIMARY KEY,
     status TEXT NOT NULL DEFAULT 'gathering',

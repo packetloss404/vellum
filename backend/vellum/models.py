@@ -187,6 +187,33 @@ class ChangeLogEntry(BaseModel):
     created_at: datetime
 
 
+# --- v2: investigation_log ---
+
+
+class InvestigationLogEntryType(str, Enum):
+    source_consulted = "source_consulted"
+    sub_investigation_spawned = "sub_investigation_spawned"
+    sub_investigation_returned = "sub_investigation_returned"
+    section_upserted = "section_upserted"
+    path_rejected = "path_rejected"
+    artifact_produced = "artifact_produced"
+    decision_flagged = "decision_flagged"
+    input_requested = "input_requested"
+    plan_revised = "plan_revised"
+    stuck_declared = "stuck_declared"
+
+
+class InvestigationLogEntry(BaseModel):
+    id: str                        # prefix: "ilg"
+    dossier_id: str
+    work_session_id: Optional[str] = None
+    sub_investigation_id: Optional[str] = None
+    entry_type: InvestigationLogEntryType
+    payload: dict = Field(default_factory=dict)
+    summary: str
+    created_at: datetime
+
+
 class DossierFull(BaseModel):
     """Dossier aggregate with all child collections populated."""
     dossier: Dossier

@@ -7,18 +7,26 @@ runtime. The runtime decides what to do with the signal (it will call the
 
 Per Ian's directive: budgets are SOFT signals, not hard caps. We detect and
 report; we never terminate the agent mid-thought.
+
+v2 (day 2): every surfaced StuckSignal also emits an investigation_log entry
+of type ``stuck_declared``. The v1 ``check_stuck`` tool call continues to
+fire separately for backwards compatibility; the investigation_log emission
+is additive.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 
 from vellum import config
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +64,19 @@ class _SessionState:
     upsert_counts_since_resolve: Counter = field(default_factory=Counter)  # section_id -> count
     revision_stall_reported: set = field(default_factory=set)              # section_ids already reported
 
+    # v2: same_tool_no_progress — soft-loop heuristic that catches an agent
+    # repeatedly calling the same tool (any args) without producing a new
+    # section. Track total sections created, and the baseline snapshot of
+    # that count at each tool's first call.
+    tool_name_counts: Counter = field(default_factory=Counter)             # tool_name -> count (any args)
+    sections_created: int = 0                                              # running total this session
+    tool_name_first_sections_snapshot: dict = field(default_factory=dict)  # tool_name -> sections_created at first call
+    same_tool_no_progress_reported: set = field(default_factory=set)       # tool_names already reported
+
+    # Investigation-log emission side: dedupe by (kind, key) so we never
+    # write two stuck_declared entries for the same underlying signal.
+    investigation_log_emitted: set = field(default_factory=set)
+
 
 _STATE_LOCK = threading.Lock()
 _SESSION_STATE: dict[str, _SessionState] = {}
@@ -66,6 +87,9 @@ _UPSERT_TOOL_NAMES = {"upsert_section"}
 _REVISION_STALL_THRESHOLD = 3
 # Session budget hard-coded sanity bound: 10x SECTION_TOKEN_BUDGET.
 _SESSION_BUDGET_MULTIPLIER = 10
+# v2: same_tool_no_progress threshold — same tool name (any args) called
+# this many times in a session without creating any new section fires.
+_SAME_TOOL_NO_PROGRESS_THRESHOLD = 8
 
 
 def _state(session_id: str) -> _SessionState:
@@ -94,6 +118,46 @@ def _pretty_args(args: dict, max_len: int = 120) -> str:
     return blob
 
 
+def _emit_investigation_log(session_id: str, signal: StuckSignal) -> None:
+    """Append a ``stuck_declared`` entry to the investigation_log for this
+    signal. Best-effort: if storage isn't usable (e.g. no work_session row,
+    no DB schema) we log and continue, because detecting the stuck state
+    is the primary job — the log write is a secondary surface.
+
+    Callers are expected to invoke this at most once per surfaced signal
+    (i.e. right before the first ``return signal`` for that signal). The
+    per-signal dedup sets (``loop_reported`` et al.) guarantee that.
+    """
+    # Import lazily to avoid pulling storage/models into module import time
+    # (stuck.py is imported from runtime.py, which imports storage itself —
+    # the lazy import keeps the one-way dependency explicit).
+    try:
+        from vellum import models as m
+        from vellum import storage
+    except Exception:  # pragma: no cover — should never fail in real use
+        logger.warning("stuck: could not import storage for investigation_log emit", exc_info=True)
+        return
+    try:
+        storage.append_investigation_log(
+            entry_type=m.InvestigationLogEntryType.stuck_declared,
+            summary=f"[stuck:{signal.kind}] {signal.detail}",
+            payload={
+                "kind": signal.kind,
+                "summary_of_attempts": signal.summary_of_attempts,
+                "options": signal.options_for_user,
+            },
+            work_session_id=session_id,
+        )
+    except Exception:
+        # Best-effort: a missing work_session row (e.g. self-test using an
+        # untracked session id) or a DB error must not prevent the signal
+        # from reaching the runtime.
+        logger.debug(
+            "stuck: investigation_log emit failed for %s/%s", signal.kind, session_id,
+            exc_info=True,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -101,7 +165,9 @@ def _pretty_args(args: dict, max_len: int = 120) -> str:
 
 def record_tool_call(session_id: str, tool_name: str, args: dict) -> Optional[StuckSignal]:
     """Record a tool call; return a loop StuckSignal when the threshold is
-    newly crossed for a given (tool_name, args_hash).
+    newly crossed for a given (tool_name, args_hash), or a
+    same_tool_no_progress StuckSignal when the soft-loop threshold is newly
+    crossed for a tool name (any args) without section creation.
 
     Also bumps per-section counters when args contains section_id or
     after_section_id — so check_revision_stall can use them.
@@ -109,12 +175,26 @@ def record_tool_call(session_id: str, tool_name: str, args: dict) -> Optional[St
     args = args or {}
     args_hash = _hash_args(args)
     key = (tool_name, args_hash)
+    signal: Optional[StuckSignal] = None
 
     with _STATE_LOCK:
         st = _state(session_id)
         st.tool_call_counts[key] += 1
         st.tool_call_examples.setdefault(key, (tool_name, args))
         count = st.tool_call_counts[key]
+
+        # v2: by-tool-name count (any args) and baseline snapshot of
+        # sections_created at the tool's FIRST call — feeds the
+        # same_tool_no_progress heuristic.
+        st.tool_name_counts[tool_name] += 1
+        st.tool_name_first_sections_snapshot.setdefault(tool_name, st.sections_created)
+        tool_count = st.tool_name_counts[tool_name]
+
+        # Track section creations: upsert_section with no section_id means a
+        # new section was just created. This is how we detect "analytic
+        # progress" for same_tool_no_progress.
+        if tool_name in _UPSERT_TOOL_NAMES and not args.get("section_id"):
+            st.sections_created += 1
 
         # Bump revision-stall counter on upsert_section calls.
         if tool_name in _UPSERT_TOOL_NAMES:
@@ -158,14 +238,64 @@ def record_tool_call(session_id: str, tool_name: str, args: dict) -> Optional[St
                     "recommended": False,
                 },
             ]
-            return StuckSignal(
+            signal = StuckSignal(
                 kind="loop",
                 detail=detail,
                 summary_of_attempts=summary,
                 options_for_user=options,
             )
 
-    return None
+        # same_tool_no_progress: same tool name called >= threshold times AND
+        # no new section created since its first call. Strict "no new section
+        # in that span" — if even one section has been created since the
+        # first call, we assume the agent is making progress and skip.
+        # Checked only if no higher-priority loop signal already fired.
+        if (
+            signal is None
+            and tool_count >= _SAME_TOOL_NO_PROGRESS_THRESHOLD
+            and tool_name not in st.same_tool_no_progress_reported
+        ):
+            baseline = st.tool_name_first_sections_snapshot.get(tool_name, 0)
+            if st.sections_created == baseline:
+                st.same_tool_no_progress_reported.add(tool_name)
+                detail = (
+                    f"Tool `{tool_name}` has been called {tool_count} times in this "
+                    f"session without producing any new section — the agent may be "
+                    f"spinning without making analytic progress."
+                )
+                summary = (
+                    f"I've called `{tool_name}` {tool_count} times in this session and "
+                    f"haven't produced a new section since I started. I may be researching "
+                    f"without synthesizing — worth pausing to check."
+                )
+                options = [
+                    {
+                        "label": "Let me keep going — I'm close",
+                        "implications": (
+                            "I'll continue with the same approach; the heuristic is advisory, "
+                            "not a hard stop."
+                        ),
+                        "recommended": False,
+                    },
+                    {
+                        "label": "Pause for your direction",
+                        "implications": (
+                            "I'll hand off with a summary of what I've looked at so far and "
+                            "wait for you to steer me toward a section to draft."
+                        ),
+                        "recommended": True,
+                    },
+                ]
+                signal = StuckSignal(
+                    kind="same_tool_no_progress",
+                    detail=detail,
+                    summary_of_attempts=summary,
+                    options_for_user=options,
+                )
+
+    if signal is not None:
+        _emit_investigation_log(session_id, signal)
+    return signal
 
 
 def record_input_tokens(session_id: str, section_id: Optional[str], tokens: int) -> None:
@@ -188,6 +318,7 @@ def check_section_budget(dossier_id: str, session_id: str) -> Optional[StuckSign
     """If any section's accumulated input tokens in THIS session exceed
     config.SECTION_TOKEN_BUDGET, return StuckSignal(kind='section_budget').
     """
+    signal: Optional[StuckSignal] = None
     with _STATE_LOCK:
         st = _state(session_id)
         budget = config.SECTION_TOKEN_BUDGET
@@ -227,13 +358,16 @@ def check_section_budget(dossier_id: str, session_id: str) -> Optional[StuckSign
                         "recommended": False,
                     },
                 ]
-                return StuckSignal(
+                signal = StuckSignal(
                     kind="section_budget",
                     detail=detail,
                     summary_of_attempts=summary,
                     options_for_user=options,
                 )
-    return None
+                break
+    if signal is not None:
+        _emit_investigation_log(session_id, signal)
+    return signal
 
 
 def check_revision_stall(dossier_id: str, session_id: str) -> Optional[StuckSignal]:
@@ -241,6 +375,7 @@ def check_revision_stall(dossier_id: str, session_id: str) -> Optional[StuckSign
     _REVISION_STALL_THRESHOLD times in this session AND no needs_input has
     been resolved in that window, return StuckSignal(kind='revision_stall').
     """
+    signal: Optional[StuckSignal] = None
     with _STATE_LOCK:
         st = _state(session_id)
         for section_id, count in st.upsert_counts_since_resolve.items():
@@ -280,19 +415,23 @@ def check_revision_stall(dossier_id: str, session_id: str) -> Optional[StuckSign
                         "recommended": False,
                     },
                 ]
-                return StuckSignal(
+                signal = StuckSignal(
                     kind="revision_stall",
                     detail=detail,
                     summary_of_attempts=summary,
                     options_for_user=options,
                 )
-    return None
+                break
+    if signal is not None:
+        _emit_investigation_log(session_id, signal)
+    return signal
 
 
 def check_session_budget(session_id: str) -> Optional[StuckSignal]:
     """Session-wide token ceiling — _SESSION_BUDGET_MULTIPLIER x
     SECTION_TOKEN_BUDGET as a hard-coded sanity bound. Soft signal only.
     """
+    signal: Optional[StuckSignal] = None
     with _STATE_LOCK:
         st = _state(session_id)
         ceiling = _SESSION_BUDGET_MULTIPLIER * config.SECTION_TOKEN_BUDGET
@@ -334,13 +473,15 @@ def check_session_budget(session_id: str) -> Optional[StuckSignal]:
                     "recommended": False,
                 },
             ]
-            return StuckSignal(
+            signal = StuckSignal(
                 kind="session_budget",
                 detail=detail,
                 summary_of_attempts=summary,
                 options_for_user=options,
             )
-    return None
+    if signal is not None:
+        _emit_investigation_log(session_id, signal)
+    return signal
 
 
 def check_stuck_state(dossier_id: str, session_id: str) -> Optional[StuckSignal]:
