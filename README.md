@@ -1,0 +1,65 @@
+# Vellum
+
+A tool for durable thinking on consequential problems.
+
+The unit isn't a chat session — it's a **dossier**: a structured, typed document that an agent works on over hours or days, and that you return to on your own schedule. Close the laptop. Come back. The dossier has evolved — new sections, revised conclusions, flagged open questions, surfaced decision points. A plan-diff sidebar shows what changed since you were last here.
+
+## What makes it different
+
+- **The agent challenges the framing before answering.** On a new dossier, the first move is almost never to answer the stated question — it's to audit the frame. If a user asks "what percentage should I open credit-card-debt negotiations at?", the agent refuses to propose a number until it has confirmed the debt is actually owed (statute of limitations, FDCPA validation, estate liability). Pushback on premises is the thesis, not a feature.
+- **The dossier is structured data, not prose.** The agent writes only through tool calls — `upsert_section`, `flag_needs_input`, `flag_decision_point`, `mark_ruled_out`, `append_reasoning`. There's no chat surface to the user; prose that isn't attached to a tool call evaporates.
+- **First-class states.** Sections carry `confident | provisional | blocked`; dossiers carry `active | paused | delivered`; needs-input and decision-point blocks are top-level surfaces, not afterthoughts.
+- **Quiet by default.** No pings, no notifications, no status updates. The dossier is a destination, not a stream.
+- **Stuck detection.** Token budgets and repeated-tool-call detection surface a clean decision_point to the user — never burn cycles blindly.
+
+## Stack
+
+- **Backend:** Python + FastAPI + Pydantic (single source of truth for the dossier schema across API, DB, agent tool schemas)
+- **Agent:** Direct Anthropic Messages API with a manual agentic loop. Default model: `claude-opus-4-7`.
+- **DB:** SQLite (v1)
+- **Frontend:** React + TypeScript + Tailwind (Vite). Serif-forward, warm, document-like. No rich-text editor.
+
+## Local dev
+
+```bash
+# Backend
+cd backend
+python -m venv .venv
+source .venv/bin/activate         # or .venv/Scripts/activate on Windows
+pip install -e .
+cp .env.example .env              # then fill in ANTHROPIC_API_KEY
+
+# Frontend
+cd ../frontend
+npm install
+
+# Run both together
+cd ..
+./dev.sh                          # uvicorn on :8731, vite on :5173
+```
+
+Visit `http://localhost:5173/demo` for the fixture-driven hero demo, or `/` to start a real dossier.
+
+## Project layout
+
+```
+backend/vellum/
+  agent/        # dossier agent: runtime, orchestrator, system prompt, stuck detection
+  api/          # FastAPI routes (dossier CRUD, agent control, intake)
+  intake/       # intake conversation agent (creates dossiers)
+  tools/        # agent tool handlers (upsert_section, flag_needs_input, …)
+  models.py     # Pydantic source of truth for the entire schema
+  schema.sql    # SQLite schema
+  storage.py    # DB reads and writes
+  lifecycle.py  # reconcile orphaned work_sessions at startup
+
+frontend/src/
+  pages/        # DossierListPage, IntakePage, DossierPage, DemoPage, NotFoundPage
+  components/   # sections, needs-input, decision-points, plan-diff, intake, common
+  api/          # hooks, client, types (hand-mirrored from backend/vellum/models.py)
+  mocks/        # demo fixture data
+```
+
+## Status
+
+v1, single-user, localhost. Out of scope: auth, multi-user, notifications, mobile, rich text, LLMs other than Claude.

@@ -1,0 +1,96 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-paper: #FBF8F3;
+  --color-surface: #FFFFFF;
+  --color-surface-sunk: #F5EFE4;
+  --color-ink: #1F2937;
+  --color-ink-muted: #6B7280;
+  --color-ink-faint: #9CA3AF;
+  --color-rule: #E5E1D6;
+  --color-rule-strong: #CEC6B5;
+  --color-accent: #8B4513;
+  --color-accent-hover: #6B340F;
+  --color-attention: #B45309;
+  --color-attention-bg: #FEF3C7;
+  --color-state-confident: #047857;
+  --color-state-confident-bg: #ECFDF5;
+  --color-state-provisional: #78716C;
+  --color-state-provisional-bg: #F5F5F4;
+  --color-state-blocked: #9F1239;
+  --color-state-blocked-bg: #FFF1F2;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  @apply font-serif bg-paper text-ink leading-relaxed antialiased;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+code,
+pre,
+kbd,
+samp {
+  @apply font-mono;
+}
+
+::selection {
+  background: #F5EFE4;
+  color: #1F2937;
+}
+
+@layer base {
+  *:focus {
+    outline: none;
+  }
+  *:focus-visible {
+    outline: 2px solid theme('colors.accent');
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+}
+
+@media print {
+  /* Hide interactive chrome */
+  aside,
+  form,
+  button,
+  nav {
+    display: none !important;
+  }
+
+  /* Full-width paper */
+  body {
+    background: white !important;
+  }
+
+  /* Let long dossiers flow across pages */
+  section,
+  article {
+    break-inside: avoid-page;
+  }
+
+  /* Generous left/right margins come from the printer, not the page */
+  main,
+  [class*="max-w-"] {
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Quieter rules in print */
+  .border-rule,
+  .border-t,
+  .border-l {
+    border-color: #000 !important;
+    border-width: 0.5pt !important;
+  }
+}
