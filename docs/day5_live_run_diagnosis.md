@@ -266,3 +266,203 @@ them even if it partially ignores the system prompt.
 4. Only then consider D.5 (prompt polish) and the enforcement / schema
    items — those depend on observations from a run that actually spoke
    to the API.
+
+---
+
+## Post-approval run (auto-resolved)
+
+Run date: 2026-04-22 (second live run of the day)
+Dossier id: `dos_83702bf49194` (mid-investigation, from the previous day-5 run)
+Branch: `main` (worktree `agent-a57254af`)
+
+### Context
+
+Per the previous (mid-investigation) live run, the dossier was left in
+state: plan drafted (6 items) + `plan_approval` decision point open +
+one `needs_input` open; no sections, sub-investigations, or artifacts.
+Work session `ws_b3230746c268` used 74 328 tokens creating that state
+and then ended cleanly. Dossier status was `active` (not `delivered`
+— that note in the run brief appears to be stale).
+
+### Pre-resume operations (HTTP)
+
+All four operations succeeded against the running backend at
+`127.0.0.1:8731`:
+
+1. `PATCH /api/dossiers/dos_83702bf49194` `{"status":"active"}` — OK (already active).
+2. `POST /api/dossiers/.../decision-points/dp_ef204c7686ad/resolve` `{"chosen":"Approve"}` — OK. `resolved_at=2026-04-22T20:37:43Z`. Storage auto-approve hook set `investigation_plan.approved_at=2026-04-22T20:37:43Z`.
+3. `POST /api/dossiers/.../needs-input/ni_3ae38b1188e2/resolve` with the jurisdictional / account-relationship / estate / contact-history / goal facts — OK. `answered_at=2026-04-22T20:37:53Z`.
+4. Final verification `GET /api/dossiers/dos_83702bf49194`:
+   - `status=active`
+   - `investigation_plan.approved_at=2026-04-22T20:37:43Z`
+   - `dp_ef204c7686ad` resolved
+   - `ni_3ae38b1188e2` answered
+   - all consistent with expected pre-resume state.
+
+### Resume and monitor
+
+`POST /api/dossiers/dos_83702bf49194/resume` returned
+`{"status":"started","work_session_id":"ws_cd2977dbb373"}` at
+`2026-04-22T20:38:03Z`.
+
+Monitor polled every 30 s. Snapshots (compact):
+
+| elapsed | doss.status | run_status | log entries | subs | artifacts | sections | sources | ws tokens | ws ended |
+|---|---|---|---|---|---|---|---|---|---|
+| 0 s | active | idle | 0 | 0 | 0 | 0 | 0 | 0 | null |
+| 30 s | active | idle | 0 | 0 | 0 | 0 | 0 | 0 | null |
+| 60 s | active | idle | 0 | 0 | 0 | 0 | 0 | 0 | null |
+| 90 s | active | idle | 0 | 0 | 0 | 0 | 0 | 0 | null |
+| 120 s | active | idle | 0 | 0 | 0 | 0 | 0 | 0 | null |
+| 150 s | active | idle | 0 | 0 | 0 | 0 | 0 | 0 | null |
+
+At t≈130 s, `GET /api/agents/running` returned `[]` and
+`GET /api/dossiers/.../agent/status` returned `running: false`. The
+orchestrator's done-callback had pruned the task; yet the work session
+`ws_cd2977dbb373` still had `ended_at=null` and
+`token_budget_used=0`. Monitor was terminated manually (the run was
+already dead), the orphan session was closed via
+`POST /api/work-sessions/ws_cd2977dbb373/end` to keep the storage
+layer clean. Final `token_budget_used` for the session: **0**.
+
+### Final substance bar
+
+| Threshold | Target | Actual | Pass/Fail |
+|---|---|---|---|
+| sub-investigations | ≥ 3 | **0** | **FAIL** |
+| sources consulted | ≥ 20 | **0** | **FAIL** |
+| artifacts | ≥ 1 | **0** | **FAIL** |
+
+Zero progress from the post-approval run.
+
+### Behaviors observed
+
+- **Did the agent use the answered facts?** No — the agent never produced a turn. The facts remain in the dossier but never reached the model on this run.
+- **Did it spawn sub-investigations?** No.
+- **Did it produce artifacts?** No.
+- **Did it record considered-and-rejected paths?** No.
+- **Is the final debrief substantive?** No change from before the resume — the `what_i_did` / `what_i_found` from the first run still reads as preliminary (hedged, no citations, no state-specific reasoning), `do_next` and `left_open` are still `None`.
+
+### New failure modes found
+
+**5. Silent no-op on resume (highest severity)**
+
+> *Observed*: `/resume` returned `status=started` and opened
+> `ws_cd2977dbb373`. `GET /api/agents/running` went from non-empty
+> back to `[]` within ~2 minutes. Throughout, the work session
+> recorded `token_budget_used=0`, `investigation_log` had 0 entries,
+> and `ws.ended_at` was `null`. The agent made no API call, no tool
+> call, no write of any kind.
+
+Suspected cause: one of two paths in `DossierAgent.run()`:
+
+ a. An exception was raised **before** the `try:` block at
+    `runtime.py:113` (i.e. in `_resolve_session`,
+    `build_system_prompt`, or `_snapshot_content` →
+    `build_state_snapshot`) — in which case the runtime's
+    `finally: storage.end_work_session(...)` would not run, which
+    matches the observed orphan session exactly.
+
+    I manually exercised `storage.get_dossier_full(...)`,
+    `prompt.build_system_prompt(...)`, and
+    `prompt.build_state_snapshot(...)` against this dossier; all three
+    succeeded. So if this is the path, the triggering condition is
+    specific to the asyncio task context (e.g. a thread-sensitive
+    storage access or a module-level import happening for the first
+    time under the event loop).
+
+ b. An exception was raised inside the orchestrator's `start()` call
+    after `asyncio.create_task` but before the runtime's own `try:` —
+    the task's done-callback logs the error via
+    `logger.error(..., exc_info=exc)`, but dev.sh streams logs to
+    stdout with no file capture, so the traceback is invisible once
+    the shell scrolls.
+
+Either way, the symptom is identical from the API surface: session
+orphan, 0 tokens, task gone.
+
+Severity: **critical**. This is the post-approval path — the whole
+product experience after the user answers the plan. A silent no-op
+here means the user approves the plan and the agent simply does
+nothing, with no observable reason.
+
+**6. Orphan work-session on runtime-boundary failure (high)**
+
+> *Observed*: `ws_cd2977dbb373` had `ended_at=null` after the task
+> was already reaped by the orchestrator's done-callback.
+
+Suspected cause: `DossierAgent.run()` performs `_resolve_session()`,
+`build_system_prompt()`, and `_snapshot_content()` **before** the
+`try:` block that holds the `finally: end_work_session(...)` clause.
+Any exception in those steps leaves the session open forever. This
+compounds failure mode 5 by making retries impossible — a subsequent
+`/resume` 409s on the stale active session.
+
+Severity: **high**. Blocks all retries without manual intervention.
+
+**7. Done-callback log loss (high)**
+
+> *Observed*: `_make_done_callback` in
+> `orchestrator.py:99–120` logs exceptions with full tracebacks, but
+> the backend is launched via `dev.sh` with stdout going straight to
+> the terminal (no file, no rotation). In a live-run context, the
+> first evidence of a failure is lost as soon as the shell scrolls —
+> which is how we ended up with symptom (5) above and no traceback.
+
+Severity: **high**. Makes the whole runtime effectively un-debuggable
+on dev machines.
+
+**8. Resume endpoint does not expose run-outcome (medium)**
+
+> *Observed*: the `/resume` endpoint is fire-and-forget; the caller
+> has no way to learn that the run ended with `reason="error"` and
+> what the error was. Combined with (7), a run that dies on turn 0
+> looks indistinguishable to the UI from "running in the background,
+> come back later".
+
+Severity: **medium**. User-visible. A next-run UX would say "we
+tried; here's why it failed."
+
+### Cost
+
+- First session (`ws_b3230746c268`, pre-approval): 74 328 tokens.
+  Rough Opus-4-7 blended estimate at $15/Mtok input + $75/Mtok output,
+  assuming roughly 80/20 split: ≈ **$1.80–$2.20**. This is sunk cost
+  from the previous live run, not this one.
+- Second session (`ws_cd2977dbb373`, post-approval, **this run**):
+  **0 tokens — $0.00**. The agent never reached the API.
+- **Total cost of this diagnosis run: $0.00** (within noise of the
+  free HTTP calls to the local backend).
+
+The $3–$10 budget the run brief allocated was not spent. As with the
+original diagnosis, a follow-up run will be needed to exercise the
+post-approval path once failure modes 5–7 are understood.
+
+### Recommended investigation
+
+Do not attempt a retry until the silent-failure instrumentation
+lands. Specifically:
+
+1. **Capture agent task exceptions to a file.** Add a
+   `logging.FileHandler` in `main.py` (gated by `VELLUM_AGENT_LOG`
+   env var, defaulting to `backend/logs/agent.log`) so the
+   orchestrator's done-callback tracebacks survive after the terminal
+   scrolls. Rotation can wait.
+
+2. **Move the runtime's session-end into a try/finally at the top of
+   `run()`.** Shift `_resolve_session()`,
+   `build_system_prompt(...)`, and the first `_snapshot_content(...)`
+   call **inside** the `try:` block so the existing
+   `finally: storage.end_work_session(...)` covers them. This fixes
+   failure mode 6.
+
+3. **Add an outcome column to `work_sessions`.** Per Section D of
+   the original diagnosis ("Schema / storage"): add
+   `result_reason: str` and `result_error: str` and populate them
+   from the runtime's `finally`. This fixes failure mode 8 and makes
+   future live-run forensics a single SQL query.
+
+4. **Re-run the post-approval scenario** with the instrumentation in
+   place, against a fresh resume of this same dossier (the facts
+   answered in the `needs_input` are rich and worth preserving).
+   Expect this to surface whatever the real exception was in step 2.
