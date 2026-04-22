@@ -100,11 +100,13 @@ export function useResolveDecisionPoint() {
       dossierId: string;
       decisionPointId: string;
       chosen: string;
+      workSessionId?: string;
     }) =>
       api.resolveDecisionPoint(
         vars.dossierId,
         vars.decisionPointId,
         vars.chosen,
+        vars.workSessionId,
       ),
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: qk.dossier(vars.dossierId) });

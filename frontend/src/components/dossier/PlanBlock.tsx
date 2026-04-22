@@ -57,13 +57,9 @@ export function PlanBlock({ plan }: PlanBlockProps) {
       </div>
 
       {!approved ? (
-        <>
-          <p className="text-sm font-serif italic text-ink-muted">
-            Plan drafted — awaiting approval.
-          </p>
-          {/* Mount point for the plan-approval component owned by another agent. */}
-          <div data-slot="plan-approval" />
-        </>
+        <p className="text-sm font-serif italic text-ink-muted">
+          Plan drafted — awaiting approval.
+        </p>
       ) : null}
 
       {plan.rationale && plan.rationale.trim().length > 0 ? (

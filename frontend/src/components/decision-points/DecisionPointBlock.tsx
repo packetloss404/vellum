@@ -7,7 +7,22 @@ import { DecisionPointItem } from "./DecisionPointItem";
  *
  * Renders one block per open decision_point. Renders nothing when
  * there are no open items.
+ *
+ * Plan-approval decisions (`kind === "plan_approval"`) are rendered by
+ * `PlanApprovalBlock` instead, so we filter them out here to avoid a
+ * duplicate card. The heuristic fallback (title contains "approve"/"plan"
+ * when `kind` is absent) matches PlanApprovalBlock's fallback so the two
+ * surfaces stay in sync for pre-`kind`-field dossiers.
  */
+
+function isPlanApproval(p: DecisionPoint): boolean {
+  if (p.kind === "plan_approval") return true;
+  if (p.kind === undefined) {
+    const t = p.title.toLowerCase();
+    return t.includes("approve") || t.includes("plan");
+  }
+  return false;
+}
 
 export interface DecisionPointBlockProps {
   items: DecisionPoint[];
@@ -18,7 +33,9 @@ export function DecisionPointBlock({
   items,
   dossierId,
 }: DecisionPointBlockProps) {
-  const open = items.filter((i) => i.resolved_at == null);
+  const open = items.filter(
+    (i) => i.resolved_at == null && !isPlanApproval(i),
+  );
   if (open.length === 0) return null;
 
   return (

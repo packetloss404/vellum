@@ -134,6 +134,16 @@ export interface DecisionOption {
   recommended: boolean;
 }
 
+/**
+ * `kind` distinguishes the purpose of a decision_point. The plan-approval
+ * gate agent is adding this field server-side (default "generic"). Optional
+ * here so older persisted points that lack the field parse cleanly.
+ */
+export type DecisionPointKind =
+  | "plan_approval"
+  | "stuck_resolution"
+  | "generic";
+
 export interface DecisionPoint {
   id: string;
   dossier_id: string;
@@ -144,6 +154,7 @@ export interface DecisionPoint {
   created_at: string;
   resolved_at?: string | null;
   chosen?: string | null;
+  kind?: DecisionPointKind;
 }
 
 export interface ReasoningTrailEntry {

@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { Header } from "../components/layout/Header";
 import { NeedsInputBlock } from "../components/needs-input/NeedsInputBlock";
 import { DecisionPointBlock } from "../components/decision-points/DecisionPointBlock";
+import { PlanApprovalBlock } from "../components/plan-approval/PlanApprovalBlock";
 import { Pill } from "../components/common/Pill";
 import { DossierHero } from "../components/common/DossierHero";
 import { DebriefBlock } from "../components/dossier/DebriefBlock";
@@ -121,14 +122,31 @@ export default function DossierPage() {
     next_actions,
   } = data;
 
-  // Filter out plan_approval decision points — those are owned by the
-  // plan-approval component (mounted inside PlanBlock via data-slot).
-  // We match on title prefix defensively since `kind` isn't a field on
-  // DecisionPoint; the intake/agent conventionally prefixes these.
+  // Filter out plan_approval decision points — those are owned by
+  // PlanApprovalBlock. Prefer `kind` when present; fall back to title match
+  // for legacy rows.
   const visibleDecisionPoints = (decision_points ?? []).filter((dp) => {
+    if ((dp as { kind?: string }).kind === "plan_approval") return false;
     const t = (dp.title ?? "").toLowerCase();
     return !t.startsWith("approve plan") && !t.includes("plan approval");
   });
+
+  const hasSections = sections && sections.length > 0;
+  const openNeeds = (needs_input ?? []).filter((n) => n.answered_at == null);
+  const openDecisions = visibleDecisionPoints.filter(
+    (d) => d.resolved_at == null,
+  );
+  // A drafted-but-unapproved investigation_plan also counts as content —
+  // PlanApprovalBlock is on-page in that case, so suppress the "nothing
+  // written yet" empty state.
+  const hasPendingPlan =
+    !!dossier.investigation_plan &&
+    dossier.investigation_plan.approved_at == null;
+  const isEmpty =
+    !hasSections &&
+    openNeeds.length === 0 &&
+    openDecisions.length === 0 &&
+    !hasPendingPlan;
 
   const typeLabel = dossier.dossier_type.replace(/_/g, " ");
   const cadenceLabel = dossier.check_in_policy?.cadence?.replace(/_/g, " ");
@@ -195,8 +213,12 @@ export default function DossierPage() {
           {/* Debrief — only renders if populated. */}
           <DebriefBlock debrief={dossier.debrief} />
 
-          {/* Plan — renders placeholder slot for plan-approval when unapproved. */}
+          {/* Plan — lists the items. */}
           <PlanBlock plan={dossier.investigation_plan} />
+
+          {/* APPROVE THE PLAN — Day-3 gate. Renders when the intake-seeded
+              investigation_plan is awaiting user approval. Null otherwise. */}
+          <PlanApprovalBlock dossier={data} />
 
           {/* NEEDS YOU — open needs_input items. */}
           <NeedsInputBlock items={needs_input ?? []} dossierId={dossierId} />
