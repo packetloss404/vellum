@@ -223,6 +223,8 @@ ChangeKind = Literal[
     "sub_investigation_spawned",
     "sub_investigation_completed",
     "sub_investigation_abandoned",
+    "investigation_log_appended",
+    "considered_and_rejected_added",
 ]
 
 
@@ -248,6 +250,8 @@ class DossierFull(BaseModel):
     next_actions: list[NextAction] = Field(default_factory=list)
     artifacts: list["Artifact"] = Field(default_factory=list)
     sub_investigations: list["SubInvestigation"] = Field(default_factory=list)
+    investigation_log: list["InvestigationLogEntry"] = Field(default_factory=list)
+    considered_and_rejected: list["ConsideredAndRejected"] = Field(default_factory=list)
 
 
 # --- API request shapes ---
@@ -433,4 +437,65 @@ class SubInvestigationStateUpdate(BaseModel):
     reason: str
 
 
+# --- v2: investigation_log ---
+
+
+class InvestigationLogEntryType(str, Enum):
+    source_consulted = "source_consulted"
+    sub_investigation_spawned = "sub_investigation_spawned"
+    sub_investigation_returned = "sub_investigation_returned"
+    section_upserted = "section_upserted"
+    section_revised = "section_revised"
+    artifact_added = "artifact_added"
+    artifact_revised = "artifact_revised"
+    path_rejected = "path_rejected"
+    decision_flagged = "decision_flagged"
+    input_requested = "input_requested"
+    plan_revised = "plan_revised"
+    stuck_declared = "stuck_declared"
+
+
+class InvestigationLogEntry(BaseModel):
+    id: str                        # prefix: "ilg"
+    dossier_id: str
+    work_session_id: Optional[str] = None
+    sub_investigation_id: Optional[str] = None  # if produced inside a sub
+    entry_type: InvestigationLogEntryType
+    payload: dict                  # typed-by-convention; not schema-enforced in v1
+    summary: str                   # one-line human-readable
+    created_at: datetime
+
+
+class InvestigationLogAppend(BaseModel):
+    entry_type: InvestigationLogEntryType
+    payload: dict = Field(default_factory=dict)
+    summary: str
+    sub_investigation_id: Optional[str] = None
+
+
+# --- v2: considered_and_rejected ---
+
+
+class ConsideredAndRejected(BaseModel):
+    id: str                        # prefix: "crj"
+    dossier_id: str
+    sub_investigation_id: Optional[str] = None
+    path: str                      # what was considered
+    why_compelling: str            # why it was tempting
+    why_rejected: str              # why it was dismissed
+    cost_of_error: str = ""        # what happens if the rejection was wrong
+    sources: list[Source] = Field(default_factory=list)
+    created_at: datetime
+
+
+class ConsideredAndRejectedCreate(BaseModel):
+    path: str
+    why_compelling: str
+    why_rejected: str
+    cost_of_error: str = ""
+    sources: list[Source] = Field(default_factory=list)
+    sub_investigation_id: Optional[str] = None
+
+
+# Resolve forward references for DossierFull.
 DossierFull.model_rebuild()

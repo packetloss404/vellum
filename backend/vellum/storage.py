@@ -307,6 +307,10 @@ def get_dossier_full(dossier_id: str) -> Optional[m.DossierFull]:
         next_actions=list_next_actions(dossier_id),
         artifacts=list_artifacts(dossier_id),
         sub_investigations=list_sub_investigations(dossier_id),
+        # v2: cap investigation_log at the most recent 500 entries to keep the
+        # aggregate payload bounded on hot dossiers.
+        investigation_log=list_investigation_log(dossier_id, limit=500),
+        considered_and_rejected=list_considered_and_rejected(dossier_id),
     )
 
 
@@ -1081,7 +1085,6 @@ def list_change_log_since_last_visit(dossier_id: str) -> list[m.ChangeLogEntry]:
     return [_row_to_change(r) for r in rows]
 
 
-
 # ---------- Artifacts ----------
 
 
@@ -1397,3 +1400,180 @@ def abandon_sub_investigation(
             "SELECT * FROM sub_investigations WHERE id = ?", (sub_id,)
         ).fetchone()
     return _row_to_sub_investigation(row)
+
+
+# ---------- v2: InvestigationLog ----------
+#
+# The investigation_log is the typed, countable "evidence of work" surface
+# (source_consulted, sub_investigation_spawned, etc.). It is *separate* from
+# change_log (user-visit-diff) by design — appends here do NOT write to
+# change_log. This keeps the "47 sources consulted" counter from polluting the
+# since-last-visit plan-diff the user reads when they return.
+
+
+def _row_to_investigation_log(row: sqlite3.Row) -> m.InvestigationLogEntry:
+    return m.InvestigationLogEntry(
+        id=row["id"],
+        dossier_id=row["dossier_id"],
+        work_session_id=row["work_session_id"],
+        sub_investigation_id=row["sub_investigation_id"],
+        entry_type=m.InvestigationLogEntryType(row["entry_type"]),
+        payload=json.loads(row["payload"]) if row["payload"] else {},
+        summary=row["summary"],
+        created_at=_dt(row["created_at"]),
+    )
+
+
+def append_investigation_log(
+    dossier_id: str,
+    data: m.InvestigationLogAppend,
+    work_session_id: Optional[str] = None,
+) -> m.InvestigationLogEntry:
+    now = m.utc_now()
+    entry = m.InvestigationLogEntry(
+        id=m.new_id("ilg"),
+        dossier_id=dossier_id,
+        work_session_id=work_session_id,
+        sub_investigation_id=data.sub_investigation_id,
+        entry_type=data.entry_type,
+        payload=data.payload,
+        summary=data.summary,
+        created_at=now,
+    )
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO investigation_log (id, dossier_id, work_session_id, sub_investigation_id,
+                                           entry_type, payload, summary, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry.id,
+                dossier_id,
+                work_session_id,
+                data.sub_investigation_id,
+                data.entry_type.value,
+                json.dumps(data.payload),
+                data.summary,
+                _dt_str(now),
+            ),
+        )
+        # Note: intentionally do NOT call _log_change — see module-level comment.
+    return entry
+
+
+def list_investigation_log(
+    dossier_id: str,
+    entry_type: Optional[m.InvestigationLogEntryType] = None,
+    limit: int = 500,
+) -> list[m.InvestigationLogEntry]:
+    q = "SELECT * FROM investigation_log WHERE dossier_id = ?"
+    params: list[object] = [dossier_id]
+    if entry_type is not None:
+        q += " AND entry_type = ?"
+        params.append(entry_type.value)
+    q += " ORDER BY created_at LIMIT ?"
+    params.append(limit)
+    with connect() as conn:
+        rows = conn.execute(q, params).fetchall()
+    return [_row_to_investigation_log(r) for r in rows]
+
+
+def count_investigation_log_by_type(dossier_id: str) -> dict[str, int]:
+    """Powers the "47 sources / 4 sub-investigations / 3 artifacts" header in the UI."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT entry_type, COUNT(*) AS n FROM investigation_log WHERE dossier_id = ? GROUP BY entry_type",
+            (dossier_id,),
+        ).fetchall()
+    return {r["entry_type"]: r["n"] for r in rows}
+
+
+# ---------- v2: ConsideredAndRejected ----------
+
+
+def _row_to_considered_and_rejected(row: sqlite3.Row) -> m.ConsideredAndRejected:
+    return m.ConsideredAndRejected(
+        id=row["id"],
+        dossier_id=row["dossier_id"],
+        sub_investigation_id=row["sub_investigation_id"],
+        path=row["path"],
+        why_compelling=row["why_compelling"],
+        why_rejected=row["why_rejected"],
+        cost_of_error=row["cost_of_error"],
+        sources=_SourceList.validate_json(row["sources"]),
+        created_at=_dt(row["created_at"]),
+    )
+
+
+def add_considered_and_rejected(
+    dossier_id: str,
+    data: m.ConsideredAndRejectedCreate,
+    work_session_id: Optional[str] = None,
+) -> m.ConsideredAndRejected:
+    now = m.utc_now()
+    item = m.ConsideredAndRejected(
+        id=m.new_id("crj"),
+        dossier_id=dossier_id,
+        sub_investigation_id=data.sub_investigation_id,
+        path=data.path,
+        why_compelling=data.why_compelling,
+        why_rejected=data.why_rejected,
+        cost_of_error=data.cost_of_error,
+        sources=data.sources,
+        created_at=now,
+    )
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO considered_and_rejected
+                (id, dossier_id, sub_investigation_id, path, why_compelling, why_rejected,
+                 cost_of_error, sources, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item.id,
+                dossier_id,
+                data.sub_investigation_id,
+                data.path,
+                data.why_compelling,
+                data.why_rejected,
+                data.cost_of_error,
+                _SourceList.dump_json(data.sources).decode(),
+                _dt_str(now),
+            ),
+        )
+        _log_change(
+            conn, dossier_id, work_session_id, "considered_and_rejected_added",
+            f"Rejected: {data.path}",
+        )
+        # Also append to investigation_log so the "paths considered" counter
+        # reflects this. Inline insert keeps the timestamp inside the same txn.
+        conn.execute(
+            """
+            INSERT INTO investigation_log (id, dossier_id, work_session_id, sub_investigation_id,
+                                           entry_type, payload, summary, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                m.new_id("ilg"),
+                dossier_id,
+                work_session_id,
+                data.sub_investigation_id,
+                m.InvestigationLogEntryType.path_rejected.value,
+                json.dumps({"considered_and_rejected_id": item.id}),
+                f"Rejected: {data.path}",
+                _dt_str(now),
+            ),
+        )
+        _touch_dossier(conn, dossier_id)
+    return item
+
+
+def list_considered_and_rejected(dossier_id: str) -> list[m.ConsideredAndRejected]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM considered_and_rejected WHERE dossier_id = ? ORDER BY created_at",
+            (dossier_id,),
+        ).fetchall()
+    return [_row_to_considered_and_rejected(r) for r in rows]
