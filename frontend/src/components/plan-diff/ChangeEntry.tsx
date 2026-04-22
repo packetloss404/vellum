@@ -1,9 +1,221 @@
 import type { ChangeLogEntry, ChangeKind } from "../../api/types";
 import { relativeTime } from "../../utils/time";
 
-interface ChangeEntryProps {
-  entry: ChangeLogEntry;
+/**
+ * ChangeEntry — a single row in the plan-diff sidebar.
+ *
+ * Each ChangeKind has a finalized presentation (glyph + category + accent).
+ * Accent buckets:
+ *   - amber   → state changes, flagged work (needs_input_added etc.)
+ *   - neutral → added / routine edits
+ *   - rusty   → removals, abandonments, rejections
+ *   - green   → resolutions, completions ("confident" green)
+ */
+
+// --------------------------------------------------------------------------
+// Shared presentation tables.
+// The entire sidebar (grouping + rendering) reads from these two maps, so
+// callers importing `categoryOfKind` stay in sync with this file.
+
+export type PlanDiffCategory =
+  | "plan_and_debrief"
+  | "sections"
+  | "sub_investigations"
+  | "artifacts"
+  | "flagged"
+  | "considered_and_rejected"
+  | "housekeeping";
+
+export const PLAN_DIFF_CATEGORY_ORDER: PlanDiffCategory[] = [
+  "plan_and_debrief",
+  "sections",
+  "sub_investigations",
+  "artifacts",
+  "flagged",
+  "considered_and_rejected",
+  "housekeeping",
+];
+
+export const PLAN_DIFF_CATEGORY_LABEL: Record<PlanDiffCategory, string> = {
+  plan_and_debrief: "Plan & debrief",
+  sections: "Sections",
+  sub_investigations: "Sub-investigations",
+  artifacts: "Artifacts",
+  flagged: "Flagged for you",
+  considered_and_rejected: "Considered & rejected",
+  housekeeping: "Housekeeping",
+};
+
+export const CATEGORY_OF_KIND: Record<ChangeKind, PlanDiffCategory> = {
+  // Plan & debrief
+  debrief_updated: "plan_and_debrief",
+  plan_updated: "plan_and_debrief",
+  // Sections
+  section_created: "sections",
+  section_updated: "sections",
+  section_deleted: "sections",
+  state_changed: "sections",
+  sections_reordered: "sections",
+  // Sub-investigations
+  sub_investigation_spawned: "sub_investigations",
+  sub_investigation_completed: "sub_investigations",
+  sub_investigation_abandoned: "sub_investigations",
+  // Artifacts
+  artifact_added: "artifacts",
+  artifact_updated: "artifacts",
+  // Flagged for you
+  needs_input_added: "flagged",
+  needs_input_resolved: "flagged",
+  decision_point_added: "flagged",
+  decision_point_resolved: "flagged",
+  // Considered & rejected
+  ruled_out_added: "considered_and_rejected",
+  considered_and_rejected_added: "considered_and_rejected",
+  // Housekeeping
+  investigation_log_appended: "housekeeping",
+  next_action_added: "housekeeping",
+  next_action_completed: "housekeeping",
+  next_action_removed: "housekeeping",
+};
+
+export function categoryOfKind(kind: ChangeKind): PlanDiffCategory {
+  return CATEGORY_OF_KIND[kind];
 }
+
+// --------------------------------------------------------------------------
+
+type Accent = "amber" | "neutral" | "rusty" | "green";
+
+interface KindPresentation {
+  label: string;
+  glyph: string;
+  accent: Accent;
+  strikethrough?: boolean;
+  mutedBody?: boolean;
+}
+
+// Unicode glyphs chosen for legibility in Lora / JetBrains Mono at 12px.
+// Arrows + asterisks + daggers read as "thing happened" marks without the
+// weight of a full icon font.
+const KIND_MAP: Record<ChangeKind, KindPresentation> = {
+  // ---- Sections
+  section_created: { label: "Added section", glyph: "+", accent: "neutral" },
+  section_updated: { label: "Revised section", glyph: "~", accent: "neutral" },
+  section_deleted: {
+    label: "Removed section",
+    glyph: "−",
+    accent: "rusty",
+    strikethrough: true,
+    mutedBody: true,
+  },
+  state_changed: { label: "State changed", glyph: "↦", accent: "amber" },
+  sections_reordered: {
+    label: "Reordered sections",
+    glyph: "⇅",
+    accent: "neutral",
+  },
+
+  // ---- Flagged for you
+  needs_input_added: {
+    label: "Needs you",
+    glyph: "?",
+    accent: "amber",
+  },
+  needs_input_resolved: {
+    label: "Answered",
+    glyph: "✓",
+    accent: "green",
+    mutedBody: true,
+  },
+  decision_point_added: {
+    label: "Decision point",
+    glyph: "◆",
+    accent: "amber",
+  },
+  decision_point_resolved: {
+    label: "Decided",
+    glyph: "✓",
+    accent: "green",
+    mutedBody: true,
+  },
+
+  // ---- Considered & rejected
+  ruled_out_added: {
+    label: "Ruled out",
+    glyph: "×",
+    accent: "rusty",
+    strikethrough: true,
+    mutedBody: true,
+  },
+  considered_and_rejected_added: {
+    label: "Considered & rejected",
+    glyph: "×",
+    accent: "rusty",
+    mutedBody: true,
+  },
+
+  // ---- Artifacts
+  artifact_added: { label: "Artifact", glyph: "+", accent: "neutral" },
+  artifact_updated: { label: "Artifact revised", glyph: "~", accent: "neutral" },
+
+  // ---- Sub-investigations
+  sub_investigation_spawned: {
+    label: "Sub-investigation",
+    glyph: "↳",
+    accent: "neutral",
+  },
+  sub_investigation_completed: {
+    label: "Sub returned",
+    glyph: "✓",
+    accent: "green",
+  },
+  sub_investigation_abandoned: {
+    label: "Sub abandoned",
+    glyph: "×",
+    accent: "rusty",
+    mutedBody: true,
+  },
+
+  // ---- Plan & debrief
+  debrief_updated: { label: "Debrief", glyph: "§", accent: "neutral" },
+  plan_updated: { label: "Plan", glyph: "§", accent: "neutral" },
+
+  // ---- Housekeeping
+  next_action_added: {
+    label: "Next action",
+    glyph: "+",
+    accent: "amber",
+  },
+  next_action_completed: {
+    label: "Next action done",
+    glyph: "✓",
+    accent: "green",
+    mutedBody: true,
+  },
+  next_action_removed: {
+    label: "Next action removed",
+    glyph: "−",
+    accent: "rusty",
+    strikethrough: true,
+    mutedBody: true,
+  },
+  investigation_log_appended: {
+    label: "Log entry",
+    glyph: "·",
+    accent: "neutral",
+  },
+};
+
+// accent → tailwind class for the glyph
+const GLYPH_COLOR: Record<Accent, string> = {
+  amber: "text-attention",
+  neutral: "text-ink-faint",
+  rusty: "text-state-blocked",
+  green: "text-state-confident",
+};
+
+// --------------------------------------------------------------------------
+// State-change body parsing.
 
 const MAX_NOTE_LENGTH = 120;
 
@@ -12,129 +224,8 @@ function truncate(text: string, max = MAX_NOTE_LENGTH): string {
   return text.slice(0, max - 1).trimEnd() + "…";
 }
 
-interface KindPresentation {
-  label: string;
-  dotClass?: string;
-  strikethrough?: boolean;
-  mutedBody?: boolean;
-  accentBody?: "attention" | "accent";
-}
-
-const KIND_MAP: Record<ChangeKind, KindPresentation> = {
-  section_created: {
-    label: "Added section",
-    dotClass: "bg-state-confident",
-  },
-  section_updated: {
-    label: "Revised",
-    dotClass: "bg-ink-faint",
-  },
-  section_deleted: {
-    label: "Removed section",
-    dotClass: "bg-ink-faint",
-    strikethrough: true,
-    mutedBody: true,
-  },
-  state_changed: {
-    label: "State",
-  },
-  needs_input_added: {
-    label: "Needs you",
-    dotClass: "bg-attention",
-    accentBody: "attention",
-  },
-  needs_input_resolved: {
-    label: "Answered",
-    mutedBody: true,
-  },
-  decision_point_added: {
-    label: "Decision point",
-    dotClass: "bg-accent",
-    accentBody: "accent",
-  },
-  decision_point_resolved: {
-    label: "Decided",
-    mutedBody: true,
-  },
-  ruled_out_added: {
-    label: "Ruled out",
-    dotClass: "bg-ink-faint",
-    strikethrough: true,
-    mutedBody: true,
-  },
-  sections_reordered: {
-    label: "Reordered sections",
-    dotClass: "bg-ink-faint",
-  },
-  // v2 kinds — placeholder presentations; final styling is Day 4 UI work.
-  artifact_added: {
-    label: "Artifact added",
-    dotClass: "bg-state-confident",
-  },
-  artifact_updated: {
-    label: "Artifact revised",
-    dotClass: "bg-ink-faint",
-  },
-  sub_investigation_spawned: {
-    label: "Sub-investigation",
-    dotClass: "bg-accent",
-    accentBody: "accent",
-  },
-  sub_investigation_completed: {
-    label: "Sub-investigation returned",
-    dotClass: "bg-state-confident",
-  },
-  sub_investigation_abandoned: {
-    label: "Sub-investigation abandoned",
-    dotClass: "bg-ink-faint",
-    mutedBody: true,
-  },
-  debrief_updated: {
-    label: "Debrief updated",
-    dotClass: "bg-ink-faint",
-  },
-  plan_updated: {
-    label: "Plan updated",
-    dotClass: "bg-ink-faint",
-  },
-  next_action_added: {
-    label: "Next action",
-    dotClass: "bg-attention",
-    accentBody: "attention",
-  },
-  next_action_completed: {
-    label: "Next action done",
-    mutedBody: true,
-  },
-  next_action_removed: {
-    label: "Next action removed",
-    dotClass: "bg-ink-faint",
-    strikethrough: true,
-    mutedBody: true,
-  },
-  investigation_log_appended: {
-    label: "Log entry",
-    dotClass: "bg-ink-faint",
-  },
-  considered_and_rejected_added: {
-    label: "Considered & rejected",
-    dotClass: "bg-ink-faint",
-    mutedBody: true,
-  },
-};
-
-function Dot({ className }: { className: string }) {
-  return (
-    <span
-      className={`w-1.5 h-1.5 rounded-full inline-block align-middle mr-2 ${className}`}
-      aria-hidden="true"
-    />
-  );
-}
-
-// Parses a "X -> Y" or "X → Y" pattern. Returns null if absent.
 function parseStateTransition(
-  note: string
+  note: string,
 ): { from: string; to: string } | null {
   const match = note.match(/^\s*(.+?)\s*(?:→|->)\s*(.+?)\s*$/);
   if (!match) return null;
@@ -154,73 +245,82 @@ function stateToneClass(state: string): string {
 function StateChangeBody({ note }: { note: string }) {
   const transition = parseStateTransition(note);
   if (!transition) {
-    return (
-      <span className="font-serif text-sm text-ink">{truncate(note)}</span>
-    );
+    return <span>{truncate(note)}</span>;
   }
   return (
-    <span className="font-serif text-sm text-ink inline-flex items-baseline gap-1.5">
+    <span className="inline-flex items-baseline gap-1.5">
       <span className={`font-mono text-xs ${stateToneClass(transition.from)}`}>
         {truncate(transition.from, 40)}
       </span>
       <span className="text-ink-faint font-mono text-xs" aria-hidden="true">
         →
       </span>
-      <span
-        className={`font-mono text-xs ${stateToneClass(transition.to)}`}
-      >
+      <span className={`font-mono text-xs ${stateToneClass(transition.to)}`}>
         {truncate(transition.to, 40)}
       </span>
     </span>
   );
 }
 
+// --------------------------------------------------------------------------
+
+/** The in-DOM id a click on this entry should scroll to, or null. */
+function targetAnchorId(entry: ChangeLogEntry): string | null {
+  if (entry.section_id) return `section-${entry.section_id}`;
+  // We don't currently carry the sub-investigation id on ChangeLogEntry, so
+  // we only scroll to sections. If/when the backend threads a
+  // sub_investigation_id onto entries, extend here.
+  return null;
+}
+
+function scrollToAnchor(anchorId: string) {
+  if (typeof document === "undefined") return;
+  const el = document.getElementById(anchorId);
+  if (!el) return;
+  el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+interface ChangeEntryProps {
+  entry: ChangeLogEntry;
+}
+
 export function ChangeEntry({ entry }: ChangeEntryProps) {
   const presentation = KIND_MAP[entry.kind];
-  const label = presentation.label;
+  const anchor = targetAnchorId(entry);
+  const isStateChange = entry.kind === "state_changed";
 
   const bodyClasses = [
     "font-serif",
     "text-sm",
     "block",
     "mt-1",
-    "pl-[14px]", // aligns under the label, past the 6px dot + 8px gap
+    "leading-snug",
+    "pl-[14px]", // aligns under the label, past glyph + gap
   ];
-
   if (presentation.strikethrough) bodyClasses.push("line-through");
-  if (presentation.accentBody === "attention") {
-    bodyClasses.push("text-attention");
-  } else if (presentation.accentBody === "accent") {
-    bodyClasses.push("text-accent");
-  } else if (presentation.mutedBody) {
+  if (presentation.mutedBody) {
     bodyClasses.push("text-ink-muted");
   } else {
     bodyClasses.push("text-ink");
   }
 
-  const isStateChange = entry.kind === "state_changed";
-
-  return (
-    <li className="group">
+  const content = (
+    <>
       <div className="flex items-baseline justify-between gap-3">
         <div className="flex items-baseline min-w-0">
-          {presentation.dotClass ? (
-            <Dot className={presentation.dotClass} />
-          ) : isStateChange ? (
-            <span
-              className="font-mono text-xs text-ink-faint mr-2 align-middle"
-              aria-hidden="true"
-            >
-              ↦
-            </span>
-          ) : null}
-          <span className="font-mono text-xs uppercase tracking-wide text-ink-muted truncate">
-            {label}
+          <span
+            className={`font-mono text-xs mr-2 align-middle w-[8px] inline-block ${GLYPH_COLOR[presentation.accent]}`}
+            aria-hidden="true"
+          >
+            {presentation.glyph}
+          </span>
+          <span className="font-mono text-[11px] uppercase tracking-wide text-ink-muted truncate">
+            {presentation.label}
           </span>
         </div>
         <time
           dateTime={entry.created_at}
-          className="font-mono text-xs text-ink-faint shrink-0"
+          className="font-mono text-[11px] text-ink-faint shrink-0"
           title={new Date(entry.created_at).toLocaleString()}
         >
           {relativeTime(entry.created_at)}
@@ -236,8 +336,24 @@ export function ChangeEntry({ entry }: ChangeEntryProps) {
           {truncate(entry.change_note)}
         </span>
       )}
-    </li>
+    </>
   );
+
+  if (anchor) {
+    return (
+      <li className="group">
+        <button
+          type="button"
+          onClick={() => scrollToAnchor(anchor)}
+          className="w-full text-left rounded -mx-1 px-1 py-0.5 hover:bg-surface-sunk/60 focus:outline-none focus:bg-surface-sunk/60 transition-colors"
+        >
+          {content}
+        </button>
+      </li>
+    );
+  }
+
+  return <li className="group">{content}</li>;
 }
 
 export default ChangeEntry;

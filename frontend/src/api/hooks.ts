@@ -1,10 +1,12 @@
 // React Query hooks over ./client. Mutations invalidate the query keys they
 // affect so dependent views refetch automatically.
 
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "./client";
 import type {
+  ChangeLogEntry,
   InvestigationLogEntryType,
   SubInvestigationState,
 } from "./types";
@@ -47,6 +49,75 @@ export const useChangeLog = (id: string) =>
     queryFn: () => api.getChangeLog(id),
     enabled: !!id,
   });
+
+/**
+ * useChangeLogSinceVisit — snapshotting wrapper around useChangeLog.
+ *
+ * The plan-diff sidebar needs the change-log AS IT WAS AT MOUNT — i.e.
+ * before DossierPage fires its /visit POST and invalidates the query.
+ * This hook:
+ *
+ *   1. Subscribes to the change-log query (same key as useChangeLog).
+ *   2. Captures the first non-undefined response into local state and
+ *      returns that snapshot forever after. Later refetches (triggered
+ *      by the /visit invalidation) are ignored.
+ *   3. Also snapshots `dossier.last_visited_at` at first sight, for the
+ *      "Last visited 3h ago" subtitle. `null` = first visit.
+ *
+ * When the id changes the hook resets and re-snapshots.
+ */
+export function useChangeLogSinceVisit(dossierId: string): {
+  entries: ChangeLogEntry[];
+  /** ISO of last_visited_at from the first dossier fetch, or null for a
+   *  first visit, or undefined if the dossier hasn't loaded yet. */
+  lastVisitedAtSnapshot: string | null | undefined;
+  isLoading: boolean;
+  /** True once we've locked in the change-log snapshot. */
+  snapshotReady: boolean;
+  error: unknown;
+} {
+  const changeLog = useChangeLog(dossierId);
+  const dossier = useDossier(dossierId);
+
+  const [entriesSnapshot, setEntriesSnapshot] = useState<
+    ChangeLogEntry[] | null
+  >(null);
+  const [visitedSnapshot, setVisitedSnapshot] = useState<
+    string | null | undefined
+  >(undefined);
+
+  // Reset snapshots when the dossier changes (e.g. react-router nav).
+  const lastIdRef = useRef<string>(dossierId);
+  useEffect(() => {
+    if (lastIdRef.current !== dossierId) {
+      lastIdRef.current = dossierId;
+      setEntriesSnapshot(null);
+      setVisitedSnapshot(undefined);
+    }
+  }, [dossierId]);
+
+  useEffect(() => {
+    if (entriesSnapshot !== null) return;
+    if (changeLog.data === undefined) return;
+    setEntriesSnapshot(changeLog.data);
+  }, [changeLog.data, entriesSnapshot]);
+
+  useEffect(() => {
+    if (visitedSnapshot !== undefined) return;
+    if (dossier.data === undefined) return;
+    // `last_visited_at` is nullable on Dossier. null here means "never
+    // visited before", which we pass through.
+    setVisitedSnapshot(dossier.data.dossier.last_visited_at ?? null);
+  }, [dossier.data, visitedSnapshot]);
+
+  return {
+    entries: entriesSnapshot ?? [],
+    lastVisitedAtSnapshot: visitedSnapshot,
+    isLoading: changeLog.isLoading && entriesSnapshot === null,
+    snapshotReady: entriesSnapshot !== null,
+    error: changeLog.error,
+  };
+}
 
 export const useIntake = (id: string) =>
   useQuery({
