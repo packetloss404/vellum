@@ -94,6 +94,135 @@ def test_every_handler_has_a_description():
     assert not missing, f"handlers without descriptions: {sorted(missing)}"
 
 
+def test_tool_description_length_bounds():
+    """Every TOOL_DESCRIPTIONS entry must be between 80 and 700 chars.
+
+    Lower bound: descriptions shorter than ~80 chars are almost certainly
+    stubs that fail to give the agent a "when do I call this" test.
+    Upper bound: descriptions longer than ~700 chars bloat the system
+    prompt and bury the decision rule under example clutter. Catches
+    drift in either direction.
+    """
+    from vellum.tools import handlers
+    out_of_range: list[tuple[str, int]] = []
+    for name, desc in handlers.TOOL_DESCRIPTIONS.items():
+        n = len(desc)
+        if not (80 <= n <= 700):
+            out_of_range.append((name, n))
+    assert not out_of_range, (
+        f"tool descriptions out of [80, 700] char bounds: {out_of_range}"
+    )
+
+
+def test_critical_tool_descriptions_have_examples():
+    """The critical tools should include a concrete 'Example' in their
+    description. The agent is far more reliable when given a shape to
+    mimic than when given prose alone.
+    """
+    from vellum.tools import handlers
+    critical = {
+        "upsert_section",
+        "flag_decision_point",
+        "log_source_consulted",
+        "mark_considered_and_rejected",
+        "add_artifact",
+        "spawn_sub_investigation",
+        "update_investigation_plan",
+    }
+    missing_example: list[str] = []
+    for name in critical:
+        desc = handlers.TOOL_DESCRIPTIONS.get(name, "")
+        lower = desc.lower()
+        if "example" not in lower and "good:" not in lower:
+            missing_example.append(name)
+    assert not missing_example, (
+        f"critical tools missing a concrete example: {missing_example}"
+    )
+
+
+def test_log_source_consulted_description_mentions_per_source_discipline():
+    """The '47 sources' counter depends on the agent logging each source
+    exactly once (not per search). The description must say so loudly."""
+    from vellum.tools import handlers
+    desc = handlers.TOOL_DESCRIPTIONS["log_source_consulted"].lower()
+    assert "once" in desc or "one call per source" in desc or "per source" in desc, (
+        "log_source_consulted description should emphasise one call per source"
+    )
+    assert "search" in desc, (
+        "log_source_consulted description should address that searching does not count"
+    )
+
+
+def test_mark_investigation_delivered_description_flags_termination():
+    """This tool ends the agent loop. The description must make that obvious."""
+    from vellum.tools import handlers
+    desc = handlers.TOOL_DESCRIPTIONS["mark_investigation_delivered"].lower()
+    assert "terminate" in desc or "stops" in desc or "stop" in desc, (
+        "mark_investigation_delivered should flag that it terminates the loop"
+    )
+
+
+def test_update_debrief_description_references_checkpoints():
+    """update_debrief should be called at checkpoints and before delivery."""
+    from vellum.tools import handlers
+    desc = handlers.TOOL_DESCRIPTIONS["update_debrief"].lower()
+    assert "checkpoint" in desc or "before" in desc, (
+        "update_debrief should reference checkpoints or pre-delivery cadence"
+    )
+
+
+def test_spawn_sub_investigation_description_flags_sync_semantics():
+    """spawn_sub_investigation is a blocking call from the agent's POV —
+    the description should tell the agent so it does not try to poll."""
+    from vellum.tools import handlers
+    desc = handlers.TOOL_DESCRIPTIONS["spawn_sub_investigation"].lower()
+    assert "synchronous" in desc or "blocking" in desc or "runs to completion" in desc, (
+        "spawn_sub_investigation should document its synchronous/blocking semantics"
+    )
+
+
+def test_flag_decision_point_description_mentions_plan_approval_kind():
+    """Plan approval is a specific kind of decision_point; the description
+    should teach the agent the convention."""
+    from vellum.tools import handlers
+    desc = handlers.TOOL_DESCRIPTIONS["flag_decision_point"].lower()
+    assert "plan_approval" in desc, (
+        "flag_decision_point should mention the plan_approval kind convention"
+    )
+
+
+def test_overlapping_tool_pairs_have_disambiguation():
+    """Tools with overlapping surfaces should include a 'do NOT use' or
+    'vs' pointer so the agent routes correctly."""
+    from vellum.tools import handlers
+
+    def _disambiguates(desc: str, other_tool: str) -> bool:
+        lower = desc.lower()
+        return (
+            other_tool.lower() in lower
+            and ("do not" in lower or "do not use" in lower or "not" in lower or "instead" in lower)
+        )
+
+    pairs = [
+        # flag_needs_input vs flag_decision_point
+        ("flag_needs_input", "flag_decision_point"),
+        ("flag_decision_point", "flag_needs_input"),
+        # upsert_section vs add_artifact
+        ("upsert_section", "add_artifact"),
+        ("add_artifact", "upsert_section"),
+        # append_reasoning vs log_source_consulted / upsert_section
+        ("append_reasoning", "upsert_section"),
+    ]
+    missing: list[tuple[str, str]] = []
+    for src, other in pairs:
+        desc = handlers.TOOL_DESCRIPTIONS[src]
+        if not _disambiguates(desc, other):
+            missing.append((src, other))
+    assert not missing, (
+        f"overlapping tools missing disambiguation: {missing}"
+    )
+
+
 def test_every_handler_has_a_schema():
     from vellum.tools import handlers
     schema_names = {s["name"] for s in handlers.tool_schemas()}
