@@ -1,16 +1,20 @@
 import React from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { Pill } from "../common/Pill";
 import type { DossierStatus } from "../../api/types";
 
 /**
  * Header — the single piece of chrome above every page.
  *
- * Two modes:
- *   - Default (no dossier): just the Vellum wordmark, centered in a
- *     restrained top bar. This is all the chrome the landing page gets.
- *   - Dossier mode: wordmark left, dossier title + metadata row right.
- *     One-row layout on wide viewports; stacks on narrow.
+ * Styled as a quiet printed masthead: "Vellum" wordmark on the left in
+ * serif, a small "All dossiers" link on the right on any page other than
+ * "/". No user menu, no notifications, no toolbar — the dossier IS the
+ * page, so chrome stays out of the way.
+ *
+ * In dossier mode (when a `dossier` prop is passed), the current dossier's
+ * title and type/status line appear beside the wordmark, with the "all
+ * dossiers" link still visible to the right. This mirrors a printed case
+ * file's cover marking and keeps navigation within reach on detail pages.
  */
 
 export interface HeaderProps {
@@ -25,8 +29,6 @@ export interface HeaderProps {
 function statusVariant(
   status: string,
 ): "default" | "state" | "accent" | "attention" {
-  // Map dossier status onto a Pill variant. "active" reads as accent,
-  // everything else stays muted/default.
   switch (status as DossierStatus) {
     case "active":
       return "accent";
@@ -41,33 +43,26 @@ function statusVariant(
 
 export function Header({ title, dossier }: HeaderProps) {
   const dossierMode = !!dossier;
+  const { pathname } = useLocation();
+  const onHome = pathname === "/";
 
   return (
     <header className="border-b border-rule bg-paper">
-      <div
-        className={
-          dossierMode
-            ? "mx-auto max-w-page px-6 py-4 flex items-center justify-between gap-6"
-            : "mx-auto max-w-page px-6 py-5"
-        }
-      >
+      <div className="mx-auto max-w-page px-6 py-4 flex items-center justify-between gap-6">
         <Link
           to="/"
-          className={
-            dossierMode
-              ? "font-serif text-xl text-ink tracking-tight hover:text-accent transition-colors"
-              : "font-serif text-2xl text-ink tracking-tight hover:text-accent transition-colors"
-          }
+          className="font-serif text-xl text-ink tracking-tight hover:text-accent transition-colors shrink-0"
+          aria-label="Vellum — home"
         >
           Vellum
         </Link>
 
         {dossierMode ? (
-          <div className="text-right min-w-0 flex-1">
-            <div className="text-lg font-serif text-ink truncate">
+          <div className="text-center min-w-0 flex-1">
+            <div className="text-sm font-serif text-ink truncate">
               {dossier!.title}
             </div>
-            <div className="mt-0.5 flex items-center gap-2 justify-end text-xs font-mono text-ink-faint">
+            <div className="mt-0.5 flex items-center gap-2 justify-center text-xs font-mono text-ink-faint">
               <span className="lowercase tracking-wide">
                 {dossier!.dossier_type.replace(/_/g, " ")}
               </span>
@@ -78,8 +73,23 @@ export function Header({ title, dossier }: HeaderProps) {
             </div>
           </div>
         ) : title ? (
-          <span className="ml-4 text-sm font-mono text-ink-faint">{title}</span>
-        ) : null}
+          <span className="text-sm font-mono text-ink-faint truncate">
+            {title}
+          </span>
+        ) : (
+          <span className="flex-1" aria-hidden="true" />
+        )}
+
+        {!onHome ? (
+          <Link
+            to="/"
+            className="shrink-0 font-sans text-xs text-ink-faint hover:text-accent transition-colors uppercase tracking-wide"
+          >
+            All dossiers
+          </Link>
+        ) : (
+          <span className="shrink-0 w-[92px]" aria-hidden="true" />
+        )}
       </div>
     </header>
   );
