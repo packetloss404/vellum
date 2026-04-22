@@ -197,3 +197,86 @@ def end_work_session(session_id: str) -> m.WorkSession:
     if not result:
         raise HTTPException(404, "work_session not found")
     return result
+
+
+# ---------- sub_investigations ----------
+
+
+from pydantic import BaseModel as _BaseModel
+
+
+class SubInvestigationAbandonBody(_BaseModel):
+    reason: str
+
+
+@router.post("/dossiers/{dossier_id}/sub-investigations", response_model=m.SubInvestigation)
+def spawn_sub_investigation(
+    dossier_id: str,
+    data: m.SubInvestigationSpawn,
+    work_session_id: Optional[str] = None,
+) -> m.SubInvestigation:
+    return storage.spawn_sub_investigation(dossier_id, data, work_session_id)
+
+
+@router.get("/dossiers/{dossier_id}/sub-investigations", response_model=list[m.SubInvestigation])
+def list_sub_investigations(
+    dossier_id: str,
+    state: Optional[m.SubInvestigationState] = None,
+) -> list[m.SubInvestigation]:
+    return storage.list_sub_investigations(dossier_id, state)
+
+
+@router.get("/sub-investigations/{sub_id}", response_model=m.SubInvestigation)
+def get_sub_investigation(sub_id: str) -> m.SubInvestigation:
+    result = storage.get_sub_investigation(sub_id)
+    if not result:
+        raise HTTPException(404, "sub_investigation not found")
+    return result
+
+
+@router.post(
+    "/dossiers/{dossier_id}/sub-investigations/{sub_id}/complete",
+    response_model=m.SubInvestigation,
+)
+def complete_sub_investigation(
+    dossier_id: str,
+    sub_id: str,
+    data: m.SubInvestigationComplete,
+    work_session_id: Optional[str] = None,
+) -> m.SubInvestigation:
+    result = storage.complete_sub_investigation(dossier_id, sub_id, data, work_session_id)
+    if not result:
+        raise HTTPException(404, "sub_investigation not found")
+    return result
+
+
+@router.patch(
+    "/dossiers/{dossier_id}/sub-investigations/{sub_id}/state",
+    response_model=m.SubInvestigation,
+)
+def update_sub_investigation_state(
+    dossier_id: str,
+    sub_id: str,
+    patch: m.SubInvestigationStateUpdate,
+    work_session_id: Optional[str] = None,
+) -> m.SubInvestigation:
+    result = storage.update_sub_investigation_state(dossier_id, sub_id, patch, work_session_id)
+    if not result:
+        raise HTTPException(404, "sub_investigation not found")
+    return result
+
+
+@router.post(
+    "/dossiers/{dossier_id}/sub-investigations/{sub_id}/abandon",
+    response_model=m.SubInvestigation,
+)
+def abandon_sub_investigation(
+    dossier_id: str,
+    sub_id: str,
+    data: SubInvestigationAbandonBody,
+    work_session_id: Optional[str] = None,
+) -> m.SubInvestigation:
+    result = storage.abandon_sub_investigation(dossier_id, sub_id, data.reason, work_session_id)
+    if not result:
+        raise HTTPException(404, "sub_investigation not found")
+    return result

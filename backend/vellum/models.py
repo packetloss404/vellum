@@ -174,6 +174,9 @@ ChangeKind = Literal[
     "decision_point_resolved",
     "ruled_out_added",
     "sections_reordered",
+    "sub_investigation_spawned",
+    "sub_investigation_completed",
+    "sub_investigation_abandoned",
 ]
 
 
@@ -196,6 +199,7 @@ class DossierFull(BaseModel):
     reasoning_trail: list[ReasoningTrailEntry] = Field(default_factory=list)
     ruled_out: list[RuledOut] = Field(default_factory=list)
     work_sessions: list[WorkSession] = Field(default_factory=list)
+    sub_investigations: list["SubInvestigation"] = Field(default_factory=list)
 
 
 # --- API request shapes ---
@@ -267,3 +271,47 @@ class RuledOutCreate(BaseModel):
 
 class WorkSessionStart(BaseModel):
     trigger: WorkSessionTrigger = WorkSessionTrigger.manual
+
+
+# --- SubInvestigations ---
+
+
+class SubInvestigationState(str, Enum):
+    running = "running"
+    delivered = "delivered"
+    blocked = "blocked"
+    abandoned = "abandoned"
+
+
+class SubInvestigation(BaseModel):
+    id: str                               # prefix: "sub"
+    dossier_id: str
+    parent_section_id: Optional[str] = None    # optional link to a parent dossier section
+    scope: str                            # short scope statement
+    questions: list[str] = Field(default_factory=list)
+    state: SubInvestigationState = SubInvestigationState.running
+    return_summary: Optional[str] = None  # populated on complete
+    findings_section_ids: list[str] = Field(default_factory=list)  # sections produced by sub
+    findings_artifact_ids: list[str] = Field(default_factory=list) # artifacts produced by sub
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+
+
+class SubInvestigationSpawn(BaseModel):
+    scope: str
+    questions: list[str] = Field(default_factory=list)
+    parent_section_id: Optional[str] = None
+
+
+class SubInvestigationComplete(BaseModel):
+    return_summary: str
+    findings_section_ids: list[str] = Field(default_factory=list)
+    findings_artifact_ids: list[str] = Field(default_factory=list)
+
+
+class SubInvestigationStateUpdate(BaseModel):
+    new_state: SubInvestigationState  # typically `blocked`
+    reason: str
+
+
+DossierFull.model_rebuild()

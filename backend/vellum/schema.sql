@@ -120,3 +120,20 @@ CREATE TABLE IF NOT EXISTS intake_messages (
     FOREIGN KEY (intake_id) REFERENCES intake_sessions(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_intake_messages_intake ON intake_messages(intake_id, created_at);
+
+CREATE TABLE IF NOT EXISTS sub_investigations (
+    id TEXT PRIMARY KEY,
+    dossier_id TEXT NOT NULL,
+    parent_section_id TEXT,
+    scope TEXT NOT NULL,
+    questions TEXT NOT NULL DEFAULT '[]',
+    state TEXT NOT NULL DEFAULT 'running',
+    return_summary TEXT,
+    findings_section_ids TEXT NOT NULL DEFAULT '[]',
+    findings_artifact_ids TEXT NOT NULL DEFAULT '[]',
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_sub_investigations_dossier ON sub_investigations(dossier_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_sub_investigations_state ON sub_investigations(dossier_id, state);
