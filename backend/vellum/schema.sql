@@ -11,9 +11,16 @@ CREATE TABLE IF NOT EXISTS dossiers (
     debrief TEXT,
     investigation_plan TEXT,
     last_visited_at TEXT,
+    wake_at TEXT,
+    wake_pending INTEGER NOT NULL DEFAULT 0,
+    wake_reason TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+-- Index on wake columns is created by db._ensure_indices AFTER
+-- _ensure_columns has ALTERed the columns onto existing DBs. Keeping it
+-- out of schema.sql avoids "no such column" failures on pre-sleep-mode
+-- databases during the executescript pass.
 
 CREATE TABLE IF NOT EXISTS sections (
     id TEXT PRIMARY KEY,
@@ -88,6 +95,10 @@ CREATE TABLE IF NOT EXISTS work_sessions (
     ended_at TEXT,
     trigger TEXT NOT NULL,
     token_budget_used INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    end_reason TEXT,
     FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_work_sessions_dossier ON work_sessions(dossier_id, started_at);
@@ -202,3 +213,44 @@ CREATE TABLE IF NOT EXISTS considered_and_rejected (
     FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_crj_dossier ON considered_and_rejected(dossier_id, created_at);
+
+-- Sleep mode: tool-call idempotency spine. One row per model-emitted tool_use
+-- block. dispatch_tool_call checks here first; if the tool_use_id is seen,
+-- it short-circuits to the recorded result instead of re-running the handler.
+-- Stable only within one successful response from Anthropic (SDK retries
+-- regenerate IDs) — primary value is migration-proofness for Path B/C and
+-- defense against in-process replay.
+CREATE TABLE IF NOT EXISTS tool_invocations (
+    tool_use_id TEXT PRIMARY KEY,
+    dossier_id TEXT NOT NULL,
+    work_session_id TEXT,
+    tool_name TEXT NOT NULL,
+    input_hash TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    is_error INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_tool_invocations_dossier ON tool_invocations(dossier_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_tool_invocations_session ON tool_invocations(work_session_id, created_at);
+
+-- Sleep mode: daily global cost rollup. Primary key is the UTC date string.
+-- UPSERT on every post-turn usage capture. Soft-signal budgets in `settings`
+-- are compared against today's row.
+CREATE TABLE IF NOT EXISTS budget_accounting (
+    day TEXT PRIMARY KEY,
+    spent_usd REAL NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
+-- Sleep mode: DB-backed settings surface. Editable from UI. Scoped to the
+-- NEW budget/guard/sleep-mode knobs — existing env-driven stuck thresholds
+-- remain in config.py. Value is JSON so we can store bools, numbers, or
+-- structured options without per-type columns.
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);

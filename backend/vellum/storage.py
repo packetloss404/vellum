@@ -140,6 +140,8 @@ def _row_to_ruled_out(row: sqlite3.Row) -> m.RuledOut:
 
 
 def _row_to_work_session(row: sqlite3.Row) -> m.WorkSession:
+    end_reason_raw = _row_get(row, "end_reason")
+    end_reason = m.WorkSessionEndReason(end_reason_raw) if end_reason_raw else None
     return m.WorkSession(
         id=row["id"],
         dossier_id=row["dossier_id"],
@@ -147,7 +149,23 @@ def _row_to_work_session(row: sqlite3.Row) -> m.WorkSession:
         ended_at=_dt(row["ended_at"]),
         trigger=m.WorkSessionTrigger(row["trigger"]),
         token_budget_used=row["token_budget_used"],
+        input_tokens=_row_get(row, "input_tokens") or 0,
+        output_tokens=_row_get(row, "output_tokens") or 0,
+        cost_usd=_row_get(row, "cost_usd") or 0.0,
+        end_reason=end_reason,
     )
+
+
+def _row_get(row: sqlite3.Row, key: str, default=None):
+    """Tolerant column accessor — returns default when the column is missing.
+
+    Lets _row_to_* helpers read columns added via ensure_columns even on rows
+    fetched from older connections that didn't see the ALTER TABLE pass.
+    """
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return default
 
 
 def _row_to_change(row: sqlite3.Row) -> m.ChangeLogEntry:
@@ -361,6 +379,13 @@ def get_dossier_resume_state(dossier_id: str) -> Optional[dict]:
 
         delivered = dossier_row["status"] == m.DossierStatus.delivered.value
 
+        # Sleep-mode wake state — surfaced so the UI can render a "zzz
+        # waking in 2h" indicator or "waking now" badge. These columns
+        # may be missing on a very old row; _row_get handles that.
+        wake_at_raw = _row_get(dossier_row, "wake_at")
+        wake_pending = bool(_row_get(dossier_row, "wake_pending") or 0)
+        wake_reason = _row_get(dossier_row, "wake_reason")
+
         return {
             "dossier_id": dossier_id,
             "has_plan": has_plan,
@@ -371,6 +396,9 @@ def get_dossier_resume_state(dossier_id: str) -> Optional[dict]:
             "open_needs_input_count": open_needs_input_count,
             "open_decision_point_count": open_decision_point_count,
             "delivered": delivered,
+            "wake_at": _dt(wake_at_raw) if wake_at_raw else None,
+            "wake_pending": wake_pending,
+            "wake_reason": wake_reason,
         }
 
 
@@ -663,6 +691,24 @@ def resolve_needs_input(
             f"Answered: {row['question']}",
         )
         _touch_dossier(conn, dossier_id)
+        # Reactive wake: the scheduler will pick this up on its next tick and
+        # resume the agent. Only if sleep mode is on — with it off, the user
+        # is driving resumes manually, so we don't want a reactive-start to
+        # race the manual POST /resume.
+        sleep_mode_on = True
+        try:
+            setting = conn.execute(
+                "SELECT value_json FROM settings WHERE key = 'sleep_mode_enabled'"
+            ).fetchone()
+            if setting is not None:
+                sleep_mode_on = json.loads(setting["value_json"])
+        except Exception:
+            pass
+        if sleep_mode_on:
+            conn.execute(
+                "UPDATE dossiers SET wake_pending = 1, wake_reason = ? WHERE id = ?",
+                (m.WakeReason.needs_input_resolved.value, dossier_id),
+            )
         row = conn.execute("SELECT * FROM needs_input WHERE id = ?", (needs_input_id,)).fetchone()
     return _row_to_needs_input(row)
 
@@ -922,6 +968,71 @@ def increment_session_tokens(session_id: str, tokens: int) -> None:
             "UPDATE work_sessions SET token_budget_used = token_budget_used + ? WHERE id = ?",
             (tokens, session_id),
         )
+
+
+def record_session_usage(
+    session_id: str,
+    input_tokens: int,
+    output_tokens: int,
+    cost_usd: float,
+) -> None:
+    """Accumulate per-turn usage on a work_session row.
+
+    Called once per model turn in the runtime. Rolls up tokens and dollar
+    cost; used by the budget-tracking surface and by the per-session UI
+    header. Also bumps the aggregate token_budget_used counter so existing
+    readers don't regress.
+    """
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE work_sessions
+               SET input_tokens = input_tokens + ?,
+                   output_tokens = output_tokens + ?,
+                   cost_usd = cost_usd + ?,
+                   token_budget_used = token_budget_used + ?
+             WHERE id = ?
+            """,
+            (
+                int(input_tokens),
+                int(output_tokens),
+                float(cost_usd),
+                int(input_tokens + output_tokens),
+                session_id,
+            ),
+        )
+
+
+def end_work_session_with_reason(
+    session_id: str,
+    reason: m.WorkSessionEndReason,
+) -> Optional[m.WorkSession]:
+    """Close a session and stamp end_reason atomically.
+
+    Preferred over end_work_session() for new call sites. end_work_session
+    stays for the legacy path (lifecycle reconcile, etc.), which stamps the
+    crashed reason via a separate helper below.
+    """
+    now_s = _dt_str(m.utc_now())
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE work_sessions
+               SET ended_at = ?,
+                   end_reason = ?
+             WHERE id = ? AND ended_at IS NULL
+            """,
+            (now_s, reason.value, session_id),
+        )
+        row = conn.execute(
+            "SELECT * FROM work_sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+    return _row_to_work_session(row) if row else None
+
+
+def end_orphan_session_as_crashed(session_id: str) -> Optional[m.WorkSession]:
+    """Used by lifecycle reconcile to close a process-crash leftover."""
+    return end_work_session_with_reason(session_id, m.WorkSessionEndReason.crashed)
 
 
 # ---------- v2: InvestigationLog ----------
@@ -1934,3 +2045,304 @@ def _stuck_is_recent(last_stuck_at: datetime, last_visited_at: Optional[datetime
     if last_visited_at is not None:
         return last_stuck_at > last_visited_at
     return (m.utc_now() - last_stuck_at) <= timedelta(hours=24)
+
+
+# ---------- Sleep-mode wake state ----------
+
+
+def set_dossier_wake_at(
+    dossier_id: str,
+    wake_at: datetime,
+    reason: m.WakeReason,
+) -> None:
+    """Agent-initiated: schedule a future wake via schedule_wake tool.
+
+    Overwrites any prior wake_at — the scheduler runs "earliest active wake
+    wins," so repeated calls just reschedule. wake_pending stays clear; the
+    scheduler will compare wake_at against now on its next tick.
+    """
+    with connect() as conn:
+        conn.execute(
+            "UPDATE dossiers SET wake_at = ?, wake_reason = ? WHERE id = ?",
+            (_dt_str(wake_at), reason.value, dossier_id),
+        )
+
+
+def mark_wake_pending(dossier_id: str, reason: m.WakeReason) -> None:
+    """Signal that this dossier needs a scheduler pick-up on the next tick.
+
+    Used by (a) reconcile_at_startup for crash-resume, (b) resolve_needs_input
+    for reactive-wake, (c) resolve_decision_point if we extend reactive-wake
+    there. Idempotent: repeated calls just leave the pending flag set.
+    """
+    with connect() as conn:
+        conn.execute(
+            "UPDATE dossiers SET wake_pending = 1, wake_reason = ? WHERE id = ?",
+            (reason.value, dossier_id),
+        )
+
+
+def clear_dossier_wake(dossier_id: str) -> None:
+    """Clear both wake_at and wake_pending — called by the scheduler after
+    successfully starting a run for this dossier. wake_reason is kept so
+    logs/UI can still display "why we woke" for a short window.
+    """
+    with connect() as conn:
+        conn.execute(
+            "UPDATE dossiers SET wake_at = NULL, wake_pending = 0 WHERE id = ?",
+            (dossier_id,),
+        )
+
+
+def list_dossiers_ready_to_wake(now: Optional[datetime] = None) -> list[dict]:
+    """Return dossiers the scheduler should pick up on its next tick.
+
+    A dossier is ready if EITHER:
+      * wake_pending = 1 (reactive / crash-resume / needs_input_resolved), OR
+      * wake_at IS NOT NULL AND wake_at <= now (agent self-scheduled).
+
+    Returns compact dicts (dossier_id, wake_at, wake_reason) — the scheduler
+    does not need the full Dossier aggregate to decide what to start.
+    """
+    now_s = _dt_str(now or m.utc_now())
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id AS dossier_id, wake_at, wake_pending, wake_reason
+              FROM dossiers
+             WHERE wake_pending = 1
+                OR (wake_at IS NOT NULL AND wake_at <= ?)
+             ORDER BY COALESCE(wake_at, ''), id
+            """,
+            (now_s,),
+        ).fetchall()
+    return [
+        {
+            "dossier_id": r["dossier_id"],
+            "wake_at": r["wake_at"],
+            "wake_pending": bool(r["wake_pending"]),
+            "wake_reason": r["wake_reason"],
+        }
+        for r in rows
+    ]
+
+
+def get_dossier_wake_state(dossier_id: str) -> Optional[dict]:
+    """Read the current wake fields for a dossier. Returns None if not found."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT wake_at, wake_pending, wake_reason FROM dossiers WHERE id = ?",
+            (dossier_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "wake_at": row["wake_at"],
+        "wake_pending": bool(row["wake_pending"]),
+        "wake_reason": row["wake_reason"],
+    }
+
+
+# ---------- Tool-invocation idempotency ----------
+
+
+def get_tool_invocation(tool_use_id: str) -> Optional[dict]:
+    """Return a previously-recorded tool_result for this tool_use_id, or None.
+
+    The runtime calls this before dispatching a tool; if a hit, short-circuit
+    and return the stored result — don't re-run the handler.
+    """
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT tool_use_id, dossier_id, work_session_id, tool_name,
+                   input_hash, result_json, is_error, created_at
+              FROM tool_invocations
+             WHERE tool_use_id = ?
+            """,
+            (tool_use_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "tool_use_id": row["tool_use_id"],
+        "dossier_id": row["dossier_id"],
+        "work_session_id": row["work_session_id"],
+        "tool_name": row["tool_name"],
+        "input_hash": row["input_hash"],
+        "result_json": row["result_json"],
+        "is_error": bool(row["is_error"]),
+        "created_at": row["created_at"],
+    }
+
+
+def record_tool_invocation(
+    tool_use_id: str,
+    dossier_id: str,
+    tool_name: str,
+    input_hash: str,
+    result_json: str,
+    is_error: bool = False,
+    work_session_id: Optional[str] = None,
+) -> None:
+    """Record a completed tool dispatch. INSERT OR IGNORE — a concurrent
+    duplicate write (should be extremely rare in Path A) silently loses,
+    which is the correct behavior for an idempotency spine.
+    """
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO tool_invocations
+              (tool_use_id, dossier_id, work_session_id, tool_name,
+               input_hash, result_json, is_error, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                tool_use_id,
+                dossier_id,
+                work_session_id,
+                tool_name,
+                input_hash,
+                result_json,
+                1 if is_error else 0,
+                _dt_str(m.utc_now()),
+            ),
+        )
+
+
+# ---------- Budget accounting ----------
+
+
+def _utc_day_str(dt: Optional[datetime] = None) -> str:
+    dt = dt or m.utc_now()
+    return dt.strftime("%Y-%m-%d")
+
+
+def record_budget_usage(
+    input_tokens: int,
+    output_tokens: int,
+    cost_usd: float,
+    day: Optional[str] = None,
+) -> None:
+    """Roll per-turn usage into the day's global budget row. UPSERT.
+
+    `day` defaults to today (UTC). Tests may inject a specific date.
+    """
+    day_key = day or _utc_day_str()
+    now_s = _dt_str(m.utc_now())
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO budget_accounting (day, spent_usd, input_tokens, output_tokens, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(day) DO UPDATE SET
+                spent_usd = spent_usd + excluded.spent_usd,
+                input_tokens = input_tokens + excluded.input_tokens,
+                output_tokens = output_tokens + excluded.output_tokens,
+                updated_at = excluded.updated_at
+            """,
+            (day_key, float(cost_usd), int(input_tokens), int(output_tokens), now_s),
+        )
+
+
+def get_budget_today() -> m.BudgetRollup:
+    """Return today's rollup, synthesizing a zero row if no spend yet."""
+    day_key = _utc_day_str()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM budget_accounting WHERE day = ?", (day_key,)
+        ).fetchone()
+    if row is None:
+        return m.BudgetRollup(day=day_key, updated_at=m.utc_now())
+    return m.BudgetRollup(
+        day=row["day"],
+        spent_usd=float(row["spent_usd"]),
+        input_tokens=int(row["input_tokens"]),
+        output_tokens=int(row["output_tokens"]),
+        updated_at=_dt(row["updated_at"]),
+    )
+
+
+def list_budget_range(start_day: str, end_day: str) -> list[m.BudgetRollup]:
+    """Inclusive range, ordered by day ascending. Day strings in YYYY-MM-DD."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM budget_accounting WHERE day >= ? AND day <= ? ORDER BY day",
+            (start_day, end_day),
+        ).fetchall()
+    return [
+        m.BudgetRollup(
+            day=r["day"],
+            spent_usd=float(r["spent_usd"]),
+            input_tokens=int(r["input_tokens"]),
+            output_tokens=int(r["output_tokens"]),
+            updated_at=_dt(r["updated_at"]),
+        )
+        for r in rows
+    ]
+
+
+# ---------- Settings ----------
+
+
+def get_setting(key: str, default=None):
+    """Return the JSON-decoded value for `key`, or `default` if not set."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT value_json FROM settings WHERE key = ?", (key,)
+        ).fetchone()
+    if row is None:
+        return default
+    return json.loads(row["value_json"])
+
+
+def set_setting(key: str, value) -> m.Setting:
+    """UPSERT a setting. Value is JSON-encoded. Returns the stored row."""
+    now_s = _dt_str(m.utc_now())
+    blob = json.dumps(value)
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            (key, blob, now_s),
+        )
+    return m.Setting(key=key, value=value, updated_at=m.utc_now())
+
+
+def list_settings() -> list[m.Setting]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT key, value_json, updated_at FROM settings ORDER BY key"
+        ).fetchall()
+    return [
+        m.Setting(
+            key=r["key"],
+            value=json.loads(r["value_json"]),
+            updated_at=_dt(r["updated_at"]),
+        )
+        for r in rows
+    ]
+
+
+def seed_default_settings(defaults: dict) -> None:
+    """Insert missing defaults only — never overwrite an edited value.
+
+    Called from init_db / lifespan startup to guarantee the UI has something
+    to show. `defaults` maps setting key -> default value (any JSON-serializable).
+    """
+    with connect() as conn:
+        for key, value in defaults.items():
+            row = conn.execute(
+                "SELECT 1 FROM settings WHERE key = ?", (key,)
+            ).fetchone()
+            if row is not None:
+                continue
+            conn.execute(
+                "INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)",
+                (key, json.dumps(value), _dt_str(m.utc_now())),
+            )

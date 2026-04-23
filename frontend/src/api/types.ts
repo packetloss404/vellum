@@ -38,9 +38,26 @@ export type IntakeStatus = "gathering" | "committed" | "abandoned";
 export type WorkSessionTrigger =
   | "user_open"
   | "scheduled"
+  | "reactive"
   | "resume"
   | "intake"
   | "manual";
+
+export type WorkSessionEndReason =
+  | "ended_turn"
+  | "turn_limit"
+  | "stuck"
+  | "delivered"
+  | "error"
+  | "crashed"
+  | "stopped"
+  | "budget_soft_signal";
+
+export type WakeReason =
+  | "scheduled"
+  | "crash_resume"
+  | "needs_input_resolved"
+  | "decision_resolved";
 
 export type ChangeKind =
   | "section_created"
@@ -182,6 +199,11 @@ export interface WorkSession {
   ended_at?: string | null;
   trigger: WorkSessionTrigger;
   token_budget_used: number;
+  // Sleep-mode additions — nullable/zero on older rows predating the migration.
+  input_tokens?: number;
+  output_tokens?: number;
+  cost_usd?: number;
+  end_reason?: WorkSessionEndReason | null;
 }
 
 export interface ChangeLogEntry {
@@ -497,6 +519,33 @@ export type ConsideredAndRejected = {
   sources: Source[];
   created_at: string;
 };
+
+// ---------- Settings + budget (sleep-mode) ----------
+
+export interface SettingEntry {
+  key: string;
+  value: unknown;
+  updated_at: string;
+}
+
+export interface BudgetToday {
+  day: string;
+  spent_usd: number;
+  input_tokens: number;
+  output_tokens: number;
+  updated_at: string;
+  daily_cap_usd: number;
+  warn_fraction: number;
+  state: "ok" | "warn" | "soft_cap_crossed";
+}
+
+export interface BudgetDay {
+  day: string;
+  spent_usd: number;
+  input_tokens: number;
+  output_tokens: number;
+  updated_at: string;
+}
 
 // ---------- v2 request payloads used by client fetchers ----------
 

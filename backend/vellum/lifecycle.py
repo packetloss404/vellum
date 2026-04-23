@@ -49,9 +49,17 @@ def _find_orphan_work_sessions() -> list[tuple[str, str]]:
 def _recover_one_work_session(session_id: str, dossier_id: str) -> bool:
     """End the session and append a reasoning_trail note. Returns True on full
     success, False if any step for this particular session failed (already
-    logged). Never raises."""
+    logged). Never raises.
+
+    Day-3 sleep-mode addition: if sleep mode is enabled, also mark the
+    dossier wake_pending so the scheduler picks it up on the next tick and
+    resumes the agent. With sleep mode off, the user drives resumes
+    manually — don't set wake_pending.
+    """
     try:
-        storage.end_work_session(session_id)
+        storage.end_work_session_with_reason(
+            session_id, m.WorkSessionEndReason.crashed
+        )
     except Exception:
         logger.error(
             "lifecycle: failed to end orphan work_session %s (dossier %s)",
@@ -87,6 +95,20 @@ def _recover_one_work_session(session_id: str, dossier_id: str) -> bool:
             exc_info=True,
         )
         return False
+
+    # Sleep-mode: ask the scheduler to resume this dossier. Best-effort —
+    # if the settings table is missing (very early boot) or the column set
+    # is stale, the helper calls below will no-op safely.
+    try:
+        if storage.get_setting("sleep_mode_enabled", True):
+            storage.mark_wake_pending(dossier_id, m.WakeReason.crash_resume)
+    except Exception:
+        logger.warning(
+            "lifecycle: failed to mark dossier %s wake_pending after crash "
+            "recovery; resumes will be driven by the user manually this boot",
+            dossier_id,
+            exc_info=True,
+        )
 
     return True
 

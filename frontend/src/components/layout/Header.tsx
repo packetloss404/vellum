@@ -87,16 +87,25 @@ export function Header({ title, dossier }: HeaderProps) {
           <span className="flex-1" aria-hidden="true" />
         )}
 
-        {!onHome ? (
-          <Link
-            to="/"
-            className="shrink-0 font-sans text-xs text-ink-faint hover:text-accent transition-colors uppercase tracking-wide"
-          >
-            All dossiers
-          </Link>
-        ) : (
-          <span className="shrink-0 w-[92px]" aria-hidden="true" />
-        )}
+        <div className="shrink-0 flex items-center gap-4">
+          {!onHome ? (
+            <Link
+              to="/"
+              className="font-sans text-xs text-ink-faint hover:text-accent transition-colors uppercase tracking-wide"
+            >
+              All dossiers
+            </Link>
+          ) : null}
+          {pathname !== "/settings" ? (
+            <Link
+              to="/settings"
+              className="font-sans text-xs text-ink-faint hover:text-accent transition-colors uppercase tracking-wide"
+              aria-label="Settings"
+            >
+              Settings
+            </Link>
+          ) : null}
+        </div>
       </div>
     </header>
   );

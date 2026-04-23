@@ -22,6 +22,8 @@ and no tool calls, the prose is discarded.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -29,7 +31,7 @@ import anthropic
 
 from .. import models as m
 from .. import storage
-from ..config import ANTHROPIC_API_KEY, MODEL
+from ..config import ANTHROPIC_API_KEY, MODEL, cost_usd_for_turn
 from ..tools import handlers
 
 
@@ -76,6 +78,9 @@ class DossierAgent:
         self._client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY or None)
         self._tools = self._build_tool_definitions()
         self._last_section_id: Optional[str] = None
+        # Budget soft-signal dedup — each cap emits at most once per run.
+        self._budget_daily_reported: bool = False
+        self._budget_session_reported: bool = False
 
     @staticmethod
     def _build_tool_definitions() -> list[dict[str, Any]]:
@@ -130,8 +135,18 @@ class DossierAgent:
                 if response.usage is not None:
                     input_tokens = response.usage.input_tokens or 0
                     output_tokens = response.usage.output_tokens or 0
-                    storage.increment_session_tokens(
-                        session_id, input_tokens + output_tokens
+                    # Compute cost in dollars using the MODEL_PRICING table.
+                    # Unknown models return 0.0; we log but don't crash.
+                    turn_cost = cost_usd_for_turn(
+                        self.model, input_tokens, output_tokens
+                    )
+                    # Per-session and global daily rollups — power the budget
+                    # soft-signal surface and the per-session UI header.
+                    storage.record_session_usage(
+                        session_id, input_tokens, output_tokens, turn_cost
+                    )
+                    storage.record_budget_usage(
+                        input_tokens, output_tokens, turn_cost
                     )
                     # stuck-detection needs per-turn input tokens for session-
                     # and section-budget signals. Attribute to the section most
@@ -139,6 +154,10 @@ class DossierAgent:
                     stuck_mod.record_input_tokens(
                         session_id, self._last_section_id, input_tokens
                     )
+                    # Budget soft-signal: check after each turn. Never hard-
+                    # stops the loop; emits a decision_point if the session
+                    # or daily threshold is crossed (and not yet reported).
+                    self._check_budget_signals(session_id)
 
                 state.messages.append(
                     {"role": "assistant", "content": response.content}
@@ -294,6 +313,23 @@ class DossierAgent:
                 "is_error": True,
             }
 
+        # Idempotency: if this tool_use_id has already been dispatched,
+        # return the recorded result instead of re-running the handler.
+        # Under Path A this should be rare (new sessions don't replay
+        # message history), but the shim is migration-proof for Path B/C
+        # and closes the "double upsert_section lies to the plan-diff"
+        # failure mode if runtime dispatch ever re-iterates a response.
+        prior = await asyncio.to_thread(
+            storage.get_tool_invocation, tool_use_id
+        )
+        if prior is not None:
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": prior["result_json"],
+                "is_error": prior["is_error"],
+            }
+
         try:
             # Handlers are sync; run them off the event loop so a slow write
             # doesn't stall concurrent agents. Route through handlers.dispatch
@@ -301,18 +337,126 @@ class DossierAgent:
             result = await asyncio.to_thread(
                 handlers.dispatch, self.dossier_id, tool_name, tool_input
             )
+            result_json = _coerce_tool_result(result)
+            await asyncio.to_thread(
+                storage.record_tool_invocation,
+                tool_use_id,
+                self.dossier_id,
+                tool_name,
+                _hash_tool_input(tool_input),
+                result_json,
+                False,
+            )
             return {
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
-                "content": _coerce_tool_result(result),
+                "content": result_json,
             }
         except Exception as exc:  # noqa: BLE001 — surface to the model, don't kill the loop
+            err_content = f"{type(exc).__name__}: {exc}"
+            # Record the error so a replay doesn't re-run a handler that
+            # already errored (cheap insurance against thrashing the DB
+            # on the same failure).
+            try:
+                await asyncio.to_thread(
+                    storage.record_tool_invocation,
+                    tool_use_id,
+                    self.dossier_id,
+                    tool_name,
+                    _hash_tool_input(tool_input),
+                    err_content,
+                    True,
+                )
+            except Exception:
+                pass
             return {
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
-                "content": f"{type(exc).__name__}: {exc}",
+                "content": err_content,
                 "is_error": True,
             }
+
+    def _check_budget_signals(self, session_id: str) -> None:
+        """Soft-signal budget check — runs after each turn's usage capture.
+
+        Emits a ``declare_stuck``-shaped decision_point via storage when the
+        daily global cap or the per-session cap is crossed. Never terminates
+        the loop — the agent and user decide whether to continue. Dedup is
+        local to this runtime instance via the ``_budget_*_reported`` flags.
+        """
+        try:
+            daily_cap = float(storage.get_setting("budget_daily_soft_cap_usd", 0) or 0)
+            session_cap = float(storage.get_setting("budget_per_session_soft_cap_usd", 0) or 0)
+        except Exception:
+            return
+
+        # Daily global signal
+        if daily_cap > 0 and not self._budget_daily_reported:
+            try:
+                today = storage.get_budget_today()
+            except Exception:
+                today = None
+            if today is not None and today.spent_usd >= daily_cap:
+                self._budget_daily_reported = True
+                self._surface_budget_signal(
+                    kind="budget_daily",
+                    detail=(
+                        f"Daily global spend ${today.spent_usd:.2f} has reached "
+                        f"the soft cap of ${daily_cap:.2f}."
+                    ),
+                )
+
+        # Per-session signal
+        if session_cap > 0 and not self._budget_session_reported:
+            try:
+                ws = storage.get_work_session(session_id)
+            except Exception:
+                ws = None
+            if ws is not None and ws.cost_usd >= session_cap:
+                self._budget_session_reported = True
+                self._surface_budget_signal(
+                    kind="budget_session",
+                    detail=(
+                        f"This work session has spent ${ws.cost_usd:.2f}, crossing "
+                        f"the per-session soft cap of ${session_cap:.2f}."
+                    ),
+                )
+
+    def _surface_budget_signal(self, kind: str, detail: str) -> None:
+        summary = (
+            f"{detail} Soft signal only — I'll keep working unless you tell "
+            f"me otherwise, but this is worth a check-in."
+        )
+        options = [
+            {
+                "label": "Keep going",
+                "implications": "I continue; the cap is advisory.",
+                "recommended": False,
+            },
+            {
+                "label": "Pause for your direction",
+                "implications": (
+                    "I'll hand off with where I am and wait for you to "
+                    "either raise the cap in settings or steer me."
+                ),
+                "recommended": True,
+            },
+            {
+                "label": "Mark what I have as delivered",
+                "implications": (
+                    "I'll freeze the current dossier state and call "
+                    "mark_investigation_delivered with what's been covered."
+                ),
+                "recommended": False,
+            },
+        ]
+        try:
+            handlers.HANDLERS["check_stuck"](
+                self.dossier_id,
+                {"summary_of_attempts": summary, "options_for_user": options},
+            )
+        except Exception:
+            pass
 
     def _surface_stuck(self, signal: Any) -> None:
         """Convert a StuckSignal into a check_stuck tool invocation.
@@ -341,14 +485,26 @@ class DossierAgent:
 
 def _coerce_tool_result(result: Any) -> str:
     """Handlers return compact dicts; the API wants string or block content."""
-    import json
-
     if isinstance(result, str):
         return result
     try:
         return json.dumps(result, default=str)
     except (TypeError, ValueError):
         return str(result)
+
+
+def _hash_tool_input(tool_input: dict[str, Any]) -> str:
+    """Stable hash of a tool_input dict for the tool_invocations audit column.
+
+    The hash is informational — the idempotency key is tool_use_id. Hashing
+    the input lets us notice later if a replay ever arrives with a mutated
+    payload (it shouldn't, but the data is cheap to record).
+    """
+    try:
+        blob = json.dumps(tool_input, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        blob = str(sorted(tool_input.items(), key=lambda kv: str(kv[0])))
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()
 
 
 def _handler_result_ok(result_block: dict[str, Any]) -> bool:

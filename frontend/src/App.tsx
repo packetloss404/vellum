@@ -16,6 +16,7 @@ const IntakePage = React.lazy(() => import("./pages/IntakePage"));
 const DossierPage = React.lazy(() => import("./pages/DossierPage"));
 const DemoPage = React.lazy(() => import("./pages/DemoPage"));
 const StressPage = React.lazy(() => import("./pages/StressPage"));
+const SettingsPage = React.lazy(() => import("./pages/SettingsPage"));
 const NotFoundPage = React.lazy(() => import("./pages/NotFoundPage"));
 
 const LoadingFallback = () => (
@@ -35,6 +36,7 @@ export default function App() {
               <Route path="/dossiers/:id" element={<DossierPage />} />
               <Route path="/demo" element={<DemoPage />} />
               <Route path="/stress" element={<StressPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
               <Route path="*" element={<NotFoundPage />} />
             </Routes>
           </ErrorBoundary>

@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { ChangeLogEntry } from "../../api/types";
+import type { ChangeLogEntry, WorkSession } from "../../api/types";
 import { relativeTime } from "../../utils/time";
 import {
   ChangeEntry,
@@ -8,6 +8,7 @@ import {
   PLAN_DIFF_CATEGORY_ORDER,
   type PlanDiffCategory,
 } from "./ChangeEntry";
+import { SessionsSummary } from "./SessionsSummary";
 
 /**
  * PlanDiffSidebarView — the "Since your last visit" sidebar.
@@ -23,6 +24,10 @@ import {
 
 interface PlanDiffSidebarViewProps {
   entries: ChangeLogEntry[];
+  /** All work_sessions on the dossier. Feeds the "Sessions since your last
+   *  visit" summary block at the top of the sidebar. Optional — if omitted
+   *  the summary hides gracefully. */
+  workSessions?: WorkSession[];
   /** ISO of dossier.last_visited_at at the moment this sidebar took its
    *  snapshot. `null` means this is the user's first visit. `undefined`
    *  means "not known yet" (dossier still loading). */
@@ -37,6 +42,7 @@ const HEADER_LABEL = "Since your last visit";
 
 export function PlanDiffSidebarView({
   entries,
+  workSessions,
   lastVisitedAt,
   isLoading,
   error,
@@ -109,6 +115,13 @@ export function PlanDiffSidebarView({
         </p>
       ) : (
         <div className="mt-4 space-y-6">
+          {workSessions && workSessions.length > 0 ? (
+            <SessionsSummary
+              workSessions={workSessions}
+              entries={entries}
+              lastVisitedAt={lastVisitedAt}
+            />
+          ) : null}
           {grouped.map((group) => (
             <section key={group.category} aria-label={group.label}>
               <h3 className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-faint mb-2">

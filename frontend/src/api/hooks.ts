@@ -373,3 +373,32 @@ export const useConsideredAndRejected = (dossierId: string) =>
     queryFn: () => api.listConsideredAndRejected(dossierId),
     enabled: !!dossierId,
   });
+
+// ---------- Sleep-mode: settings + budget ----------
+
+export const useSettings = () =>
+  useQuery({
+    queryKey: ["settings"] as const,
+    queryFn: () => api.listSettings(),
+  });
+
+export function useUpdateSetting() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { key: string; value: unknown }) =>
+      api.updateSetting(vars.key, vars.value),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["settings"] });
+      qc.invalidateQueries({ queryKey: ["budget"] });
+    },
+  });
+}
+
+export const useBudgetToday = () =>
+  useQuery({
+    queryKey: ["budget", "today"] as const,
+    queryFn: () => api.budgetToday(),
+    // The sidebar shows this after every turn; 15s stale is fine for the
+    // demo. The soft-signal surface is the main channel anyway.
+    staleTime: 15_000,
+  });

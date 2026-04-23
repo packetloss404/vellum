@@ -189,9 +189,21 @@ class RuledOut(BaseModel):
 class WorkSessionTrigger(str, Enum):
     user_open = "user_open"
     scheduled = "scheduled"
+    reactive = "reactive"
     resume = "resume"
     intake = "intake"
     manual = "manual"
+
+
+class WorkSessionEndReason(str, Enum):
+    ended_turn = "ended_turn"
+    turn_limit = "turn_limit"
+    stuck = "stuck"
+    delivered = "delivered"
+    error = "error"
+    crashed = "crashed"
+    stopped = "stopped"
+    budget_soft_signal = "budget_soft_signal"
 
 
 class WorkSession(BaseModel):
@@ -201,6 +213,43 @@ class WorkSession(BaseModel):
     ended_at: Optional[datetime] = None
     trigger: WorkSessionTrigger
     token_budget_used: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
+    end_reason: Optional[WorkSessionEndReason] = None
+
+
+class WakeReason(str, Enum):
+    scheduled = "scheduled"
+    crash_resume = "crash_resume"
+    needs_input_resolved = "needs_input_resolved"
+    decision_resolved = "decision_resolved"
+
+
+class ScheduleWakeArgs(BaseModel):
+    # Pydantic cap is only a sanity bound. The real, user-editable cap
+    # lives in settings.schedule_wake_max_hours (default 72h) and is
+    # checked in the handler.
+    hours_from_now: float = Field(..., gt=0)
+    reason: str
+
+
+class Setting(BaseModel):
+    key: str
+    value: object  # JSON-decoded value
+    updated_at: datetime
+
+
+class SettingUpdate(BaseModel):
+    value: object
+
+
+class BudgetRollup(BaseModel):
+    day: str  # YYYY-MM-DD UTC
+    spent_usd: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    updated_at: datetime
 
 
 ChangeKind = Literal[

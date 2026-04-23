@@ -290,6 +290,71 @@ def declare_stuck(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
     return {"decision_point_id": dp.id}
 
 
+def schedule_wake(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Agent-initiated wake scheduler.
+
+    Writes dossiers.wake_at and appends a `scheduled_wake` reasoning_trail
+    entry. Non-terminating: the agent should emit this as its final tool
+    call for the turn, then stop producing further tool_uses so the turn
+    ends naturally — the scheduler will pick it up on its next tick after
+    wake_at passes.
+
+    Respects two settings (both editable from UI):
+      - sleep_mode_enabled: when False, returns {"ok": False, "reason":
+        "sleep_mode_disabled"} and does not write wake_at. The agent can
+        then decide to end the turn or surface a decision_point.
+      - schedule_wake_max_hours: upper bound on hours_from_now. Exceeding
+        it returns {"ok": False, "reason": "exceeds_max"} with the cap.
+    """
+    from datetime import timedelta
+
+    parsed = m.ScheduleWakeArgs(**args)
+
+    if not storage.get_setting("sleep_mode_enabled", True):
+        return {
+            "ok": False,
+            "reason": "sleep_mode_disabled",
+            "message": (
+                "sleep mode is off in settings; scheduling a wake is a no-op. "
+                "End the turn normally — the user will resume manually."
+            ),
+        }
+
+    cap = float(storage.get_setting("schedule_wake_max_hours", 72.0))
+    if parsed.hours_from_now > cap:
+        return {
+            "ok": False,
+            "reason": "exceeds_max",
+            "cap_hours": cap,
+            "requested_hours": parsed.hours_from_now,
+            "message": (
+                f"requested {parsed.hours_from_now}h exceeds the "
+                f"schedule_wake_max_hours cap of {cap}h; pick a shorter "
+                f"interval or raise the cap in settings"
+            ),
+        }
+
+    session_id = _ensure_session(dossier_id)
+    wake_at = m.utc_now() + timedelta(hours=parsed.hours_from_now)
+    storage.set_dossier_wake_at(dossier_id, wake_at, m.WakeReason.scheduled)
+    storage.append_reasoning(
+        dossier_id,
+        m.ReasoningAppend(
+            note=(
+                f"[scheduled_wake] I'll wake up in {parsed.hours_from_now:g}h "
+                f"(at {wake_at.isoformat()}) to continue. Reason: {parsed.reason}"
+            ),
+            tags=["scheduled_wake"],
+        ),
+        session_id,
+    )
+    return {
+        "ok": True,
+        "wake_at": wake_at.isoformat(),
+        "hours_from_now": parsed.hours_from_now,
+    }
+
+
 def mark_investigation_delivered(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
     """Self-declare the investigation complete.
 
@@ -401,6 +466,7 @@ HANDLERS = {
     "mark_considered_and_rejected": mark_considered_and_rejected,
     "set_next_action": set_next_action,
     "declare_stuck": declare_stuck,
+    "schedule_wake": schedule_wake,
     "mark_investigation_delivered": mark_investigation_delivered,
 }
 
@@ -566,6 +632,20 @@ TOOL_DESCRIPTIONS = {
         "next real action is. The user can re-open the dossier, but you should not call this "
         "speculatively — an under-baked delivery is the worst failure mode."
     ),
+    "schedule_wake": (
+        "Schedule your own next wake-up. Non-terminating: after this call, end the turn "
+        "(stop producing tool_uses) — the runtime will pause you, and the scheduler will "
+        "resume you with a fresh work_session after hours_from_now have passed. "
+        "Use when you need real-world time to pass before more work is productive: waiting "
+        "for a caller to call back, a SOL clock to tick, a scheduled bulletin to publish, "
+        "or for the user's next action to land (though for user actions prefer flag_needs_input). "
+        "Don't use to pad the run — if you're out of substantive moves and the blocker is "
+        "the user, flag_needs_input or flag_decision_point and end the turn; the scheduler "
+        "will resume you when the user resolves it. "
+        "reason is a short string logged in the reasoning trail so you (on resume) and the "
+        "user can see why you stepped back. hours_from_now accepts fractions (e.g. 0.5 for "
+        "30 minutes). The schedule_wake_max_hours setting caps the interval."
+    ),
 }
 
 
@@ -585,6 +665,7 @@ _INPUT_MODELS: dict[str, type] = {
     "append_reasoning": m.ReasoningAppend,
     "mark_ruled_out": m.RuledOutCreate,
     "mark_investigation_delivered": m.MarkDeliveredArgs,
+    "schedule_wake": m.ScheduleWakeArgs,
 }
 
 

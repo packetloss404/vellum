@@ -3,6 +3,8 @@
 
 import type {
   AgentStatus,
+  BudgetDay,
+  BudgetToday,
   ChangeLogEntry,
   DecisionPoint,
   Dossier,
@@ -11,6 +13,7 @@ import type {
   IntakeStartResult,
   IntakeTurnResult,
   NeedsInput,
+  SettingEntry,
   // v2
   Artifact,
   ArtifactCreate,
@@ -352,4 +355,20 @@ export const api = {
       "GET",
       `/api/dossiers/${dossierId}/considered-and-rejected`,
     ),
+
+  // ---------- Sleep-mode: settings + budget ----------
+  listSettings: () => request<SettingEntry[]>("GET", "/api/settings"),
+
+  getSetting: (key: string) =>
+    request<SettingEntry>("GET", `/api/settings/${encodeURIComponent(key)}`),
+
+  updateSetting: (key: string, value: unknown) =>
+    request<SettingEntry>("PUT", `/api/settings/${encodeURIComponent(key)}`, {
+      value,
+    }),
+
+  budgetToday: () => request<BudgetToday>("GET", "/api/budget/today"),
+
+  budgetRange: (days = 7) =>
+    request<BudgetDay[]>("GET", `/api/budget/range${qs({ days })}`),
 };
