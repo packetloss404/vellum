@@ -1,5 +1,6 @@
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config
@@ -20,6 +21,7 @@ _REQUIRED_COLUMNS: list[tuple[str, str, str]] = [
     ("work_sessions", "output_tokens", "INTEGER NOT NULL DEFAULT 0"),
     ("work_sessions", "cost_usd", "REAL NOT NULL DEFAULT 0"),
     ("work_sessions", "end_reason", "TEXT"),
+    ("decision_points", "kind", "TEXT NOT NULL DEFAULT 'generic'"),
     # Day-4 (phase 1): sub-investigation identity.
     ("sub_investigations", "title", "TEXT"),
     ("sub_investigations", "blocked_reason", "TEXT"),
@@ -55,17 +57,92 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
+def _backfill_decision_point_kinds(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        UPDATE decision_points
+           SET kind = 'plan_approval'
+         WHERE kind = 'generic'
+           AND (
+                lower(title) LIKE '%plan_approval%'
+             OR lower(title) LIKE '%plan approval%'
+             OR (
+                    lower(title) LIKE '%plan%'
+                AND (
+                       lower(title) LIKE '%approve%'
+                    OR lower(title) LIKE '%approval%'
+                )
+             )
+           )
+        """
+    )
+
+
+def _close_duplicate_active_work_sessions(conn: sqlite3.Connection) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        WITH ranked AS (
+            SELECT id,
+                   row_number() OVER (
+                       PARTITION BY dossier_id
+                       ORDER BY started_at DESC, id DESC
+                   ) AS rn
+              FROM work_sessions
+             WHERE ended_at IS NULL
+        )
+        UPDATE work_sessions
+           SET ended_at = ?,
+               end_reason = COALESCE(end_reason, 'crashed')
+         WHERE id IN (SELECT id FROM ranked WHERE rn > 1)
+        """,
+        (now,),
+    )
+
+
+def _close_duplicate_unresolved_plan_approvals(conn: sqlite3.Connection) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        WITH ranked AS (
+            SELECT id,
+                   row_number() OVER (
+                       PARTITION BY dossier_id
+                       ORDER BY created_at DESC, id DESC
+                   ) AS rn
+              FROM decision_points
+             WHERE kind = 'plan_approval'
+               AND resolved_at IS NULL
+        )
+        UPDATE decision_points
+           SET resolved_at = ?
+         WHERE id IN (SELECT id FROM ranked WHERE rn > 1)
+        """,
+        (now,),
+    )
+
+
 # Indices that reference columns added via ensure_columns must be created
 # AFTER the ALTER TABLE pass — otherwise executescript sees the CREATE INDEX
 # against a column that does not yet exist on a pre-sleep-mode DB and bails.
-_REQUIRED_INDICES: list[tuple[str, str, str]] = [
-    ("idx_dossiers_wake", "dossiers", "wake_pending, wake_at"),
+_REQUIRED_INDICES: list[str] = [
+    "CREATE INDEX IF NOT EXISTS idx_dossiers_wake ON dossiers(wake_pending, wake_at)",
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_work_sessions_one_active_per_dossier
+    ON work_sessions(dossier_id)
+    WHERE ended_at IS NULL
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_decision_points_one_open_plan_approval_per_dossier
+    ON decision_points(dossier_id)
+    WHERE kind = 'plan_approval' AND resolved_at IS NULL
+    """,
 ]
 
 
 def _ensure_indices(conn: sqlite3.Connection) -> None:
-    for name, table, columns in _REQUIRED_INDICES:
-        conn.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {table}({columns})")
+    for sql in _REQUIRED_INDICES:
+        conn.execute(sql)
 
 
 def init_db(db_path: Path | None = None) -> None:
@@ -80,6 +157,9 @@ def init_db(db_path: Path | None = None) -> None:
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.executescript(SCHEMA_PATH.read_text())
         _ensure_columns(conn)
+        _backfill_decision_point_kinds(conn)
+        _close_duplicate_unresolved_plan_approvals(conn)
+        _close_duplicate_active_work_sessions(conn)
         _ensure_indices(conn)
         conn.commit()
     finally:

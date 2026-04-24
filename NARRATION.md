@@ -6,17 +6,17 @@ Record in one take if you can; the cuts are natural scroll moments so a single c
 
 ---
 
-## 0:00 – 0:20 | Dossier list page (3 cards visible)
+## 0:00 – 0:20 | `/stress` fixture opens on the dossier page
 
 > Vellum is for decisions that deserve more than a chat window.
 >
-> Each of these is a case file an agent has been working on over hours. Structured, typed, paused and resumed across real time. I close the laptop, come back, and the dossier has evolved — new sections, revised conclusions, questions it needs me to answer.
+> This is a case file an agent has been working on over hours. Structured, typed, paused and resumed across real time. I close the laptop, come back, and the dossier has evolved — new sections, revised conclusions, questions it needs me to answer.
 
-*(Click into "Whether to try for a child at 35 given my ambivalence.")*
+*(Start at `http://localhost:5173/stress`. No backend or API key is needed for this fixture.)*
 
 ---
 
-## 0:20 – 0:45 | Dossier page loads, hero + premise challenge block visible
+## 0:20 – 0:45 | Hero + premise challenge block visible
 
 > The agent doesn't start by answering the question. It starts by auditing what the question is smuggling in.
 >
@@ -66,13 +66,13 @@ Record in one take if you can; the cuts are natural scroll moments so a single c
 
 ---
 
-## 2:45 – 3:00 | Settings page → click back to list → hover credit-card debt dossier
+## 2:45 – 3:00 | Delivered-state close
 
-> Soft-signal budgets, sleep-mode so the agent keeps working when I'm not here, trust-mode for when I want it to just handle tier-2 stalls itself.
+> The backend also has soft-signal budgets, sleep-mode, and stuck escalation, but the important product idea is here on the page: the agent didn't just answer. It maintained a durable case file, challenged the premise, separated confirmed from provisional, and delivered a conclusion I can inspect later.
 >
-> Last thing. The credit-card-debt dossier. Classic bad-frame question — "what percentage should I open negotiations at?" The agent refused to quote a number until it had audited whether the debt was actually owed, what state governs the SOL, whether the collector has standing. Ended up drafting a cease-and-desist letter instead of a negotiation number. That's the product working.
+> That's Vellum: not another chat box, but a place for long-running, structured investigation.
 
-*(End on the dossier list page.)*
+*(End on the dossier top rail or right rail. Stay on `/stress` for the whole take.)*
 
 ---
 
@@ -86,6 +86,6 @@ Record in one take if you can; the cuts are natural scroll moments so a single c
 
 ## What the video does NOT need
 
-- A live agent run. Every dossier already has real content from prior runs.
+- A live agent run. The `/stress` route is a no-network fixture.
 - API credits. This is screen-recording existing state.
 - Voiceover editing. Single take, flat read, no music.

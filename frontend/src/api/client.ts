@@ -45,6 +45,7 @@ export class ApiError extends Error {
 }
 
 const BASE = import.meta.env.VITE_API_URL || "";
+const API_TOKEN = import.meta.env.VITE_VELLUM_API_TOKEN || "";
 
 /** Build `?a=1&b=2` from a record, skipping null/undefined. Returns "" when empty. */
 function qs(params: Record<string, string | number | undefined | null>): string {
@@ -61,9 +62,13 @@ async function request<T>(
   path: string,
   body?: unknown,
 ): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (API_TOKEN) headers.Authorization = `Bearer ${API_TOKEN}`;
+
   const res = await fetch(BASE + path, {
     method,
-    headers: body !== undefined ? { "Content-Type": "application/json" } : {},
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
 
@@ -138,9 +143,11 @@ export const api = {
 
   // ---------- Agent ----------
   startAgent: (dossierId: string, maxTurns?: number) =>
-    request<unknown>("POST", `/api/dossiers/${dossierId}/agent/start`, {
-      max_turns: maxTurns ?? 200,
-    }),
+    request<unknown>(
+      "POST",
+      `/api/dossiers/${dossierId}/agent/start`,
+      maxTurns === undefined ? undefined : { max_turns: maxTurns },
+    ),
 
   stopAgent: (dossierId: string) =>
     request<unknown>("POST", `/api/dossiers/${dossierId}/agent/stop`),
@@ -271,7 +278,7 @@ export const api = {
     workSessionId?: string,
   ) =>
     request<Dossier>(
-      "PATCH",
+      "PUT",
       `/api/dossiers/${dossierId}/debrief${qs({ work_session_id: workSessionId })}`,
       body,
     ),
@@ -282,7 +289,7 @@ export const api = {
     workSessionId?: string,
   ) =>
     request<Dossier>(
-      "PATCH",
+      "PUT",
       `/api/dossiers/${dossierId}/investigation-plan${qs({ work_session_id: workSessionId })}`,
       body,
     ),
@@ -330,7 +337,7 @@ export const api = {
     request<NextAction[]>(
       "POST",
       `/api/dossiers/${dossierId}/next-actions/reorder${qs({ work_session_id: workSessionId })}`,
-      { action_ids: actionIds },
+      actionIds,
     ),
 
   // ---------- v2: Investigation log ----------

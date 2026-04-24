@@ -10,7 +10,8 @@ Vellum is for the kind of question that doesn't belong in a chat window — a co
 
 - **[SUMMARY.md](./SUMMARY.md)** — three-paragraph project summary (problem / product / architecture).
 - **[NARRATION.md](./NARRATION.md)** — 3-minute demo video script with timing and shot list.
-- **Demo dossiers** — the repo's SQLite DB ships with three fully-worked investigations (credit-card debt, housing/proximity decision, fertility/ambivalence) that demonstrate premise challenges, working theories, sub-investigations, plan approval, and delivered-state sweep.
+- **[HACKATHON_SUBMISSION.md](./HACKATHON_SUBMISSION.md)** — written submission packet with the pitch, architecture, demo path, and limitations.
+- **Fixture demo** — `http://localhost:5173/stress` renders a fully-worked, no-network dossier fixture for screen recording. `http://localhost:5173/demo` is the smaller legacy hero fixture.
 - **Scope freeze** — out of scope for v1: multi-user, auth, notifications, mobile, rich-text editor, LLMs other than Claude, Claude Agent SDK migration, Postgres, Temporal. Everything listed works on localhost against the Anthropic Messages API.
 
 ## What makes it different
@@ -30,6 +31,18 @@ Vellum is for the kind of question that doesn't belong in a chat window — a co
 
 ## Local dev
 
+Fastest reviewer path, no backend or API key required:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Then open `http://localhost:5173/stress` for the full fixture-driven demo used in the submission video.
+
+Full local stack for real agent runs:
+
 ```bash
 # Backend
 cd backend
@@ -47,7 +60,7 @@ cd ..
 ./dev.sh                          # uvicorn on :8731, vite on :5173
 ```
 
-Visit `http://localhost:5173/demo` for the fixture-driven hero demo, or `/` to start a real dossier.
+Visit `http://localhost:5173/stress` for the full fixture-driven demo used in the submission video, `/demo` for the smaller hero fixture, or `/` to start a real dossier.
 
 ## Project layout
 
@@ -63,7 +76,7 @@ backend/vellum/
   lifecycle.py  # reconcile orphaned work_sessions at startup
 
 frontend/src/
-  pages/        # DossierListPage, IntakePage, DossierPage, DemoPage, NotFoundPage
+  pages/        # DossierListPage, IntakePage, DossierPage, StressPage, DemoPage, SettingsPage
   components/   # sections, needs-input, decision-points, plan-diff, intake, common
   api/          # hooks, client, types (hand-mirrored from backend/vellum/models.py)
   mocks/        # demo fixture data

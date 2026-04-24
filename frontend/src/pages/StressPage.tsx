@@ -1,6 +1,5 @@
 import React, { useMemo } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter, Routes, Route } from "react-router-dom";
 import DossierPage from "./DossierPage";
 import {
   stressCaseFile,
@@ -16,21 +15,24 @@ import { qk } from "../api/hooks";
  * ../mocks/stressCaseFile. No network: all queries DossierPage fires
  * resolve synchronously out of the cache.
  *
- * Why a local QueryClient (and a MemoryRouter) rather than wiring the
- * fixture through the app-level client: we want /stress to feel exactly
- * like /dossiers/<id> at render time but without any risk of polluting
- * the real app cache, and without needing to add a special fixture case
- * to the api layer. Pre-seed what DossierPage reads:
+ * Why a local QueryClient rather than wiring the fixture through the
+ * app-level client: we want /stress to feel exactly like /dossiers/<id>
+ * at render time but without any risk of polluting the real app cache,
+ * and without needing to add a special fixture case to the api layer.
+ * DossierPage is mounted directly with `fixtureId` (no nested router —
+ * the outer BrowserRouter already owns routing). Pre-seed what
+ * DossierPage reads:
  *
  *   - ["dossier", id]                           → DossierFull
  *   - ["dossier", id, "change-log"]             → ChangeLogEntry[]
  *   - ["dossier", id, "investigation-log", …]   → InvestigationLogEntry[]
  *   - ["dossier", id, "investigation-log", "counts"] → Record<string, number>
- *   - ["dossier", id, "resume-state"]           → { active_work_session_id: null }
+  *   - ["dossier", id, "resume-state"]           → { active_work_session_id: null }
+  *   - ["dossier", id, "agent-status"]           → { running: false }
  *
- * Mutations (visit, resume) land on the local client and mutate nothing
- * visible — fine for a stress walk-through. We still disable retries so
- * if something does misfire it errors loudly rather than spinning.
+  * DossierPage is mounted in readOnlyFixture mode so visit/resume mutations
+  * do not hit the backend. If a query somehow misfires, retries are disabled
+  * so it errors loudly rather than spinning.
  */
 export default function StressPage() {
   const queryClient = useMemo(() => {
@@ -68,8 +70,13 @@ export default function StressPage() {
       qk.investigationLogCounts(id),
       STRESS_INVESTIGATION_LOG_COUNTS,
     );
-    qc.setQueryData(["dossier", id, "resume-state"], {
+    qc.setQueryData(qk.resumeState(id), {
       active_work_session_id: null,
+      wake_pending: false,
+    });
+    qc.setQueryData(qk.agentStatus(id), {
+      running: false,
+      started_at: null,
     });
 
     return qc;
@@ -77,11 +84,7 @@ export default function StressPage() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[`/dossiers/${STRESS_DOSSIER_ID}`]}>
-        <Routes>
-          <Route path="/dossiers/:id" element={<DossierPage />} />
-        </Routes>
-      </MemoryRouter>
+      <DossierPage readOnlyFixture fixtureId={STRESS_DOSSIER_ID} />
     </QueryClientProvider>
   );
 }

@@ -619,15 +619,15 @@ export type DebriefUpdate = {
 };
 
 export type InvestigationPlanUpdate = {
-  items?: InvestigationPlanItem[];
+  items: InvestigationPlanItem[];
   rationale?: string;
-  approved?: boolean;
+  approve?: boolean;
 };
 
 export type NextActionCreate = {
   action: string;
   rationale?: string;
-  priority?: number;
+  after_action_id?: string | null;
 };
 
 export type InvestigationLogAppend = {

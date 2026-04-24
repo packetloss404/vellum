@@ -54,9 +54,15 @@ def _patch_orchestrator_start(monkeypatch: pytest.MonkeyPatch) -> dict:
         dossier_id: str,
         max_turns: int = 200,
         model: Optional[str] = None,
+        expected_session_id: Optional[str] = None,
     ) -> dict:
         calls["started"].append(
-            {"dossier_id": dossier_id, "max_turns": max_turns, "model": model}
+            {
+                "dossier_id": dossier_id,
+                "max_turns": max_turns,
+                "model": model,
+                "expected_session_id": expected_session_id,
+            }
         )
         return {"status": "started", "dossier_id": dossier_id}
 
@@ -164,6 +170,20 @@ def test_resume_with_active_session_returns_409(client, monkeypatch):
     assert still_active.ended_at is None
 
 
+def test_start_work_session_rejects_duplicate_active_session(fresh_db):
+    from vellum import models as m, storage
+
+    dossier = _mk_dossier()
+    active = storage.start_work_session(dossier.id, m.WorkSessionTrigger.manual)
+
+    with pytest.raises(storage.ActiveWorkSessionExists) as excinfo:
+        storage.start_work_session(dossier.id, m.WorkSessionTrigger.resume)
+
+    assert excinfo.value.session.id == active.id
+    sessions = storage.list_work_sessions(dossier.id)
+    assert [s for s in sessions if s.ended_at is None] == [active]
+
+
 def test_resume_closes_new_session_if_orchestrator_race(client, monkeypatch):
     """If the orchestrator reports AgentAlreadyRunning (e.g. raced a
     concurrent start we didn't see), the route must close the session
@@ -219,6 +239,9 @@ def test_resume_state_shapes(client, monkeypatch):
         "open_needs_input_count": 0,
         "open_decision_point_count": 0,
         "delivered": False,
+        "wake_at": None,
+        "wake_pending": False,
+        "wake_reason": None,
     }
 
     # 2. Plan drafted but not approved.
@@ -268,13 +291,21 @@ def test_resume_state_shapes(client, monkeypatch):
     # last_session_ended_at is still None — nothing has ended yet.
     assert state["last_session_ended_at"] is None
 
-    # 6. End session: active clears, last_session_ended_at populates.
+    # 6. Visit is read-only for session lifecycle: it updates last_visited_at
+    # but must not close the active agent session.
+    visit = client.post(f"/api/dossiers/{dossier.id}/visit")
+    assert visit.status_code == 200, visit.text
+    state = client.get(f"/api/dossiers/{dossier.id}/resume-state").json()
+    assert state["last_visited_at"] is not None
+    assert state["active_work_session_id"] == session.id
+
+    # 7. End session: active clears, last_session_ended_at populates.
     storage.end_work_session(session.id)
     state = client.get(f"/api/dossiers/{dossier.id}/resume-state").json()
     assert state["active_work_session_id"] is None
     assert state["last_session_ended_at"] is not None
 
-    # 7. Visit updates last_visited_at and must NOT revive the plan /
+    # 8. Visit updates last_visited_at and must NOT revive the plan /
     # counts (read-only contract on visit).
     client.post(f"/api/dossiers/{dossier.id}/visit")
     state = client.get(f"/api/dossiers/{dossier.id}/resume-state").json()
@@ -282,7 +313,7 @@ def test_resume_state_shapes(client, monkeypatch):
     assert state["has_plan"] is True
     assert state["plan_approved"] is True
 
-    # 8. Delivered dossier surfaces delivered=True.
+    # 9. Delivered dossier surfaces delivered=True.
     storage.update_dossier(
         dossier.id, m.DossierUpdate(status=m.DossierStatus.delivered)
     )
@@ -301,9 +332,7 @@ def test_reconcile_reports_recovered_dossier_ids_and_active_before(
     from vellum import lifecycle
     from vellum import models as m, storage
 
-    # Three dossiers, each with an orphan work_session. One dossier gets
-    # *two* orphan sessions to prove the id list dedupes while the
-    # session counter does not.
+    # Three dossiers, each with an orphan work_session.
     d1 = storage.create_dossier(
         m.DossierCreate(
             title="Alpha investigation",
@@ -327,7 +356,6 @@ def test_reconcile_reports_recovered_dossier_ids_and_active_before(
     )
 
     storage.start_work_session(d1.id, m.WorkSessionTrigger.manual)
-    storage.start_work_session(d1.id, m.WorkSessionTrigger.manual)  # dup on same dossier
     storage.start_work_session(d2.id, m.WorkSessionTrigger.manual)
     storage.start_work_session(d3.id, m.WorkSessionTrigger.manual)
 
@@ -336,9 +364,9 @@ def test_reconcile_reports_recovered_dossier_ids_and_active_before(
     caplog.set_level(logging.INFO, logger="vellum.lifecycle")
     report = lifecycle.reconcile_at_startup()
 
-    # 4 orphan sessions, 3 distinct dossiers.
-    assert report.active_sessions_before_reconcile == 4
-    assert report.recovered_work_sessions == 4
+    # 3 orphan sessions, 3 distinct dossiers.
+    assert report.active_sessions_before_reconcile == 3
+    assert report.recovered_work_sessions == 3
     assert set(report.recovered_dossier_ids) == {d1.id, d2.id, d3.id}
     assert len(report.recovered_dossier_ids) == 3  # de-duped
 
@@ -351,7 +379,7 @@ def test_reconcile_reports_recovered_dossier_ids_and_active_before(
     )
     assert "Alpha investigation" in summary or "Beta investigation" in summary \
         or "Gamma investigation" in summary, summary
-    assert "active_before=4" in summary
+    assert "active_before=3" in summary
 
     # Second call: nothing to recover.
     report2 = lifecycle.reconcile_at_startup()

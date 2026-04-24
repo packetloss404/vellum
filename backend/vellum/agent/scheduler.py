@@ -18,9 +18,8 @@ For each ready dossier, the scheduler:
   2. Pre-creates a work_session with ``trigger=scheduled`` (Ian's call:
      both wake_at and wake_pending paths produce ``scheduled`` sessions;
      the semantic distinction lives in ``dossiers.wake_reason``).
-  3. Calls ``ORCHESTRATOR.start(dossier_id)``. ``AgentAlreadyRunning`` is
-     swallowed — someone else (e.g., the user clicking Resume) got there
-     first, and the wake is satisfied.
+  3. Calls ``ORCHESTRATOR.start(dossier_id)``. ``AgentAlreadyRunning`` and
+     process-wide capacity pressure leave wake fields intact for retry.
   4. Clears ``wake_at`` and ``wake_pending`` only after a successful start.
      A storage failure leaves the flag set so the next tick retries.
 
@@ -41,7 +40,7 @@ from typing import Optional
 from .. import models as m
 from .. import storage
 from ..config import SCHEDULER_POLL_SECONDS
-from .orchestrator import ORCHESTRATOR, AgentAlreadyRunning
+from .orchestrator import ORCHESTRATOR, AgentAlreadyRunning, AgentCapacityExceeded
 
 
 logger = logging.getLogger(__name__)
@@ -129,16 +128,27 @@ class Scheduler:
         dossier_id = entry["dossier_id"]
         reason = entry.get("wake_reason")
 
-        # Pre-create a session with trigger=scheduled IF there isn't already
-        # one in flight. If a session already exists (e.g., the user just
-        # started a run), we skip the pre-create — agent._resolve_session
-        # will reuse it — and fall through to the start call below (which
-        # will raise AgentAlreadyRunning and we'll swallow it).
+        # Pre-create a session with trigger=scheduled. If a DB session exists
+        # but no orchestrator task owns it, treat it as stale crash debris and
+        # close it before starting a fresh scheduled run.
         pre_created_session_id: Optional[str] = None
         try:
             active = await asyncio.to_thread(
                 storage.get_active_work_session, dossier_id
             )
+            if active is not None:
+                running = False
+                try:
+                    running = bool(ORCHESTRATOR.status(dossier_id).get("running"))
+                except Exception:
+                    running = False
+                if not running:
+                    await asyncio.to_thread(
+                        storage.end_work_session_with_reason,
+                        active.id,
+                        m.WorkSessionEndReason.crashed,
+                    )
+                    active = None
             if active is None:
                 session = await asyncio.to_thread(
                     storage.start_work_session,
@@ -155,15 +165,18 @@ class Scheduler:
             return
 
         try:
-            await ORCHESTRATOR.start(dossier_id)
-        except AgentAlreadyRunning:
-            # Someone got there first — the user clicked Resume, or the
-            # prior tick's session is still running. Do NOT treat this as
-            # "wake satisfied": the currently-running session took its
-            # state snapshot at its own start and has no way to see a
-            # needs_input answer / decision resolution that landed after
-            # that. If we clear wake_pending here, the change the user
-            # made dies on the floor.
+            await ORCHESTRATOR.start(
+                dossier_id,
+                expected_session_id=pre_created_session_id,
+            )
+        except (AgentAlreadyRunning, AgentCapacityExceeded) as exc:
+            # Either someone got there first (user clicked Resume / prior
+            # tick still running), or process-wide capacity is saturated.
+            # Do NOT treat this as "wake satisfied": the currently-running
+            # session took its state snapshot at its own start and has no
+            # way to see a needs_input answer / decision resolution that
+            # landed after that. If we clear wake_pending here, the change
+            # the user made dies on the floor.
             #
             # Instead: keep wake_pending set, bail out without the clear
             # below. The next scheduler tick will retry; if the other
@@ -180,13 +193,13 @@ class Scheduler:
                 except Exception:
                     logger.warning(
                         "scheduler: created session %s but couldn't close it "
-                        "after AgentAlreadyRunning; next reconcile will clean up",
+                        "after wake deferral; next reconcile will clean up",
                         pre_created_session_id, exc_info=True,
                     )
             logger.info(
-                "scheduler: dossier=%s wake deferred — agent already running; "
+                "scheduler: dossier=%s wake deferred — %s; "
                 "wake_pending retained for next tick (reason=%s)",
-                dossier_id, reason,
+                dossier_id, type(exc).__name__, reason,
             )
             return
         except Exception:

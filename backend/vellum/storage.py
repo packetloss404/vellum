@@ -831,6 +831,23 @@ def list_needs_input(dossier_id: str, open_only: bool = False) -> list[m.NeedsIn
 # ---------- DecisionPoint ----------
 
 
+def _get_open_plan_approval_row(
+    conn: sqlite3.Connection,
+    dossier_id: str,
+) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT * FROM decision_points
+         WHERE dossier_id = ?
+           AND kind = 'plan_approval'
+           AND resolved_at IS NULL
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1
+        """,
+        (dossier_id,),
+    ).fetchone()
+
+
 def add_decision_point(
     dossier_id: str,
     data: m.DecisionPointCreate,
@@ -847,37 +864,38 @@ def add_decision_point(
         kind=data.kind,
         created_at=now,
     )
-    with connect() as conn:
-        if data.kind == "plan_approval":
-            existing = conn.execute(
+    try:
+        with connect() as conn:
+            if data.kind == "plan_approval":
+                existing = _get_open_plan_approval_row(conn, dossier_id)
+                if existing is not None:
+                    return _row_to_decision_point(existing)
+            conn.execute(
                 """
-                SELECT * FROM decision_points
-                 WHERE dossier_id = ? AND kind = 'plan_approval' AND resolved_at IS NULL
-                 ORDER BY created_at DESC LIMIT 1
+                INSERT INTO decision_points (id, dossier_id, title, options, recommendation,
+                                             blocks_section_ids, kind, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (dossier_id,),
-            ).fetchone()
+                (
+                    item.id,
+                    dossier_id,
+                    item.title,
+                    _OptionList.dump_json(item.options).decode(),
+                    item.recommendation,
+                    json.dumps(item.blocks_section_ids),
+                    item.kind,
+                    _dt_str(now),
+                ),
+            )
+            _log_change(conn, dossier_id, work_session_id, "decision_point_added", item.title)
+            _touch_dossier(conn, dossier_id)
+    except sqlite3.IntegrityError as exc:
+        if data.kind == "plan_approval":
+            with connect() as conn:
+                existing = _get_open_plan_approval_row(conn, dossier_id)
             if existing is not None:
                 return _row_to_decision_point(existing)
-        conn.execute(
-            """
-            INSERT INTO decision_points (id, dossier_id, title, options, recommendation,
-                                         blocks_section_ids, kind, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                item.id,
-                dossier_id,
-                item.title,
-                _OptionList.dump_json(item.options).decode(),
-                item.recommendation,
-                json.dumps(item.blocks_section_ids),
-                item.kind,
-                _dt_str(now),
-            ),
-        )
-        _log_change(conn, dossier_id, work_session_id, "decision_point_added", item.title)
-        _touch_dossier(conn, dossier_id)
+        raise
     return item
 
 

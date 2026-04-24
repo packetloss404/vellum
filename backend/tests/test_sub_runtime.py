@@ -318,6 +318,63 @@ def test_run_sub_investigation_clean_exit_on_complete(fresh_db):
     assert fetched.state == m.SubInvestigationState.delivered
 
 
+def test_run_sub_investigation_records_usage_cost_and_daily_budget(fresh_db):
+    """Sub-agent usage must roll into session and daily budget accounting."""
+    from vellum import models as m, storage
+    from vellum.agent import sub_runtime
+    from vellum.config import cost_usd_for_turn
+
+    dossier = _mk_dossier()
+    sub = storage.spawn_sub_investigation(
+        dossier.id,
+        m.SubInvestigationSpawn(scope="usage scope", questions=["Q1?"]),
+    )
+    responses = [
+        _Response(
+            content=[
+                _tool_use(
+                    "complete_sub_investigation",
+                    {
+                        "return_summary": "Answer with usage accounting.",
+                        "findings_section_ids": [],
+                        "findings_artifact_ids": [],
+                    },
+                    id_="tu_complete_usage",
+                ),
+            ],
+            stop_reason="tool_use",
+            usage=_Usage(input_tokens=123, output_tokens=45),
+        ),
+    ]
+
+    with patch(
+        "vellum.agent.sub_runtime.anthropic.AsyncAnthropic",
+        return_value=_make_mock_client(responses),
+    ):
+        asyncio.run(
+            sub_runtime.run_sub_investigation(
+                dossier.id,
+                sub.id,
+                sub.scope,
+                sub.questions,
+                model="claude-sonnet-4-6",
+                max_turns=5,
+            )
+        )
+
+    [session] = storage.list_work_sessions(dossier.id)
+    expected_cost = cost_usd_for_turn("claude-sonnet-4-6", 123, 45)
+    assert session.input_tokens == 123
+    assert session.output_tokens == 45
+    assert session.token_budget_used == 168
+    assert session.cost_usd == pytest.approx(expected_cost)
+
+    budget = storage.get_budget_today()
+    assert budget.input_tokens == 123
+    assert budget.output_tokens == 45
+    assert budget.spent_usd == pytest.approx(expected_cost)
+
+
 def test_run_sub_investigation_force_completes_at_max_turns(fresh_db):
     """When max_turns is reached, force-complete with the incomplete marker."""
     from vellum import models as m, storage

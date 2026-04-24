@@ -1,7 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import db, storage
@@ -15,6 +15,7 @@ from .agent.scheduler import SCHEDULER
 # prod before this was caught (dos_cbf0 + dos_fc07, day 4).
 from .agent import sub_runtime  # noqa: F401
 from .api.agent_routes import router as agent_router
+from .api.auth import require_api_token
 from .api.intake_routes import router as intake_router
 from .api.routes import router as crud_router
 from .api.settings_routes import router as settings_router
@@ -59,10 +60,11 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    app.include_router(crud_router)
-    app.include_router(agent_router)
-    app.include_router(intake_router)
-    app.include_router(settings_router)
+    api_dependencies = [Depends(require_api_token)]
+    app.include_router(crud_router, dependencies=api_dependencies)
+    app.include_router(agent_router, dependencies=api_dependencies)
+    app.include_router(intake_router, dependencies=api_dependencies)
+    app.include_router(settings_router, dependencies=api_dependencies)
 
     @app.get("/health")
     def health() -> dict:

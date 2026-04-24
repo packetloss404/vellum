@@ -9,11 +9,10 @@ Invariants (enforced here, assumed by callers):
      dossier that already has a non-done task raises
      ``AgentAlreadyRunning``. The ``_lock`` makes the check-then-
      insert atomic across concurrent callers.
-  2. **Cross-dossier parallelism.** Different dossiers run as
-     independent ``asyncio.Task``s scheduled on the same event loop —
-     there is no artificial concurrency cap and no cross-dossier
-     serialization. SQLite with WAL (configured in ``db.py``) absorbs
-     the concurrent writers.
+  2. **Bounded cross-dossier parallelism.** Different dossiers run as
+     independent ``asyncio.Task``s scheduled on the same event loop, up
+     to ``VELLUM_AGENT_MAX_CONCURRENT_RUNS``. SQLite with WAL (configured
+     in ``db.py``) absorbs the concurrent writers.
   3. **Graceful shutdown.** ``shutdown()`` cancels every in-flight
      task and awaits them with a 30 s grace period. Safe to call from
      a FastAPI lifespan hook; never raises.
@@ -23,10 +22,8 @@ Invariants (enforced here, assumed by callers):
      or errored.
   5. **Sub-investigation inlining.** Sub-agents run *inside* the
      parent's ``DossierAgent.run()`` coroutine; the orchestrator
-     never registers a sub-agent as a separate task and never imposes
-     a wall-clock timeout on a task in progress. A dossier's task
-     runs until the runtime returns (or is cancelled) — so a long
-     internal sub-agent loop won't be killed by the orchestrator.
+     never registers a sub-agent as a separate task. A dossier's task
+     runs until the runtime returns or is cancelled.
   6. **No silent failures.** Exceptions raised inside the runtime are
      logged (with tracebacks) by the done-callback. The runtime
      itself is responsible for closing its own ``work_session`` on
@@ -39,6 +36,11 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from ..config import (
+    AGENT_MAX_CONCURRENT_RUNS,
+    AGENT_MAX_TURNS,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,10 @@ class AgentAlreadyRunning(Exception):
 
 class AgentNotRunning(Exception):
     """Raised by ``stop()`` when no task is active for the dossier."""
+
+
+class AgentCapacityExceeded(Exception):
+    """Raised by ``start()`` when the process-wide run cap is reached."""
 
 
 # Import the real runtime lazily so this module is importable even if the
@@ -79,11 +85,15 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+async def _run_agent(agent: Any, max_turns: int) -> Any:
+    return await agent.run(max_turns=max_turns)
+
+
 class AgentOrchestrator:
     """Tracks active agent tasks across dossiers.
 
     One in-flight task per dossier is enforced. Multiple dossiers run in
-    parallel as asyncio tasks — there is no queue.
+    parallel as asyncio tasks up to the configured cap — there is no queue.
     """
 
     def __init__(self) -> None:
@@ -126,8 +136,9 @@ class AgentOrchestrator:
     async def start(
         self,
         dossier_id: str,
-        max_turns: int = 200,
+        max_turns: int = AGENT_MAX_TURNS,
         model: Optional[str] = None,
+        expected_session_id: Optional[str] = None,
     ) -> dict:
         """Launch a ``DossierAgent.run()`` as an asyncio.Task.
 
@@ -141,9 +152,23 @@ class AgentOrchestrator:
                     f"agent already running for dossier {dossier_id}"
                 )
 
+            active_count = sum(
+                1 for task in self._tasks.values() if not task.done()
+            )
+            if (
+                AGENT_MAX_CONCURRENT_RUNS > 0
+                and active_count >= AGENT_MAX_CONCURRENT_RUNS
+            ):
+                raise AgentCapacityExceeded("agent capacity exceeded")
+
+            effective_max_turns = max(
+                1, min(int(max_turns or AGENT_MAX_TURNS), AGENT_MAX_TURNS)
+            )
             agent = _runtime_cls(dossier_id, model=model)
+            if expected_session_id is not None:
+                setattr(agent, "expected_session_id", expected_session_id)
             started_at = _utcnow_iso()
-            coro = agent.run(max_turns=max_turns)
+            coro = _run_agent(agent, effective_max_turns)
             task = asyncio.create_task(coro, name=f"dossier-agent:{dossier_id}")
             task.add_done_callback(self._make_done_callback(dossier_id))
             self._tasks[dossier_id] = task
@@ -153,13 +178,16 @@ class AgentOrchestrator:
                 "agent started: dossier=%s model=%s max_turns=%d",
                 dossier_id,
                 model,
-                max_turns,
+                effective_max_turns,
             )
-            return {
+            result = {
                 "status": "started",
                 "dossier_id": dossier_id,
                 "started_at": started_at,
             }
+            if expected_session_id is not None:
+                result["work_session_id"] = expected_session_id
+            return result
 
     async def stop(self, dossier_id: str, reason: str = "user_stop") -> dict:
         """Cancel the running task and wait briefly for clean shutdown.

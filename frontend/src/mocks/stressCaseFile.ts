@@ -96,6 +96,44 @@ const DOSSIER = {
       "Whether the original Chase card was opened jointly or as an authorized-user arrangement. If it was joint, CA's community-property rule could pull the surviving spouse back in — though there is no surviving spouse, only the two adult children. Your friend should check the card's original application; an answer of \"authorized user\" closes this risk entirely.",
     last_updated: iso(NOW - 30 * MIN),
   },
+  premise_challenge: {
+    original_question:
+      "What percentage should I open credit-card-debt negotiations at for my friend's deceased mother's accounts?",
+    hidden_assumptions: [
+      "that the debts are actually owed by anyone the collectors can pursue",
+      "that negotiation (rather than validation or SoL defense) is the correct tactic",
+      "that the surviving children have personal liability for a parent's unsecured debt",
+      "that both accounts should be treated as a single negotiation problem rather than sequenced by SoL status",
+      "that the collector currently calling is the actual current owner of the account and has legal standing to collect",
+    ],
+    why_answering_now_is_risky:
+      "Quoting an opening percentage before validation + SoL are confirmed pushes the user toward engaging on a debt that may not be owed, may be time-barred, or may be held by a collector who cannot prove ownership. A partial-payment offer can itself restart California's 4-year SoL clock — so the \"helpful\" answer is the one that does the most damage. Any number produced now is worse than no number at all.",
+    safer_reframe:
+      "Before proposing a percentage, audit whether negotiation is the right move at all. Three gates: (1) has the collector sent FDCPA § 1692g written validation, (2) is each account still within its state's statute of limitations, (3) is the surviving family personally liable given no estate. If any gate fails, the correct response is procedural pushback — not an opening offer.",
+    required_evidence_before_answering: [
+      "written FDCPA validation notice on file for each account (Chase and Citi)",
+      "date of last payment on each account, confirmed from original statements",
+      "probate status and estate composition — confirming there are no probate assets to pursue",
+      "jurisdiction confirmation (California vs Arizona SoL exposure) for both siblings",
+      "current account holder / debt-buyer chain of title for each balance",
+    ],
+    updated_at: iso(NOW - 2 * DAY + 8 * MIN),
+  },
+  working_theory: {
+    recommendation:
+      "Do not negotiate yet. Send the FDCPA validation-request letter by certified mail this week; hold the opening-offer question until validation returns and SoL on the Chase balance is confirmed as expired.",
+    confidence: "medium" as const,
+    why:
+      "The Chase balance is likely time-barred under CA CCP § 337 if the Q2 2021 last-payment estimate holds. Neither collector has sent written validation, which means the § 1692g 30-day window hasn't even started — the lever is fully available. With no estate and no surviving spouse, CA probate law gives the surviving children no personal liability. Engaging with a percentage offer now could restart the SoL clock and convert a likely-unenforceable debt into an enforceable one.",
+    what_would_change_it:
+      "If the original Chase application shows a joint account (not an authorized-user arrangement), community-property exposure comes back into play and the calculus shifts. If validation returns clean on both accounts with original-creditor documentation, we reopen the opening-offer question for the Citi balance only.",
+    unresolved_assumptions: [
+      "date of last payment on Chase is Q2 2021 (user estimate, needs statement confirmation)",
+      "Chase card was held solo, not jointly with the deceased's late spouse",
+      "current collectors (Midland, MRS BPO) actually own the accounts vs. are contingency-assigned",
+    ],
+    updated_at: iso(NOW - 45 * MIN),
+  },
   investigation_plan: {
     items: [
       {

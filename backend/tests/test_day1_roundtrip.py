@@ -394,16 +394,16 @@ def test_day1_roundtrip(client) -> None:
         f"/api/dossiers/{dossier_id}/debrief",
         params={"work_session_id": session_id},
         json={
-            "what_we_learned": (
+            "what_i_did": (
                 "The v2 surface is tractable if we accept PATCH-in-place for artifacts."
             ),
-            "what_we_got_wrong": (
+            "what_i_found": (
                 "Initial plan undercounted the investigation_log counts endpoint."
             ),
-            "decision_or_recommendation": (
+            "what_you_should_do_next": (
                 "Proceed with v2 as specified; pin artifact revisions as PATCH."
             ),
-            "what_to_watch": (
+            "what_i_couldnt_figure_out": (
                 "If users ask for revision history, revisit the POST-revision shape."
             ),
         },
@@ -421,6 +421,7 @@ def test_day1_roundtrip(client) -> None:
             "rationale": "Docs-agent task, target 2026-04-30.",
         },
     ]
+    next_action_ids = []
     for i, body in enumerate(next_action_bodies):
         resp = client.post(
             f"/api/dossiers/{dossier_id}/next-actions",
@@ -430,6 +431,15 @@ def test_day1_roundtrip(client) -> None:
         assert resp.status_code == 200, (
             f"next-action {i} failed: {resp.status_code} {resp.text}"
         )
+        next_action_ids.append(resp.json()["id"])
+
+    resp = client.post(
+        f"/api/dossiers/{dossier_id}/next-actions/reorder",
+        params={"work_session_id": session_id},
+        json=list(reversed(next_action_ids)),
+    )
+    assert resp.status_code == 200, f"next-action reorder failed: {resp.status_code} {resp.text}"
+    assert [a["id"] for a in resp.json()] == list(reversed(next_action_ids))
 
     # -------- 17. Read dossier full --------
     resp = client.get(f"/api/dossiers/{dossier_id}")
@@ -438,6 +448,7 @@ def test_day1_roundtrip(client) -> None:
 
     assert full.get("dossier"), "dossier key missing from full payload"
     assert full["dossier"].get("debrief"), "debrief missing from full payload"
+    assert full["dossier"]["debrief"]["what_i_did"].startswith("The v2 surface")
     assert full["dossier"].get("investigation_plan"), "investigation_plan missing from full payload"
 
     sections = full.get("sections") or []

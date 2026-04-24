@@ -1,0 +1,2086 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Vellum — a durable investigation system</title>
+<meta name="description" content="Vellum is a durable investigation system where the dossier is the primary surface, not chat. Hackathon submission, Anthropic, April 2026. Built on Claude Opus 4.7." />
+<meta name="color-scheme" content="light" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,400;0,500;0,600;1,400&family=Lora:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500&family=Inter:wght@400;500&display=swap" rel="stylesheet" />
+
+<style>
+  :root {
+    /* Paper / surfaces */
+    --paper: #FBF8F3;
+    --paper-dark: #F5EFE4;
+    --surface: #FFFFFF;
+    /* Ink */
+    --ink: #1F2937;
+    --ink-muted: #6B7280;
+    --ink-faint: #9CA3AF;
+    /* Rules */
+    --rule: #E5E1D6;
+    --rule-strong: #CEC6B5;
+    /* Accent (sienna) */
+    --accent: #8B4513;
+    --accent-bg: #F5EADF;
+    --accent-hover: #6B340F;
+    /* Attention (amber) */
+    --attention: #B45309;
+    --attention-bg: #FEF3C7;
+    /* Semantic states */
+    --state-confident: #047857;
+    --state-confident-bg: #ECFDF5;
+    --state-provisional: #B45309;
+    --state-provisional-bg: #FEF3C7;
+    --state-blocked: #9F1239;
+    --state-blocked-bg: #FFF1F2;
+
+    /* Fonts */
+    --font-display: "Newsreader", "Lora", Georgia, serif;
+    --font-serif: "Lora", "Charter", Georgia, serif;
+    --font-mono: "JetBrains Mono", "SF Mono", Menlo, monospace;
+    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+
+    /* Widths */
+    --w-page: 1120px;
+    --w-prose: 70ch;
+    --w-narrow: 720px;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-serif);
+    font-size: 17px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: "kern" 1, "liga" 1, "onum" 1;
+    text-rendering: optimizeLegibility;
+  }
+
+  img, svg { max-width: 100%; display: block; }
+
+  a { color: inherit; }
+
+  ::selection { background: var(--accent-bg); color: var(--accent-hover); }
+
+  /* Focus ring — restrained */
+  a:focus-visible,
+  button:focus-visible,
+  [tabindex]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+</style>
+
+<style>
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  height: 56px;
+  background: rgba(251, 248, 243, 0.82);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--rule);
+}
+.nav-inner {
+  max-width: var(--w-page);
+  margin: 0 auto;
+  height: 100%;
+  padding: 0 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.nav-brand {
+  font-family: var(--font-serif);
+  font-size: 17px;
+  font-weight: 500;
+  color: var(--ink);
+  text-decoration: none;
+  letter-spacing: -0.005em;
+}
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.nav-link {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-muted);
+  text-decoration: none;
+  transition: color 120ms ease;
+}
+.nav-link:hover { color: var(--accent); }
+.nav-sep {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink-faint);
+  user-select: none;
+}
+@media (max-width: 720px) {
+  .nav-inner { padding: 0 24px; }
+  .nav-links { gap: 10px; }
+  .nav-link { font-size: 11px; letter-spacing: 0.08em; }
+}
+
+.masthead {
+  min-height: 88vh;
+  padding: 14vh 0 10vh;
+  display: flex;
+  align-items: flex-start;
+}
+.masthead-inner {
+  max-width: var(--w-page);
+  margin: 0 auto;
+  width: 100%;
+  padding: 0 48px;
+}
+.masthead-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--ink-faint);
+  margin: 0 0 56px;
+}
+.masthead-wordmark-row {
+  display: flex;
+  align-items: baseline;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+.masthead-wordmark {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(72px, 11vw, 160px);
+  letter-spacing: -0.03em;
+  color: var(--ink);
+  line-height: 0.95;
+  margin: 0;
+}
+.masthead-buildnote {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+.masthead-tagline {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(28px, 3.2vw, 44px);
+  line-height: 1.2;
+  color: var(--ink-muted);
+  max-width: 24ch;
+  margin: 40px 0 0;
+}
+.masthead-rule {
+  width: 120px;
+  height: 1px;
+  background: var(--rule-strong);
+  border: 0;
+  margin: 48px 0;
+}
+.masthead-framing {
+  font-family: var(--font-serif);
+  font-size: 19px;
+  line-height: 1.65;
+  color: var(--ink-muted);
+  max-width: var(--w-prose);
+  margin: 0;
+}
+.masthead-quote {
+  margin: 64px 0 0;
+  max-width: var(--w-prose);
+}
+.masthead-quote-text {
+  font-family: var(--font-serif);
+  font-size: 28px;
+  font-style: italic;
+  line-height: 1.35;
+  color: var(--ink);
+  border-left: 2px solid var(--accent);
+  padding-left: 24px;
+  margin: 0;
+}
+.masthead-quote-attr {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  letter-spacing: 0.08em;
+  padding-left: 26px;
+  margin: 12px 0 0;
+}
+
+.masthead-problem {
+  max-width: var(--w-page);
+  margin: 96px auto 0;
+  padding: 0 48px 120px;
+}
+.masthead-problem-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 80px;
+  align-items: start;
+}
+.masthead-problem-h {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(36px, 5vw, 56px);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  margin: 0 0 20px;
+}
+.masthead-problem-dek {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--ink-faint);
+  margin: 0;
+}
+.masthead-problem-body {
+  font-family: var(--font-serif);
+  font-size: 19px;
+  line-height: 1.65;
+  color: var(--ink);
+  margin: 0;
+}
+.masthead-problem-also {
+  font-family: var(--font-serif);
+  font-size: 17px;
+  line-height: 1.6;
+  font-style: italic;
+  color: var(--ink-muted);
+  margin: 28px 0 0;
+}
+
+@media (max-width: 960px) {
+  .masthead-problem-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
+  }
+}
+@media (max-width: 720px) {
+  .masthead { padding: 10vh 0 8vh; }
+  .masthead-inner { padding: 0 24px; }
+  .masthead-problem { padding: 0 24px 80px; margin-top: 72px; }
+  .masthead-eyebrow { margin-bottom: 40px; }
+  .masthead-quote-text { font-size: 22px; padding-left: 18px; }
+  .masthead-quote-attr { padding-left: 20px; }
+}
+</style>
+
+<style>
+.behaviors {
+  padding-block: 120px;
+  background: var(--paper);
+  color: var(--ink);
+  border-top: 1px solid var(--rule);
+}
+.behaviors-inner {
+  max-width: var(--w-page);
+  margin: 0 auto;
+  padding-inline: 48px;
+}
+.behaviors-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0 0 28px;
+}
+.behaviors-h2 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(36px, 5vw, 56px);
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  color: var(--ink);
+  margin: 0 0 24px;
+}
+.behaviors-dek {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 19px;
+  line-height: 1.55;
+  color: var(--ink-muted);
+  max-width: 60ch;
+  margin: 0;
+}
+.behaviors-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 64px;
+  margin-top: 96px;
+}
+.behaviors-card {
+  border-top: 1px solid var(--rule);
+  padding-top: 48px;
+}
+.behaviors-card-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0 0 20px;
+}
+.behaviors-card h3 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 32px;
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+  margin: 0;
+}
+.behaviors-card-tagline {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 17px;
+  color: var(--accent);
+  margin: 8px 0 0;
+  line-height: 1.45;
+}
+.behaviors-card-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 56px;
+  align-items: start;
+  margin-top: 36px;
+}
+.behaviors-card-prose p {
+  font-family: var(--font-serif);
+  font-size: 17px;
+  line-height: 1.65;
+  color: var(--ink-muted);
+  margin: 0 0 18px;
+}
+.behaviors-card-prose p:last-child { margin-bottom: 0; }
+.behaviors-card-prose code {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--accent);
+  padding: 2px 6px;
+  background: var(--accent-bg);
+  border-radius: 2px;
+}
+.behaviors-exhibit { font-family: var(--font-serif); }
+.behaviors-exhibit-premise {
+  border-left: 2px solid var(--state-blocked);
+  padding: 16px 20px;
+  background: var(--surface);
+  border-radius: 0 2px 2px 0;
+}
+.behaviors-exhibit-premise .behaviors-exhibit-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 14px;
+}
+.behaviors-exhibit-premise .behaviors-exhibit-question {
+  font-family: var(--font-serif);
+  font-size: 19px;
+  line-height: 1.4;
+  color: var(--ink);
+  margin: 0 0 16px;
+}
+.behaviors-exhibit-premise .behaviors-exhibit-reframe-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 8px;
+}
+.behaviors-exhibit-premise .behaviors-exhibit-reframe {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink-muted);
+  margin: 0;
+}
+.behaviors-exhibit-tools {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--ink);
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  padding-block: 16px;
+}
+.behaviors-exhibit-tools ul { list-style: none; margin: 0; padding: 0; }
+.behaviors-exhibit-tools li {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.behaviors-exhibit-tools .behaviors-tool-name { color: var(--accent); }
+.behaviors-exhibit-tools .behaviors-tool-params { color: var(--ink-faint); }
+.behaviors-exhibit-tools .behaviors-tools-footnote {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--rule);
+  letter-spacing: 0.01em;
+}
+.behaviors-exhibit-states { display: flex; flex-direction: column; }
+.behaviors-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.behaviors-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.behaviors-chip-pip {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.behaviors-chip-confident {
+  background: var(--state-confident-bg);
+  border: 1px solid color-mix(in srgb, var(--state-confident) 30%, transparent);
+  color: var(--state-confident);
+}
+.behaviors-chip-confident .behaviors-chip-pip { background: var(--state-confident); }
+.behaviors-chip-provisional {
+  background: var(--state-provisional-bg);
+  border: 1px solid color-mix(in srgb, var(--state-provisional) 30%, transparent);
+  color: var(--state-provisional);
+}
+.behaviors-chip-provisional .behaviors-chip-pip { background: var(--state-provisional); }
+.behaviors-chip-blocked {
+  background: var(--state-blocked-bg);
+  border: 1px solid color-mix(in srgb, var(--state-blocked) 30%, transparent);
+  color: var(--state-blocked);
+}
+.behaviors-chip-blocked .behaviors-chip-pip { background: var(--state-blocked); }
+.behaviors-subcard {
+  margin-top: 28px;
+  border-left: 2px solid var(--state-provisional);
+  padding: 16px 20px;
+  background: var(--surface);
+  border-radius: 0 2px 2px 0;
+}
+.behaviors-subcard-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 12px;
+}
+.behaviors-subcard-title {
+  font-family: var(--font-serif);
+  font-size: 17px;
+  line-height: 1.45;
+  color: var(--ink);
+  margin: 0 0 10px;
+}
+.behaviors-subcard-q {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ink-muted);
+  margin: 0;
+}
+@media (max-width: 900px) {
+  .behaviors { padding-block: 80px; }
+  .behaviors-inner { padding-inline: 24px; }
+  .behaviors-grid { gap: 48px; margin-top: 64px; }
+  .behaviors-card { padding-top: 36px; }
+  .behaviors-card-body { grid-template-columns: 1fr; gap: 36px; }
+  .behaviors-exhibit-tools { font-size: 12px; }
+  .behaviors-exhibit-tools li { white-space: normal; }
+}
+</style>
+
+<style>
+  .stress {
+    padding-block: 120px;
+    background: var(--paper-dark);
+    color: var(--ink);
+    font-family: var(--font-serif);
+  }
+  .stress-inner {
+    max-width: var(--w-page);
+    margin: 0 auto;
+    padding-inline: 48px;
+  }
+  .stress-eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 24px 0;
+  }
+  .stress-h2 {
+    font-family: var(--font-display);
+    font-weight: 400;
+    font-size: clamp(36px, 5vw, 56px);
+    line-height: 1.1;
+    color: var(--ink);
+    margin: 0 0 20px 0;
+    letter-spacing: -0.01em;
+  }
+  .stress-dek {
+    font-family: var(--font-serif);
+    font-style: italic;
+    font-size: 19px;
+    line-height: 1.5;
+    color: var(--ink-muted);
+    max-width: 60ch;
+    margin: 0;
+  }
+  .stress-dek code {
+    font-family: var(--font-mono);
+    font-style: normal;
+    font-size: 16px;
+    background: var(--paper);
+    padding: 1px 6px;
+    border-radius: 2px;
+    color: var(--ink);
+  }
+  .stress-caption-top {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    color: var(--ink-faint);
+    margin: 16px 0 0 0;
+  }
+  .stress-mockup {
+    max-width: var(--w-page);
+    background: var(--surface);
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    padding: 48px 56px;
+    margin-top: 64px;
+    position: relative;
+  }
+  .stress-meta {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 20px 0;
+  }
+  .stress-title {
+    font-family: var(--font-display);
+    font-weight: 400;
+    font-size: clamp(28px, 3.4vw, 44px);
+    line-height: 1.15;
+    color: var(--ink);
+    margin: 0 0 20px 0;
+    letter-spacing: -0.005em;
+  }
+  .stress-title-quote {
+    color: var(--ink-faint);
+    font-weight: 300;
+  }
+  .stress-problem {
+    font-family: var(--font-serif);
+    font-size: 16px;
+    line-height: 1.6;
+    color: var(--ink-muted);
+    max-width: 70ch;
+    margin: 0;
+  }
+  .stress-divider {
+    border: 0;
+    border-top: 1px solid var(--rule);
+    margin-block: 32px;
+  }
+  .stress-waiting {
+    background: var(--attention-bg);
+    border: 1px solid color-mix(in srgb, var(--attention) 40%, transparent);
+    padding: 10px 20px;
+    border-radius: 2px;
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-bottom: 36px;
+  }
+  .stress-waiting-label {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--attention);
+    font-weight: 600;
+  }
+  .stress-waiting-body {
+    font-family: var(--font-serif);
+    font-size: 14px;
+    color: var(--ink);
+  }
+  .stress-label {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    display: block;
+    margin: 0 0 12px 0;
+  }
+  .stress-premise {
+    border-left: 3px solid var(--state-blocked);
+    padding: 12px 0 12px 24px;
+    margin-bottom: 32px;
+  }
+  .stress-premise-q {
+    font-family: var(--font-serif);
+    font-size: 19px;
+    line-height: 1.45;
+    color: var(--ink);
+    margin: 0 0 10px 0;
+  }
+  .stress-premise-reframe {
+    font-family: var(--font-serif);
+    font-style: italic;
+    font-size: 16px;
+    line-height: 1.55;
+    color: var(--ink-muted);
+    margin: 0;
+    max-width: 70ch;
+  }
+  .stress-premise-expanded {
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px dashed var(--rule);
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 40px;
+  }
+  .stress-premise-col ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    counter-reset: stress-prem;
+  }
+  .stress-premise-col li {
+    font-family: var(--font-serif);
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--ink);
+    padding: 6px 0 6px 22px;
+    position: relative;
+  }
+  .stress-premise-col li::before {
+    content: counter(stress-prem);
+    counter-increment: stress-prem;
+    position: absolute;
+    left: 0;
+    top: 6px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-faint);
+  }
+  .stress-theory {
+    border-left: 3px solid var(--accent);
+    padding: 12px 0 12px 24px;
+    margin-top: 32px;
+    margin-bottom: 40px;
+  }
+  .stress-theory-rec {
+    font-family: var(--font-serif);
+    font-size: 19px;
+    line-height: 1.45;
+    color: var(--ink);
+    margin: 0 0 12px 0;
+  }
+  .stress-chip-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+  }
+  .stress-conf {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    padding: 4px 10px;
+    border-radius: 2px;
+    color: var(--state-provisional);
+    background: var(--state-provisional-bg);
+  }
+  .stress-conf-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--state-provisional);
+    display: inline-block;
+  }
+  .stress-theory-expanded {
+    margin-top: 22px;
+    padding-top: 18px;
+    border-top: 1px dashed var(--rule);
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+  .stress-theory-row p {
+    font-family: var(--font-serif);
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--ink);
+    margin: 0;
+    max-width: 70ch;
+  }
+  .stress-plan { margin-bottom: 48px; }
+  .stress-plan-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    border-top: 1px solid var(--rule);
+  }
+  .stress-plan-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 18px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .stress-pip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+    min-width: 140px;
+    padding-top: 4px;
+  }
+  .stress-pip-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+  }
+  .stress-pip-label {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .stress-pip--done .stress-pip-dot { background: var(--state-confident); }
+  .stress-pip--done .stress-pip-label { color: var(--state-confident); }
+  .stress-pip--prog .stress-pip-dot { background: var(--state-provisional); }
+  .stress-pip--prog .stress-pip-label { color: var(--state-provisional); }
+  .stress-pip--plan .stress-pip-dot { background: var(--ink-faint); }
+  .stress-pip--plan .stress-pip-label { color: var(--ink-faint); }
+  .stress-plan-q {
+    font-family: var(--font-serif);
+    font-size: 16px;
+    line-height: 1.5;
+    color: var(--ink);
+    margin: 0;
+    flex: 1;
+  }
+  .stress-linked { margin-bottom: 48px; }
+  .stress-linked-h {
+    font-family: var(--font-display);
+    font-weight: 400;
+    font-size: 28px;
+    line-height: 1.2;
+    color: var(--ink);
+    margin: 0 0 24px 0;
+    letter-spacing: -0.005em;
+  }
+  .stress-linked-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+  }
+  .stress-sub {
+    border-left: 2px solid var(--rule-strong);
+    padding: 14px 18px;
+    background: var(--paper);
+  }
+  .stress-sub--done { border-left-color: var(--state-confident); }
+  .stress-sub--run { border-left-color: var(--state-provisional); }
+  .stress-sub-meta {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 8px 0;
+  }
+  .stress-sub--done .stress-sub-meta strong { color: var(--state-confident); font-weight: 600; }
+  .stress-sub--run .stress-sub-meta strong { color: var(--state-provisional); font-weight: 600; }
+  .stress-sub-title {
+    font-family: var(--font-serif);
+    font-size: 16px;
+    line-height: 1.4;
+    color: var(--ink);
+    margin: 0 0 8px 0;
+  }
+  .stress-sub-finding {
+    font-family: var(--font-serif);
+    font-style: italic;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--ink-muted);
+    margin: 0;
+  }
+  .stress-sections { margin-bottom: 40px; }
+  .stress-sec {
+    border-left: 3px solid var(--rule-strong);
+    padding: 14px 0 14px 20px;
+    margin-bottom: 18px;
+  }
+  .stress-sec--confident { border-left-color: var(--state-confident); }
+  .stress-sec--blocked { border-left-color: var(--state-blocked); }
+  .stress-sec-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .stress-sec-title {
+    font-family: var(--font-display);
+    font-weight: 400;
+    font-size: 20px;
+    line-height: 1.3;
+    color: var(--ink);
+    margin: 0;
+    letter-spacing: -0.003em;
+  }
+  .stress-sec-pip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 2px;
+  }
+  .stress-sec--confident .stress-sec-pip {
+    color: var(--state-confident);
+    background: var(--state-confident-bg);
+  }
+  .stress-sec--blocked .stress-sec-pip {
+    color: var(--state-blocked);
+    background: var(--state-blocked-bg);
+  }
+  .stress-sec-pip-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .stress-sec--confident .stress-sec-pip-dot { background: var(--state-confident); }
+  .stress-sec--blocked .stress-sec-pip-dot { background: var(--state-blocked); }
+  .stress-sec-body {
+    font-family: var(--font-serif);
+    font-size: 15px;
+    line-height: 1.6;
+    color: var(--ink);
+    margin: 0;
+    max-width: 72ch;
+  }
+  .stress-sec--blocked .stress-sec-body {
+    font-style: italic;
+    color: var(--ink-muted);
+  }
+  .stress-sources {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+  }
+  .stress-source {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-muted);
+    background: var(--paper);
+    border: 1px solid var(--rule);
+    padding: 3px 10px;
+    border-radius: 2px;
+  }
+  .stress-source-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--accent);
+    display: inline-block;
+  }
+  .stress-needs {
+    background: var(--attention-bg);
+    border-left: 3px solid var(--attention);
+    padding: 20px 24px;
+    margin-top: 40px;
+    border-radius: 2px;
+  }
+  .stress-needs .stress-label {
+    color: var(--attention);
+    margin-bottom: 14px;
+  }
+  .stress-needs-q {
+    font-family: var(--font-serif);
+    font-size: 17px;
+    line-height: 1.55;
+    color: var(--ink);
+    margin: 0 0 16px 0;
+    max-width: 72ch;
+  }
+  .stress-textarea {
+    display: block;
+    width: 100%;
+    height: 80px;
+    border: 1px solid var(--rule-strong);
+    background: var(--surface);
+    padding: 12px;
+    font-family: var(--font-serif);
+    font-size: 15px;
+    color: var(--ink);
+    resize: vertical;
+    box-sizing: border-box;
+    border-radius: 2px;
+  }
+  .stress-textarea::placeholder {
+    color: var(--ink-faint);
+    font-style: italic;
+  }
+  .stress-btn-row {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 12px;
+  }
+  .stress-btn {
+    font-family: var(--font-serif);
+    font-size: 14px;
+    padding: 8px 20px;
+    border-radius: 2px;
+    border: none;
+    cursor: default;
+    letter-spacing: 0.01em;
+  }
+  .stress-btn--primary {
+    background: var(--accent);
+    color: var(--surface);
+  }
+  .stress-btn--ghost {
+    background: transparent;
+    border: 1px solid var(--rule-strong);
+    color: var(--ink-muted);
+  }
+  .stress-decide-wrap {
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    gap: 32px;
+    margin-top: 32px;
+    align-items: start;
+  }
+  .stress-decide {
+    background: var(--surface);
+    border: 1px solid var(--rule-strong);
+    padding: 20px 24px;
+    border-radius: 2px;
+  }
+  .stress-decide-title {
+    font-family: var(--font-serif);
+    font-size: 18px;
+    line-height: 1.4;
+    color: var(--ink);
+    margin: 0 0 20px 0;
+  }
+  .stress-opt {
+    display: grid;
+    grid-template-columns: 20px 1fr;
+    gap: 14px;
+    padding: 14px 0;
+    border-top: 1px solid var(--rule);
+  }
+  .stress-radio {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 1px solid var(--rule-strong);
+    background: var(--surface);
+    margin-top: 4px;
+  }
+  .stress-opt--selected .stress-radio {
+    border-color: var(--accent);
+    background: radial-gradient(circle, var(--accent) 0 4px, var(--surface) 5px 100%);
+  }
+  .stress-opt-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+  .stress-opt-label {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink);
+    font-weight: 600;
+  }
+  .stress-opt--selected .stress-opt-label { color: var(--accent); }
+  .stress-rec-pill {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    background: var(--accent-bg);
+    color: var(--accent);
+    padding: 2px 8px;
+    border-radius: 2px;
+  }
+  .stress-opt-impl {
+    font-family: var(--font-serif);
+    font-style: italic;
+    font-size: 14px;
+    line-height: 1.55;
+    color: var(--ink-muted);
+    margin: 0;
+  }
+  .stress-decide-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid var(--rule);
+  }
+  .stress-aside {
+    background: var(--paper-dark);
+    padding: 20px;
+    border-left: 2px solid var(--rule-strong);
+    max-width: 340px;
+    align-self: start;
+  }
+  .stress-aside .stress-label { margin-bottom: 18px; }
+  .stress-log {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .stress-log-item {
+    padding: 14px 0;
+    border-top: 1px solid var(--rule);
+  }
+  .stress-log-item:first-child {
+    border-top: 0;
+    padding-top: 0;
+  }
+  .stress-log-meta {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    color: var(--ink-faint);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .stress-log-glyph {
+    font-size: 13px;
+    color: var(--ink-faint);
+  }
+  .stress-log-note {
+    font-family: var(--font-serif);
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--ink);
+    margin: 0;
+  }
+  .stress-caption-bottom {
+    font-family: var(--font-serif);
+    font-style: italic;
+    font-size: 16px;
+    line-height: 1.55;
+    color: var(--ink-muted);
+    max-width: 60ch;
+    margin: 48px auto 0 auto;
+    text-align: center;
+  }
+  @media (max-width: 860px) {
+    .stress { padding-block: 80px; }
+    .stress-inner { padding-inline: 24px; }
+    .stress-mockup { padding: 32px 24px; margin-top: 40px; }
+    .stress-premise-expanded { grid-template-columns: 1fr; gap: 24px; }
+    .stress-linked-grid { grid-template-columns: 1fr; }
+    .stress-decide-wrap { grid-template-columns: 1fr; }
+    .stress-aside { max-width: 100%; }
+    .stress-plan-item { flex-direction: column; gap: 8px; }
+    .stress-pip { min-width: 0; padding-top: 0; }
+  }
+</style>
+
+<style>
+.arch {
+  padding-block: 120px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: 17px;
+  line-height: 1.65;
+}
+.arch-inner {
+  max-width: var(--w-page);
+  margin: 0 auto;
+  padding-inline: 48px;
+}
+.arch-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0 0 24px;
+}
+.arch-h2 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(36px, 5vw, 56px);
+  line-height: 1.1;
+  margin: 0 0 28px;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+.arch-dek {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 19px;
+  line-height: 1.55;
+  color: var(--ink-muted);
+  max-width: 60ch;
+  margin: 0 0 96px;
+}
+.arch-h3 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 24px;
+  line-height: 1.25;
+  color: var(--ink);
+  margin: 0 0 28px;
+  letter-spacing: -0.005em;
+}
+.arch-block { margin-bottom: 96px; }
+.arch-block:last-of-type { margin-bottom: 0; }
+.arch-diagram-wrap {
+  border: 1px solid var(--rule);
+  background: var(--surface);
+  padding: 32px 24px;
+  margin-bottom: 24px;
+  overflow-x: auto;
+}
+.arch-diagram {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 800px;
+  margin: 0 auto;
+}
+.arch-caption {
+  font-family: var(--font-serif);
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--ink-muted);
+  max-width: 70ch;
+  margin: 0;
+}
+.arch-caption em { font-style: italic; color: var(--ink); }
+.arch-two-col {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 32px;
+  align-items: start;
+}
+@media (min-width: 900px) {
+  .arch-two-col {
+    grid-template-columns: minmax(0, 1fr) 360px;
+    gap: 56px;
+  }
+}
+.arch-prose { max-width: 60ch; }
+.arch-prose p { margin: 0 0 18px; }
+.arch-prose p:last-child { margin-bottom: 0; }
+.arch-prose code,
+.arch-wide-prose code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  color: var(--accent);
+  background: var(--accent-bg);
+  padding: 1px 5px;
+  border-radius: 2px;
+}
+.arch-wide-prose { max-width: 70ch; }
+.arch-wide-prose p { margin: 0 0 18px; }
+.arch-wide-prose p:last-child { margin-bottom: 0; }
+.arch-callout {
+  background: var(--paper-dark);
+  padding: 20px;
+  border-left: 2px solid var(--accent);
+  max-width: 360px;
+}
+.arch-callout-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0 0 14px;
+}
+.arch-callout-list {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+}
+.arch-callout-list li {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--ink);
+}
+.arch-callout-foot {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  margin: 0;
+  line-height: 1.5;
+}
+.arch-subtitle {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--ink-faint);
+  margin: -16px 0 24px;
+}
+.arch-tools {
+  width: 100%;
+  border-collapse: collapse;
+  border-top: 1px solid var(--rule-strong);
+  margin: 0;
+}
+.arch-tools tr { border-bottom: 1px solid var(--rule); }
+.arch-tools tr:nth-child(odd) {
+  background: color-mix(in srgb, var(--paper-dark) 50%, transparent);
+}
+.arch-tools td {
+  padding: 12px 16px;
+  vertical-align: top;
+}
+.arch-tools td.arch-tool-name {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--accent);
+  width: 240px;
+  white-space: nowrap;
+}
+.arch-tools td.arch-tool-desc {
+  font-family: var(--font-serif);
+  font-size: 14px;
+  color: var(--ink-muted);
+  line-height: 1.55;
+}
+@media (max-width: 720px) {
+  .arch-tools td.arch-tool-name {
+    width: auto;
+    white-space: normal;
+    display: block;
+    padding-bottom: 4px;
+  }
+  .arch-tools td.arch-tool-desc {
+    display: block;
+    padding-top: 0;
+  }
+}
+.arch-stack {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  column-gap: 32px;
+  row-gap: 14px;
+  margin: 0 0 24px;
+  max-width: 780px;
+  border-top: 1px solid var(--rule);
+  padding-top: 24px;
+}
+.arch-stack dt {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-faint);
+  padding-top: 2px;
+}
+.arch-stack dd {
+  font-family: var(--font-serif);
+  font-size: 16px;
+  color: var(--ink);
+  margin: 0;
+  line-height: 1.55;
+}
+@media (max-width: 640px) {
+  .arch-stack { grid-template-columns: 1fr; row-gap: 4px; }
+  .arch-stack dt { margin-top: 12px; }
+  .arch-stack dt:first-child { margin-top: 0; }
+}
+.arch-outofscope {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-faint);
+  margin: 0;
+  line-height: 1.55;
+}
+.footer {
+  padding-block: 72px 0;
+  border-top: 1px solid var(--rule-strong);
+  background: var(--paper-dark);
+  color: var(--ink);
+  font-family: var(--font-serif);
+}
+.footer-inner {
+  max-width: var(--w-page);
+  margin: 0 auto;
+  padding-inline: 48px;
+}
+.footer-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 48px;
+  padding-bottom: 56px;
+}
+@media (min-width: 720px) {
+  .footer-grid { grid-template-columns: 1fr 1fr; gap: 64px; }
+}
+.footer-wordmark {
+  font-family: var(--font-serif);
+  font-weight: 500;
+  font-size: 22px;
+  color: var(--ink);
+  margin: 0 0 12px;
+  letter-spacing: -0.005em;
+}
+.footer-tag {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0 0 20px;
+  line-height: 1.6;
+}
+.footer-desc {
+  font-family: var(--font-serif);
+  font-size: 14px;
+  color: var(--ink-muted);
+  line-height: 1.6;
+  margin: 0;
+  max-width: 48ch;
+}
+.footer-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0 0 12px;
+}
+.footer-code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  padding: 14px;
+  color: var(--ink);
+  line-height: 1.7;
+  margin: 0 0 10px;
+  white-space: pre;
+  overflow-x: auto;
+}
+.footer-codenote {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  margin: 0;
+  line-height: 1.5;
+}
+.footer-strip {
+  border-top: 1px solid var(--rule);
+  padding: 24px 0;
+  text-align: center;
+}
+.footer-strip-text {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0;
+  line-height: 1.6;
+}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="#top" class="nav-brand">Vellum</a>
+    <div class="nav-links">
+      <a href="#thesis" class="nav-link">Thesis</a>
+      <span class="nav-sep" aria-hidden="true">·</span>
+      <a href="#different" class="nav-link">How it&rsquo;s different</a>
+      <span class="nav-sep" aria-hidden="true">·</span>
+      <a href="#dossier" class="nav-link">The dossier</a>
+      <span class="nav-sep" aria-hidden="true">·</span>
+      <a href="#under-the-hood" class="nav-link">Under the hood</a>
+    </div>
+  </div>
+</nav>
+
+<section class="masthead" id="top">
+  <div class="masthead-inner">
+    <p class="masthead-eyebrow">HACKATHON SUBMISSION &middot; ANTHROPIC &middot; APRIL 2026 &middot; BUILT ON CLAUDE OPUS 4.7</p>
+    <div class="masthead-wordmark-row">
+      <h1 class="masthead-wordmark">Vellum</h1>
+      <span class="masthead-buildnote">v1 &middot; localhost &middot; no auth</span>
+    </div>
+    <p class="masthead-tagline">&ldquo;A durable investigation system where the dossier is the primary surface, not chat.&rdquo;</p>
+    <hr class="masthead-rule" />
+    <p class="masthead-framing">&ldquo;Vellum is for the kind of question that doesn&rsquo;t belong in a chat window &mdash; a consequential decision with several unknowns, where the obvious answer may be dangerous if key facts are wrong. Layoff decisions. Housing decisions. Ransomware payment decisions. FMLA questions. Credit-card debt negotiations after a parent dies with no estate. Any high-stakes situation where a chatbot producing confident output against a mis-framed question is worse than no output at all, because the user acts on it.&rdquo;</p>
+    <figure class="masthead-quote">
+      <blockquote class="masthead-quote-text">&ldquo;The agent doesn&rsquo;t start by answering the question. It starts by auditing what the question is smuggling in.&rdquo;</blockquote>
+      <figcaption class="masthead-quote-attr">&mdash; premise challenge, recorded on first turn</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="masthead-problem" id="thesis">
+  <div class="masthead-problem-grid">
+    <div>
+      <h2 class="masthead-problem-h">The problem</h2>
+      <p class="masthead-problem-dek">WHY CHAT IS WRONG FOR DECISIONS</p>
+    </div>
+    <div>
+      <p class="masthead-problem-body">&ldquo;Durable thinking on consequential questions doesn&rsquo;t fit in a chat window. The answer a user needs often depends on assumptions the question itself smuggles in &mdash; legal framing that may not apply, facts not yet established, a decision model the situation doesn&rsquo;t actually fit. &lsquo;What percentage should I open credit-card-debt negotiations at?&rsquo; has no responsible answer until you&rsquo;ve confirmed the debt is actually owed, the statute of limitations hasn&rsquo;t expired, and the collector owns the account. The same structural problem shows up in layoff decisions, housing decisions, ransomware payment decisions, FMLA questions, infrastructure migrations &mdash; any high-stakes situation with several unknowns where the obvious answer may be dangerous.&rdquo;</p>
+      <p class="masthead-problem-also">&ldquo;Chat, structurally, dumps all the state into one scrolling transcript. A dossier that evolves &mdash; typed, stateful, structured &mdash; is the shape this problem actually has.&rdquo;</p>
+    </div>
+  </div>
+</section>
+
+<section class="behaviors" id="different">
+  <div class="behaviors-inner">
+    <p class="behaviors-eyebrow">WHAT MAKES IT DIFFERENT</p>
+    <h2 class="behaviors-h2">Three load-bearing behaviors</h2>
+    <p class="behaviors-dek">Features are easy. Product thesis is harder. These three are the ones Vellum won&rsquo;t compromise.</p>
+
+    <div class="behaviors-grid">
+
+      <article class="behaviors-card">
+        <div class="behaviors-card-meta">01 &middot; Premise Challenge</div>
+        <h3>Challenge the premise.</h3>
+        <p class="behaviors-card-tagline">Before answering, audit what the question smuggles in.</p>
+        <div class="behaviors-card-body">
+          <div class="behaviors-card-prose">
+            <p>On a new dossier, the agent&rsquo;s first move is almost never to answer the stated question. It produces a <code>record_premise_challenge</code> tool call with the question&rsquo;s hidden assumptions, a safer reframe, and the evidence required before any answer would be responsible. The premise challenge renders at the top of the dossier, above everything else, and gates substantive work alongside plan approval.</p>
+            <p>Concrete: a user asks &ldquo;what percentage should I open credit-card-debt negotiations at for my deceased mother&rsquo;s accounts?&rdquo; Vellum refuses to quote a number until it has audited FDCPA validation status, statute of limitations in each relevant state, and whether the surviving children are personally liable under probate law. Quoting a number on the original question could restart the SoL clock. The helpful answer is the one that does the most damage. Pushback is not a feature &mdash; it&rsquo;s the whole product.</p>
+          </div>
+          <div class="behaviors-exhibit behaviors-exhibit-premise">
+            <div class="behaviors-exhibit-label">Premise Challenge &middot; 2d ago</div>
+            <p class="behaviors-exhibit-question">&ldquo;What percentage should I open credit-card-debt negotiations at for my friend&rsquo;s deceased mother&rsquo;s accounts?&rdquo;</p>
+            <div class="behaviors-exhibit-reframe-label">Safer reframe</div>
+            <p class="behaviors-exhibit-reframe">Before proposing a percentage, audit whether negotiation is the right move at all. Three gates: has the collector sent FDCPA &sect;&nbsp;1692g written validation; is each account still within SoL; is the surviving family personally liable given no estate. If any gate fails, the correct response is procedural pushback &mdash; not an opening offer.</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="behaviors-card">
+        <div class="behaviors-card-meta">02 &middot; Structured Writes</div>
+        <h3>Structured data, not prose.</h3>
+        <p class="behaviors-card-tagline">Every meaningful write is a typed tool call.</p>
+        <div class="behaviors-card-body">
+          <div class="behaviors-card-prose">
+            <p>Vellum&rsquo;s agent cannot emit prose directly to the dossier. Every meaningful write goes through a closed set of typed tool calls. Free-text thinking evaporates at turn boundary; what persists is structure: sections with state, needs-input questions, decision points, working theory with confidence, sub-investigations with scope and findings.</p>
+            <p>This is the opposite of chat. Chat records every word. Vellum records only what survives the filter of &ldquo;is this a structured update to the case file?&rdquo; The transcript is gone by design. What remains is the dossier as it evolved &mdash; not a log of how it got there.</p>
+          </div>
+          <div class="behaviors-exhibit behaviors-exhibit-tools">
+            <ul>
+              <li><span class="behaviors-tool-name">upsert_section</span><span class="behaviors-tool-params">(title, content, state, sources)</span></li>
+              <li><span class="behaviors-tool-name">flag_needs_input</span><span class="behaviors-tool-params">(question, blocks_section_ids)</span></li>
+              <li><span class="behaviors-tool-name">flag_decision_point</span><span class="behaviors-tool-params">(title, options, kind)</span></li>
+              <li><span class="behaviors-tool-name">record_premise_challenge</span><span class="behaviors-tool-params">(original_question, hidden_assumptions, safer_reframe, &hellip;)</span></li>
+              <li><span class="behaviors-tool-name">update_working_theory</span><span class="behaviors-tool-params">(recommendation, confidence, why, what_would_change_it)</span></li>
+              <li><span class="behaviors-tool-name">spawn_sub_investigation</span><span class="behaviors-tool-params">(scope, questions, parent_section_id)</span></li>
+              <li><span class="behaviors-tool-name">summarize_session</span><span class="behaviors-tool-params">(what_moved, confirmed, ruled_out, blocked_on)</span></li>
+              <li><span class="behaviors-tool-name">mark_investigation_delivered</span><span class="behaviors-tool-params">(summary)</span></li>
+            </ul>
+            <div class="behaviors-tools-footnote">// prose without a tool call evaporates at turn boundary</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="behaviors-card">
+        <div class="behaviors-card-meta">03 &middot; First-Class State</div>
+        <h3>First-class state beyond &lsquo;running&rsquo;.</h3>
+        <p class="behaviors-card-tagline">Confident, provisional, blocked. Active, paused, delivered.</p>
+        <div class="behaviors-card-body">
+          <div class="behaviors-card-prose">
+            <p>Every section carries a state pip: confident, provisional, or blocked. Plan items have status: planned, in-progress, completed, abandoned. Dossiers carry status: active, paused, delivered. Needs-input and decision-points are first-class surfaces, not afterthoughts. A working theory carries a confidence level the user can read at a glance.</p>
+            <p>This matters because the user is returning after hours away. They need to see not just what the agent found but how sure it is &mdash; and what is currently blocked on them. State is a UI affordance, but it&rsquo;s also the agent&rsquo;s own scaffolding for what &lsquo;progress&rsquo; means. Demotions happen: when a key fact becomes unknown, a confident section drops to blocked. Promotions happen when confirmation lands.</p>
+          </div>
+          <div class="behaviors-exhibit behaviors-exhibit-states">
+            <div class="behaviors-chips">
+              <span class="behaviors-chip behaviors-chip-confident"><span class="behaviors-chip-pip"></span>Confident</span>
+              <span class="behaviors-chip behaviors-chip-provisional"><span class="behaviors-chip-pip"></span>Provisional</span>
+              <span class="behaviors-chip behaviors-chip-blocked"><span class="behaviors-chip-pip"></span>Blocked</span>
+            </div>
+            <div class="behaviors-subcard">
+              <div class="behaviors-subcard-label">Sub-investigation &middot; Running &middot; 18h</div>
+              <p class="behaviors-subcard-title">California-specific protections beyond federal FDCPA &mdash; the Rosenthal Act, CA Civ. Code &sect;&nbsp;1788.18</p>
+              <p class="behaviors-subcard-q">Does Rosenthal give a private right of action on its own?</p>
+            </div>
+          </div>
+        </div>
+      </article>
+
+    </div>
+  </div>
+</section>
+
+<section class="stress" id="dossier">
+  <div class="stress-inner">
+
+    <p class="stress-eyebrow">THE DOSSIER &middot; /STRESS FIXTURE</p>
+    <h2 class="stress-h2">This is what the agent produces.</h2>
+    <p class="stress-dek">
+      A real case file, rendered from the product&rsquo;s no-network fixture at <code>/stress</code>. Same components, same typography, same content the agent writes through tool calls.
+    </p>
+    <p class="stress-caption-top">Scroll the exhibit below &mdash; it&rsquo;s a live HTML recreation, not a screenshot.</p>
+
+    <article class="stress-mockup" aria-label="Dossier exhibit">
+
+      <header>
+        <p class="stress-meta">ACTIVE &middot; DECISION MEMO &middot; LAST VISITED 22h AGO &middot; 2d OLD &middot; 6 SUB-INVESTIGATIONS &middot; 3 WORK SESSIONS</p>
+        <h3 class="stress-title">
+          <span class="stress-title-quote">&ldquo;</span>Credit card debt negotiation &mdash; renegotiating deceased parent&rsquo;s credit card debts when there&rsquo;s no estate (CA/AZ jurisdiction)<span class="stress-title-quote">&rdquo;</span>
+        </h3>
+        <p class="stress-problem">
+          My close friend&rsquo;s mother passed last October leaving two credit-card balances (Chase ~$8,400, Citi ~$3,100). There is effectively no estate. Collectors are calling my friend directly at her California number, and also reaching her brother in Arizona. She wants to handle it without a debt-settlement firm. She is asking what percentage to open at; before that, we need to confirm the debt is owed, validated under the FDCPA, and still within each state&rsquo;s statute of limitations.
+        </p>
+      </header>
+
+      <hr class="stress-divider" />
+
+      <div class="stress-waiting" role="status">
+        <span class="stress-waiting-label">WAITING ON YOU</span>
+        <span class="stress-waiting-body">1 decision to resolve &middot; 1 question to answer</span>
+      </div>
+
+      <section class="stress-premise">
+        <span class="stress-label">PREMISE CHALLENGE &middot; 47h AGO</span>
+        <p class="stress-premise-q">
+          &ldquo;What percentage should I open credit-card-debt negotiations at for my friend&rsquo;s deceased mother&rsquo;s accounts?&rdquo;
+        </p>
+        <p class="stress-premise-reframe">
+          Before proposing a percentage, audit whether negotiation is the right move at all. Three gates: has the collector sent FDCPA &sect;&nbsp;1692g written validation; is each account still within its state&rsquo;s statute of limitations; is the surviving family personally liable given no estate. If any gate fails, the correct response is procedural pushback &mdash; not an opening offer.
+        </p>
+
+        <div class="stress-premise-expanded">
+          <div class="stress-premise-col">
+            <span class="stress-label">HIDDEN ASSUMPTIONS</span>
+            <ul>
+              <li>the debts are actually owed by anyone the collectors can pursue</li>
+              <li>negotiation (rather than validation or SoL defense) is the correct tactic</li>
+              <li>the surviving children have personal liability for a parent&rsquo;s unsecured debt</li>
+              <li>the collector currently calling is the actual current owner of the account</li>
+            </ul>
+          </div>
+          <div class="stress-premise-col">
+            <span class="stress-label">REQUIRED EVIDENCE BEFORE ANSWERING</span>
+            <ul>
+              <li>written FDCPA validation notice on file for each account</li>
+              <li>date of last payment on each account, confirmed from statements</li>
+              <li>probate status &mdash; confirmation there are no probate assets to pursue</li>
+              <li>jurisdiction confirmation (CA vs AZ SoL) for both siblings</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="stress-theory">
+        <span class="stress-label">CURRENT WORKING THEORY &middot; 45m AGO</span>
+        <p class="stress-theory-rec">
+          Do not negotiate yet. Send the FDCPA validation-request letter by certified mail this week; hold the opening-offer question until validation returns and SoL on the Chase balance is confirmed as expired.
+        </p>
+        <div class="stress-chip-row">
+          <span class="stress-conf"><span class="stress-conf-dot"></span>MEDIUM CONFIDENCE</span>
+        </div>
+
+        <div class="stress-theory-expanded">
+          <div class="stress-theory-row">
+            <span class="stress-label">WHY THIS IS THE CURRENT THEORY</span>
+            <p>
+              The Chase balance is likely time-barred under CA CCP &sect;&nbsp;337 if the Q2 2021 last-payment estimate holds. Neither collector has sent written validation, which means the &sect;&nbsp;1692g 30-day window hasn&rsquo;t even started. With no estate and no surviving spouse, CA probate law gives the surviving children no personal liability. Engaging with a percentage offer now could restart the SoL clock.
+            </p>
+          </div>
+          <div class="stress-theory-row">
+            <span class="stress-label">WHAT WOULD CHANGE IT</span>
+            <p>
+              If the original Chase application shows a joint account (not authorized-user), community-property exposure comes back into play. If validation returns clean on both with original-creditor documentation, we reopen the opening-offer question &mdash; for the Citi balance only.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="stress-plan">
+        <span class="stress-label">INVESTIGATION PLAN &middot; APPROVED 2d AGO &middot; REVISED 2&times;</span>
+        <ol class="stress-plan-list">
+          <li class="stress-plan-item">
+            <span class="stress-pip stress-pip--done">
+              <span class="stress-pip-dot"></span>
+              <span class="stress-pip-label">COMPLETED</span>
+            </span>
+            <p class="stress-plan-q">What is the statute of limitations on credit-card debt in California, and has it likely run on either balance?</p>
+          </li>
+          <li class="stress-plan-item">
+            <span class="stress-pip stress-pip--done">
+              <span class="stress-pip-dot"></span>
+              <span class="stress-pip-label">COMPLETED</span>
+            </span>
+            <p class="stress-plan-q">What is the SoL in Arizona, and does the brother&rsquo;s Arizona residence pull AZ rules in for any reason?</p>
+          </li>
+          <li class="stress-plan-item">
+            <span class="stress-pip stress-pip--prog">
+              <span class="stress-pip-dot"></span>
+              <span class="stress-pip-label">IN PROGRESS</span>
+            </span>
+            <p class="stress-plan-q">Under CA/AZ probate and community-property law, are the surviving children personally liable for these debts given there is no estate?</p>
+          </li>
+          <li class="stress-plan-item">
+            <span class="stress-pip stress-pip--prog">
+              <span class="stress-pip-dot"></span>
+              <span class="stress-pip-label">IN PROGRESS</span>
+            </span>
+            <p class="stress-plan-q">Have either of the two collectors (Midland Credit Management, MRS BPO) been subject to recent CFPB enforcement that would change our leverage?</p>
+          </li>
+          <li class="stress-plan-item">
+            <span class="stress-pip stress-pip--plan">
+              <span class="stress-pip-dot"></span>
+              <span class="stress-pip-label">PLANNED</span>
+            </span>
+            <p class="stress-plan-q">Given the likely validation and SoL picture, what&rsquo;s a reasonable opening-offer range if we do decide to negotiate?</p>
+          </li>
+        </ol>
+      </section>
+
+      <section class="stress-linked">
+        <h4 class="stress-linked-h">Linked investigation questions</h4>
+        <div class="stress-linked-grid">
+
+          <article class="stress-sub stress-sub--done">
+            <p class="stress-sub-meta">SUB-INVESTIGATION &middot; <strong>DELIVERED</strong> &middot; 18h</p>
+            <p class="stress-sub-title">CA statute of limitations &mdash; CCP &sect;&nbsp;337 governs (4 years, written contract)</p>
+            <p class="stress-sub-finding">Verbal acknowledgment CAN restart the clock per Martinez v. Portfolio Recovery (Cal. App. 2019).</p>
+          </article>
+
+          <article class="stress-sub stress-sub--done">
+            <p class="stress-sub-meta">SUB-INVESTIGATION &middot; <strong>DELIVERED</strong> &middot; 14h</p>
+            <p class="stress-sub-title">Probate + community-property: do surviving children have any theory of personal liability?</p>
+            <p class="stress-sub-finding">No. No CA filial-responsibility statute reaches consumer credit; community-property reaches spouse only.</p>
+          </article>
+
+          <article class="stress-sub stress-sub--run">
+            <p class="stress-sub-meta">SUB-INVESTIGATION &middot; <strong>RUNNING</strong> &middot; 18h</p>
+            <p class="stress-sub-title">California-specific protections &mdash; Rosenthal Act, CA Civ. Code &sect;&nbsp;1788.18</p>
+            <p class="stress-sub-finding">Running. 18h elapsed.</p>
+          </article>
+
+          <article class="stress-sub stress-sub--done">
+            <p class="stress-sub-meta">SUB-INVESTIGATION &middot; <strong>DELIVERED</strong> &middot; 6h</p>
+            <p class="stress-sub-title">CFPB enforcement history &mdash; Midland CM and MRS BPO</p>
+            <p class="stress-sub-finding">MRS BPO has a live 2023 consent order requiring itemization on request &mdash; directly relevant.</p>
+          </article>
+
+        </div>
+      </section>
+
+      <section class="stress-sections">
+        <span class="stress-label">SECTIONS &middot; 8 OF 8</span>
+
+        <article class="stress-sec stress-sec--confident">
+          <div class="stress-sec-head">
+            <h5 class="stress-sec-title">Where this stands</h5>
+            <span class="stress-sec-pip"><span class="stress-sec-pip-dot"></span>CONFIDENT</span>
+          </div>
+          <p class="stress-sec-body">
+            Your friend is being contacted by two debt collectors on balances left behind when her mother passed. There is no estate. The core question is not what percentage to open at &mdash; it is whether she has to, or should, engage at all. Three gates before any negotiation: FDCPA validation, SoL check in CA and AZ, personal-liability check under CA probate.
+          </p>
+        </article>
+
+        <article class="stress-sec stress-sec--confident">
+          <div class="stress-sec-head">
+            <h5 class="stress-sec-title">Statute of limitations &mdash; California (4 years, written contract) and Arizona (3 years, open account)</h5>
+            <span class="stress-sec-pip"><span class="stress-sec-pip-dot"></span>CONFIDENT</span>
+          </div>
+          <p class="stress-sec-body">
+            California treats credit-card debt as a written contract under CCP &sect;&nbsp;337 &mdash; four years. Arizona treats it as an open account under A.R.S. &sect;&nbsp;12-543 &mdash; three years. Chase last payment ~Q2 2021 puts that balance past CA&rsquo;s window. Citi last payment ~Q1 2022 is still live today.
+          </p>
+          <div class="stress-sources">
+            <span class="stress-source"><span class="stress-source-dot"></span>leginfo.ca.gov</span>
+            <span class="stress-source"><span class="stress-source-dot"></span>nclc.org</span>
+          </div>
+        </article>
+
+        <article class="stress-sec stress-sec--blocked">
+          <div class="stress-sec-head">
+            <h5 class="stress-sec-title">Open: was your friend ever on either card as a joint account holder?</h5>
+            <span class="stress-sec-pip"><span class="stress-sec-pip-dot"></span>BLOCKED</span>
+          </div>
+          <p class="stress-sec-body">
+            Blocked pending user answer; don&rsquo;t start calls until this is answered. Authorized-user status is common and does NOT create personal liability. Joint account holder DOES. Everything downstream turns on this.
+          </p>
+        </article>
+      </section>
+
+      <section class="stress-needs" aria-label="Needs your answer">
+        <span class="stress-label">NEEDS YOUR ANSWER &middot; 8h AGO &middot; BLOCKS 2 SECTIONS</span>
+        <p class="stress-needs-q">
+          Were you ever on either the Chase or Citi card as a joint account holder &mdash; i.e. did you sign the original cardholder agreement yourself &mdash; or were you strictly an authorized user who could use the card but wasn&rsquo;t on the contract? Check the original application paperwork if you still have it; a phone call to each card&rsquo;s customer service line will also confirm.
+        </p>
+        <textarea class="stress-textarea" placeholder="Type your answer&hellip;" aria-label="Your answer"></textarea>
+        <div class="stress-btn-row">
+          <button type="button" class="stress-btn stress-btn--primary" tabindex="-1">Answer</button>
+        </div>
+      </section>
+
+      <div class="stress-decide-wrap">
+
+        <section class="stress-decide" aria-label="Decide">
+          <span class="stress-label">DECIDE &middot; 4h AGO</span>
+          <p class="stress-decide-title">
+            Parallel validation requests on both accounts, or sequential &mdash; Midland first, wait for response, then MRS BPO?
+          </p>
+
+          <div class="stress-opt stress-opt--selected">
+            <span class="stress-radio" aria-hidden="true"></span>
+            <div>
+              <div class="stress-opt-head">
+                <span class="stress-opt-label">SEND BOTH VALIDATION LETTERS THE SAME WEEK (PARALLEL)</span>
+                <span class="stress-rec-pill">RECOMMENDED</span>
+              </div>
+              <p class="stress-opt-impl">
+                Both 30-day windows run simultaneously. Cleaner follow-up calendar. Slightly higher cost ($16 vs $8). If both collectors ignore, single CFPB complaint can reference both.
+              </p>
+            </div>
+          </div>
+
+          <div class="stress-opt">
+            <span class="stress-radio" aria-hidden="true"></span>
+            <div>
+              <div class="stress-opt-head">
+                <span class="stress-opt-label">SEND MIDLAND FIRST, WAIT 30 DAYS, THEN MRS BPO</span>
+              </div>
+              <p class="stress-opt-impl">
+                Simpler to track one window at a time. Lower initial cost. But doubles the calendar time before either is resolved and gives MRS BPO another month of unchallenged call volume.
+              </p>
+            </div>
+          </div>
+
+          <div class="stress-decide-actions">
+            <button type="button" class="stress-btn stress-btn--ghost" tabindex="-1">Redirect&hellip;</button>
+            <button type="button" class="stress-btn stress-btn--primary" tabindex="-1">Resolve</button>
+          </div>
+        </section>
+
+        <aside class="stress-aside" aria-label="Since your last visit">
+          <span class="stress-label">SINCE YOUR LAST VISIT &middot; 22h AGO</span>
+          <ul class="stress-log">
+            <li class="stress-log-item">
+              <div class="stress-log-meta">
+                <span>45m ago</span>
+                <span class="stress-log-glyph">&sect;</span>
+                <span>working theory</span>
+              </div>
+              <p class="stress-log-note">Downgraded confidence medium &rarr; high, then back to medium after joint-account question re-opened</p>
+            </li>
+            <li class="stress-log-item">
+              <div class="stress-log-meta">
+                <span>3h ago</span>
+                <span class="stress-log-glyph">&#9678;</span>
+                <span>new finding</span>
+              </div>
+              <p class="stress-log-note">MRS BPO has a live 2023 CFPB consent order requiring itemization on request</p>
+            </li>
+            <li class="stress-log-item">
+              <div class="stress-log-meta">
+                <span>12h ago</span>
+                <span class="stress-log-glyph">&bull;</span>
+                <span>plan item 3</span>
+              </div>
+              <p class="stress-log-note">in_progress &rarr; completed</p>
+            </li>
+          </ul>
+        </aside>
+
+      </div>
+
+    </article>
+
+    <p class="stress-caption-bottom">
+      Every block above is a rendered output of a typed tool call. The agent cannot write anything else &mdash; no chat reply, no loose prose, no &lsquo;thoughts&rsquo;. The dossier is the transcript.
+    </p>
+
+  </div>
+</section>
+
+<section class="arch" id="under-the-hood">
+  <div class="arch-inner">
+
+    <div class="arch-block">
+      <p class="arch-eyebrow">UNDER THE HOOD</p>
+      <h2 class="arch-h2">How it actually works.</h2>
+      <p class="arch-dek">No framework magic. A manual agent loop over the Anthropic Messages API, 24 Pydantic-typed tools, a 30-second scheduler, and SQLite-backed durability. Listed here because judging what&rsquo;s real in a demo is the point.</p>
+    </div>
+
+    <div class="arch-block">
+      <h3 class="arch-h3">The turn loop</h3>
+      <div class="arch-diagram-wrap">
+        <svg class="arch-diagram" viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Per-turn agent loop diagram">
+          <defs>
+            <marker id="arch-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#8B4513"/>
+            </marker>
+          </defs>
+
+          <g fill="none" stroke="#9CA3AF" stroke-width="1" stroke-dasharray="3 3">
+            <rect x="20" y="20" width="140" height="36" rx="1"/>
+            <rect x="180" y="20" width="140" height="36" rx="1"/>
+            <rect x="340" y="20" width="140" height="36" rx="1"/>
+          </g>
+          <g font-family="JetBrains Mono, monospace" font-size="11" fill="#9CA3AF" text-anchor="middle">
+            <text x="90" y="43">STUCK DETECTION</text>
+            <text x="250" y="43">BUDGET SIGNAL</text>
+            <text x="410" y="43">PROGRESS-FORCING</text>
+          </g>
+
+          <g stroke="#9CA3AF" stroke-width="1" stroke-dasharray="2 3" fill="none">
+            <path d="M90,56 L90,100 L355,100 L355,140"/>
+            <path d="M250,56 L250,100"/>
+            <path d="M410,56 L410,100 L405,100 L405,140"/>
+          </g>
+
+          <g fill="#FFFFFF" stroke="#CEC6B5" stroke-width="1">
+            <rect x="20"  y="140" width="130" height="52"/>
+            <rect x="180" y="140" width="150" height="52"/>
+            <rect x="360" y="140" width="110" height="52"/>
+          </g>
+          <g font-family="JetBrains Mono, monospace" font-size="12" fill="#1F2937" text-anchor="middle">
+            <text x="85"  y="164">SYSTEM</text>
+            <text x="85"  y="180">PROMPT</text>
+            <text x="255" y="164">PER-TURN STATE</text>
+            <text x="255" y="180">SNAPSHOT</text>
+            <text x="415" y="164">CLAUDE</text>
+            <text x="415" y="180" font-size="10" fill="#6B7280">claude-opus-4-7</text>
+          </g>
+
+          <g stroke="#8B4513" stroke-width="1.5" fill="none" marker-end="url(#arch-arrow)">
+            <line x1="150" y1="166" x2="180" y2="166"/>
+            <line x1="330" y1="166" x2="360" y2="166"/>
+          </g>
+
+          <g stroke="#8B4513" stroke-width="1.5" fill="none" marker-end="url(#arch-arrow)">
+            <line x1="415" y1="192" x2="415" y2="218"/>
+          </g>
+
+          <g fill="#FFFFFF" stroke="#CEC6B5" stroke-width="1">
+            <rect x="360" y="220" width="110" height="40"/>
+            <rect x="500" y="220" width="110" height="40"/>
+            <rect x="640" y="220" width="140" height="40"/>
+          </g>
+          <g font-family="JetBrains Mono, monospace" font-size="12" fill="#1F2937" text-anchor="middle">
+            <text x="415" y="244">TOOL CALLS</text>
+            <text x="555" y="244">SQLITE</text>
+            <text x="710" y="244">NEXT TURN</text>
+          </g>
+
+          <g stroke="#8B4513" stroke-width="1.5" fill="none" marker-end="url(#arch-arrow)">
+            <line x1="470" y1="240" x2="500" y2="240"/>
+            <line x1="610" y1="240" x2="640" y2="240"/>
+          </g>
+
+          <g stroke="#8B4513" stroke-width="1.5" fill="none" stroke-dasharray="4 3" marker-end="url(#arch-arrow)">
+            <path d="M710,220 L710,110 L255,110 L255,140"/>
+          </g>
+          <g font-family="JetBrains Mono, monospace" font-size="10" fill="#6B7280">
+            <text x="470" y="104">regenerate from SQLite</text>
+          </g>
+        </svg>
+      </div>
+      <p class="arch-caption">Every turn starts with a freshly serialized state snapshot &mdash; dossier, sections, open needs-input, open decision-points, budget, recent tool calls &mdash; injected as a single system-level message. The model reasons, emits tool calls, and the turn closes. Prose without a tool call evaporates. The state snapshot regenerates from SQLite on every turn, which is what makes pause/resume boring: it&rsquo;s always a cold start against current truth.</p>
+    </div>
+
+    <div class="arch-block">
+      <h3 class="arch-h3">Sleep-mode scheduler</h3>
+      <div class="arch-two-col">
+        <div class="arch-prose">
+          <p>A single asyncio coroutine polls every 30 seconds. It picks up dossiers where <code>wake_pending=1</code> (someone just resolved a decision-point or answered a needs-input) or <code>wake_at &lt;= now</code> (the agent asked to sleep until a wall-clock time). It starts a work-session. That&rsquo;s the whole thing. On app boot, a lifecycle reconciliation sweep finds orphaned work-sessions &mdash; processes that died mid-turn &mdash; and marks them <code>interrupted_crash</code>, returning the dossier to a resumable state.</p>
+          <p>The agent can call <code>schedule_wake(reason, at)</code> when a real-world interval is the blocker: waiting on a certified-mail response, a collector&rsquo;s 30-day FDCPA window, a business opening in the morning. User actions trigger reactive wake within one tick. The scheduler never terminates the agent mid-thought &mdash; crossing a budget cap surfaces a decision-point the user can steer; it does not kill the run.</p>
+        </div>
+        <aside class="arch-callout">
+          <p class="arch-callout-label">WAKE TRIGGERS</p>
+          <ul class="arch-callout-list">
+            <li>schedule_wake &rarr; wake_at</li>
+            <li>resolve_decision_point &rarr; wake_pending=1</li>
+            <li>answer_needs_input &rarr; wake_pending=1</li>
+          </ul>
+          <p class="arch-callout-foot">reconciliation on boot handles crashes</p>
+        </aside>
+      </div>
+    </div>
+
+    <div class="arch-block">
+      <h3 class="arch-h3">Sub-investigations</h3>
+      <div class="arch-wide-prose">
+        <p>When the plan calls for a narrow, scoped question &mdash; &ldquo;What&rsquo;s the CFPB enforcement history on this collector?&rdquo;, &ldquo;Is there a CA filial-responsibility statute that reaches consumer debt?&rdquo; &mdash; the agent calls <code>spawn_sub_investigation</code>. This runs a scoped sub-agent loop with a narrower tool surface (no plan edits, no new premise challenges), executes synchronously against the parent turn, and returns a <code>return_summary</code> plus concrete <code>findings_section_ids</code> that land back in the parent dossier. Depth is capped at one. Sub-runs are bounded and cheap; parent runs remain coherent.</p>
+      </div>
+    </div>
+
+    <div class="arch-block">
+      <h3 class="arch-h3">The tool surface</h3>
+      <p class="arch-subtitle">24 TYPED TOOLS &middot; PYDANTIC-BACKED &middot; CLOSED SET</p>
+      <table class="arch-tools">
+        <tbody>
+          <tr><td class="arch-tool-name">record_premise_challenge</td><td class="arch-tool-desc">Audit the question&rsquo;s hidden assumptions before substantive work.</td></tr>
+          <tr><td class="arch-tool-name">update_investigation_plan</td><td class="arch-tool-desc">Draft or revise the investigation plan.</td></tr>
+          <tr><td class="arch-tool-name">update_working_theory</td><td class="arch-tool-desc">A one-sentence belief + confidence + why + what would change it.</td></tr>
+          <tr><td class="arch-tool-name">upsert_section</td><td class="arch-tool-desc">Write or revise a finding, summary, or evidence into the dossier body.</td></tr>
+          <tr><td class="arch-tool-name">update_section_state</td><td class="arch-tool-desc">Promote/demote confident &middot; provisional &middot; blocked with a reason.</td></tr>
+          <tr><td class="arch-tool-name">delete_section</td><td class="arch-tool-desc">Remove an obsolete section with a reason.</td></tr>
+          <tr><td class="arch-tool-name">reorder_sections</td><td class="arch-tool-desc">Rearrange section order.</td></tr>
+          <tr><td class="arch-tool-name">flag_needs_input</td><td class="arch-tool-desc">Ask the user one crisp factual question; block on the answer.</td></tr>
+          <tr><td class="arch-tool-name">flag_decision_point</td><td class="arch-tool-desc">Present a choice between structured options; block on the pick.</td></tr>
+          <tr><td class="arch-tool-name">append_reasoning</td><td class="arch-tool-desc">Private note for coherence across work sessions.</td></tr>
+          <tr><td class="arch-tool-name">mark_ruled_out</td><td class="arch-tool-desc">Record a rejected hypothesis with reason.</td></tr>
+          <tr><td class="arch-tool-name">mark_considered_and_rejected</td><td class="arch-tool-desc">Full cost-of-error argument for a path not taken.</td></tr>
+          <tr><td class="arch-tool-name">check_stuck</td><td class="arch-tool-desc">Loop-/budget-detection surface (v1).</td></tr>
+          <tr><td class="arch-tool-name">declare_stuck</td><td class="arch-tool-desc">Typed stuck escalation with recommended default (v2).</td></tr>
+          <tr><td class="arch-tool-name">request_user_paste</td><td class="arch-tool-desc">Ask the user to paste a specific document.</td></tr>
+          <tr><td class="arch-tool-name">add_artifact</td><td class="arch-tool-desc">Attach a reusable artifact (letter, script, checklist).</td></tr>
+          <tr><td class="arch-tool-name">update_artifact</td><td class="arch-tool-desc">Revise an artifact with a change-note.</td></tr>
+          <tr><td class="arch-tool-name">spawn_sub_investigation</td><td class="arch-tool-desc">Launch a scoped sub-agent loop; returns synchronously.</td></tr>
+          <tr><td class="arch-tool-name">update_sub_investigation</td><td class="arch-tool-desc">Refresh a running sub-investigation&rsquo;s current finding.</td></tr>
+          <tr><td class="arch-tool-name">complete_sub_investigation</td><td class="arch-tool-desc">Deliver a sub-investigation&rsquo;s findings to the parent.</td></tr>
+          <tr><td class="arch-tool-name">log_source_consulted</td><td class="arch-tool-desc">Log a source without writing it into the dossier.</td></tr>
+          <tr><td class="arch-tool-name">summarize_session</td><td class="arch-tool-desc">&ldquo;While you were away&rdquo; summary: confirmed, ruled-out, blocked.</td></tr>
+          <tr><td class="arch-tool-name">mark_investigation_delivered</td><td class="arch-tool-desc">Close out the dossier with a deliverable summary.</td></tr>
+          <tr><td class="arch-tool-name">schedule_wake</td><td class="arch-tool-desc">Ask the scheduler to wake the agent at a wall-clock time.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="arch-block">
+      <h3 class="arch-h3">Stuck escalation and soft-signal budgets</h3>
+      <div class="arch-wide-prose">
+        <p>The agent escalates when it notices itself looping or missing progress over a turn window. Tier 1: a reasoning-trail note. Tier 2: a decision-point the user resolves. Tier 3: a recommended-default decision-point that auto-picks if the user doesn&rsquo;t pick within an interval. Progress-forcing prevents section-edit loops from counting as work.</p>
+        <p>Budget tracking is soft-signal. Per-session and per-day USD caps and warn fractions are DB-backed and editable in <code>/settings</code>. Crossing a warn fraction surfaces a heads-up. Crossing the cap surfaces a decision-point &mdash; &ldquo;Mark what I have as delivered,&rdquo; &ldquo;Keep going,&rdquo; &ldquo;Redirect&rdquo; &mdash; it never terminates the agent mid-thought. Every turn is real money; the product treats it that way without being precious about it.</p>
+      </div>
+    </div>
+
+    <div class="arch-block">
+      <h3 class="arch-h3">Stack</h3>
+      <dl class="arch-stack">
+        <dt>BACKEND</dt>
+        <dd>Python &middot; FastAPI &middot; Pydantic &middot; SQLite</dd>
+
+        <dt>FRONTEND</dt>
+        <dd>React &middot; TypeScript &middot; Tailwind &middot; Vite</dd>
+
+        <dt>AGENT</dt>
+        <dd>Direct Anthropic Messages API, manual agent loop (not Claude Agent SDK)</dd>
+
+        <dt>MODELS</dt>
+        <dd>claude-opus-4-7 (main loop) &middot; claude-sonnet-4-6 (intake) &middot; claude-haiku-4-5 (session-summary synthesis, reserved)</dd>
+
+        <dt>RUNTIME</dt>
+        <dd>asyncio scheduler (30s poll) &middot; SQLite-backed work-session durability &middot; lifecycle reconciliation on boot</dd>
+
+        <dt>SCOPE</dt>
+        <dd>v1 single-user localhost &middot; optional API-token guard for tunneled instances</dd>
+      </dl>
+      <p class="arch-outofscope">Out of scope: multi-user, auth, notifications, mobile, rich-text editor, LLMs other than Claude.</p>
+    </div>
+
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <div class="footer-grid">
+      <div class="footer-col">
+        <p class="footer-wordmark">Vellum</p>
+        <p class="footer-tag">HACKATHON SUBMISSION &middot; ANTHROPIC &middot; APRIL 2026</p>
+        <p class="footer-desc">Built on Claude Opus 4.7. Submission packet: README &middot; SUMMARY &middot; NARRATION &middot; HACKATHON_SUBMISSION &middot; a 3-minute demo video.</p>
+      </div>
+      <div class="footer-col">
+        <p class="footer-label">RUN IT LOCALLY</p>
+        <pre class="footer-code">$ ./dev.sh
+$ open http://localhost:5173/stress</pre>
+        <p class="footer-codenote"># no backend or API key needed for the /stress fixture</p>
+      </div>
+    </div>
+    <div class="footer-strip">
+      <p class="footer-strip-text">&copy; 2026 &middot; VELLUM IS A PROJECT, NOT A COMPANY &middot; A DOSSIER IS A DESTINATION, NOT A STREAM</p>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

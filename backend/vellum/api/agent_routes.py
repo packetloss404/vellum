@@ -23,8 +23,10 @@ from .. import storage
 from ..agent.orchestrator import (
     ORCHESTRATOR,
     AgentAlreadyRunning,
+    AgentCapacityExceeded,
     AgentNotRunning,
 )
+from ..config import AGENT_MAX_TURNS
 
 
 logger = logging.getLogger(__name__)
@@ -34,13 +36,20 @@ router = APIRouter(prefix="/api")
 
 
 class StartAgentRequest(BaseModel):
-    max_turns: int = Field(default=200, ge=1)
+    max_turns: int = Field(default=AGENT_MAX_TURNS, ge=1, le=AGENT_MAX_TURNS)
     model: Optional[str] = None
 
 
 def _require_dossier(dossier_id: str) -> None:
     if storage.get_dossier(dossier_id) is None:
         raise HTTPException(404, "dossier not found")
+
+
+def _orchestrator_running(dossier_id: str) -> bool:
+    try:
+        return bool(ORCHESTRATOR.status(dossier_id).get("running"))
+    except Exception:
+        return False
 
 
 # ---------- per-dossier agent control ----------
@@ -53,14 +62,55 @@ async def start(
 ) -> dict:
     _require_dossier(dossier_id)
     params = body or StartAgentRequest()
+    active = storage.get_active_work_session(dossier_id)
+    if active is not None:
+        if _orchestrator_running(dossier_id):
+            raise HTTPException(409, "agent already running for this dossier")
+        storage.end_work_session_with_reason(
+            active.id, m.WorkSessionEndReason.crashed
+        )
+
+    try:
+        session = storage.start_work_session(
+            dossier_id, trigger=m.WorkSessionTrigger.manual
+        )
+    except storage.ActiveWorkSessionExists as exc:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": "work_session already active for this dossier",
+                "dossier_id": dossier_id,
+                "active_work_session_id": exc.session.id,
+            },
+        )
+
     try:
         return await ORCHESTRATOR.start(
             dossier_id,
             max_turns=params.max_turns,
             model=params.model,
+            expected_session_id=session.id,
         )
     except AgentAlreadyRunning:
+        try:
+            storage.end_work_session(session.id)
+        except Exception:
+            logger.exception(
+                "agent/start: failed to close just-created session %s after "
+                "orchestrator reported AgentAlreadyRunning",
+                session.id,
+            )
         raise HTTPException(409, "agent already running for this dossier")
+    except AgentCapacityExceeded:
+        try:
+            storage.end_work_session(session.id)
+        except Exception:
+            logger.exception(
+                "agent/start: failed to close just-created session %s after "
+                "orchestrator capacity rejection",
+                session.id,
+            )
+        raise HTTPException(429, "agent capacity exceeded")
 
 
 @router.post("/dossiers/{dossier_id}/agent/stop")
@@ -127,9 +177,19 @@ async def resume(dossier_id: str) -> dict:
             },
         )
 
-    session = storage.start_work_session(
-        dossier_id, trigger=m.WorkSessionTrigger.resume
-    )
+    try:
+        session = storage.start_work_session(
+            dossier_id, trigger=m.WorkSessionTrigger.resume
+        )
+    except storage.ActiveWorkSessionExists as exc:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": "work_session already active for this dossier",
+                "dossier_id": dossier_id,
+                "active_work_session_id": exc.session.id,
+            },
+        )
 
     # Fire-and-forget: don't block the HTTP response on the agent's
     # first turn. Any failure is caught + logged by the orchestrator's
@@ -137,7 +197,7 @@ async def resume(dossier_id: str) -> dict:
     # one slipped between the storage check above (extremely unlikely
     # given the storage-level guard, but belt + braces).
     try:
-        await ORCHESTRATOR.start(dossier_id)
+        await ORCHESTRATOR.start(dossier_id, expected_session_id=session.id)
     except AgentAlreadyRunning:
         # Close the session we just opened so we don't leak an orphan
         # row. Report the collision with the *pre-existing* session
@@ -162,6 +222,16 @@ async def resume(dossier_id: str) -> dict:
                 ),
             },
         )
+    except AgentCapacityExceeded:
+        try:
+            storage.end_work_session(session.id)
+        except Exception:
+            logger.exception(
+                "resume: failed to close just-created session %s after "
+                "orchestrator capacity rejection",
+                session.id,
+            )
+        raise HTTPException(429, "agent capacity exceeded")
 
     return {
         "dossier_id": dossier_id,

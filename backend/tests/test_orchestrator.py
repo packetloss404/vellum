@@ -25,6 +25,7 @@ import pytest
 from vellum.agent import orchestrator as orch_mod
 from vellum.agent.orchestrator import (
     AgentAlreadyRunning,
+    AgentCapacityExceeded,
     AgentNotRunning,
     AgentOrchestrator,
 )
@@ -329,5 +330,42 @@ def test_errored_run_prunes_tracking(monkeypatch: pytest.MonkeyPatch) -> None:
         await orch.start("boom")
         with pytest.raises(RuntimeError):
             await orch._tasks["boom"]
+
+    asyncio.run(_body())
+
+
+def test_start_caps_max_turns(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[int] = []
+
+    class _RecordingRuntime:
+        def __init__(self, dossier_id: str, model: Optional[str] = None) -> None:
+            self.dossier_id = dossier_id
+
+        async def run(self, max_turns: int = 200) -> dict:
+            seen.append(max_turns)
+            return {"reason": "ended_turn", "turns": 1, "session_id": "ws"}
+
+    monkeypatch.setattr(orch_mod, "_runtime_cls", _RecordingRuntime)
+    monkeypatch.setattr(orch_mod, "AGENT_MAX_TURNS", 3)
+    orch = AgentOrchestrator()
+
+    async def _body() -> None:
+        await orch.start("capped", max_turns=999)
+        await orch._tasks["capped"]
+
+    asyncio.run(_body())
+    assert seen == [3]
+
+
+def test_process_wide_concurrency_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(orch_mod, "_runtime_cls", _runtime_cls_with_duration(0.2))
+    monkeypatch.setattr(orch_mod, "AGENT_MAX_CONCURRENT_RUNS", 1)
+    orch = AgentOrchestrator()
+
+    async def _body() -> None:
+        await orch.start("first")
+        with pytest.raises(AgentCapacityExceeded):
+            await orch.start("second")
+        await orch.shutdown()
 
     asyncio.run(_body())

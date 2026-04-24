@@ -127,6 +127,22 @@ def _plan_approval_dp(storage, dossier_id: str, session_id: str):
     )
 
 
+def test_add_plan_approval_returns_existing_open_gate(fresh_db):
+    storage, _ = fresh_db
+    dossier = _make_dossier(storage)
+    session = storage.start_work_session(dossier.id)
+
+    first = _plan_approval_dp(storage, dossier.id, session.id)
+    second = _plan_approval_dp(storage, dossier.id, session.id)
+
+    assert second.id == first.id
+    open_plan_approvals = [
+        dp for dp in storage.list_decision_points(dossier.id, open_only=True)
+        if dp.kind == "plan_approval"
+    ]
+    assert [dp.id for dp in open_plan_approvals] == [first.id]
+
+
 def test_resolve_plan_approval_with_approve_auto_approves(fresh_db):
     storage, _ = fresh_db
     dossier = _make_dossier(storage)

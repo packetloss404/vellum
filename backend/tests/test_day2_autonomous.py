@@ -25,7 +25,7 @@ The gated test should SKIP in that run.
 
 To actually run the live test (makes real API calls; not for CI)::
 
-    VELLUM_RUN_AUTONOMOUS_TESTS=1 ANTHROPIC_API_KEY=sk-... \\
+    VELLUM_RUN_AUTONOMOUS_TESTS=1 ANTHROPIC_API_KEY=replace-me \\
         ./.venv/Scripts/python.exe -m pytest tests/test_day2_autonomous.py -v
 """
 from __future__ import annotations

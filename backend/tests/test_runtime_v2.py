@@ -493,19 +493,18 @@ def test_work_session_opened_and_closed_exactly_once(fresh_db):
     assert storage.get_active_work_session(did) is None
 
 
-def test_increment_session_tokens_called_with_input_plus_output(fresh_db, monkeypatch):
-    """Runtime must sum input_tokens + output_tokens and credit the session."""
+def test_record_session_usage_called_with_input_and_output_tokens(fresh_db, monkeypatch):
+    """Runtime must credit model usage to the active session."""
     did = _seed_dossier()
-    calls: list[tuple[str, int]] = []
-    real_inc = storage.increment_session_tokens
+    calls: list[tuple[str, int, int, float]] = []
+    real_record = storage.record_session_usage
 
-    def _spy(session_id: str, tokens: int) -> None:
-        calls.append((session_id, tokens))
-        real_inc(session_id, tokens)
+    def _spy(session_id: str, input_tokens: int, output_tokens: int, cost_usd: float) -> None:
+        calls.append((session_id, input_tokens, output_tokens, cost_usd))
+        real_record(session_id, input_tokens, output_tokens, cost_usd)
 
-    monkeypatch.setattr(storage, "increment_session_tokens", _spy)
-    # The runtime imported the symbol at module scope — patch there too.
-    monkeypatch.setattr(rt.storage, "increment_session_tokens", _spy)
+    monkeypatch.setattr(storage, "record_session_usage", _spy)
+    monkeypatch.setattr(rt.storage, "record_session_usage", _spy)
 
     end_turn = _message(
         [_text("done")], stop_reason="end_turn", input_tokens=123, output_tokens=45
@@ -516,8 +515,12 @@ def test_increment_session_tokens_called_with_input_plus_output(fresh_db, monkey
     _run(agent.run(max_turns=5))
 
     assert len(calls) == 1
-    session_id, tokens = calls[0]
-    assert tokens == 123 + 45
+    session_id, input_tokens, output_tokens, _cost = calls[0]
+    assert input_tokens == 123
+    assert output_tokens == 45
+    ws = storage.get_work_session(session_id)
+    assert ws is not None
+    assert ws.token_budget_used == 123 + 45
 
 
 # ---------------------------------------------------------------------------
@@ -558,7 +561,7 @@ def test_mark_investigation_delivered_ends_with_delivered(fresh_db):
 # ---------------------------------------------------------------------------
 
 
-def test_stuck_loop_signal_surfaces_check_stuck_as_decision_point(fresh_db):
+def test_second_stuck_loop_signal_surfaces_check_stuck_as_decision_point(fresh_db):
     """Calling the same tool with the same args past LOOP_DETECTION_THRESHOLD
     should trip stuck detection, which the runtime surfaces by invoking the
     ``check_stuck`` handler — and that writes a decision_point row to storage.
@@ -566,9 +569,11 @@ def test_stuck_loop_signal_surfaces_check_stuck_as_decision_point(fresh_db):
     from vellum import config as _config
 
     did = _seed_dossier()
-    # Build THRESHOLD+1 identical tool calls (same args → same hash) followed
-    # by an end turn.
+    # The first stuck signal is tier 1 and becomes a reasoning heads-up. A
+    # second distinct loop in the same session is tier 2 and surfaces a
+    # decision_point.
     identical_args = {"note": "same note", "tags": []}
+    second_args = {"note": "same second note", "tags": []}
     turns = [
         _message(
             [_tool_use("append_reasoning", identical_args, id=f"tu_{i}")],
@@ -576,6 +581,13 @@ def test_stuck_loop_signal_surfaces_check_stuck_as_decision_point(fresh_db):
         )
         for i in range(_config.LOOP_DETECTION_THRESHOLD + 1)
     ]
+    turns.extend(
+        _message(
+            [_tool_use("append_reasoning", second_args, id=f"tu_b_{i}")],
+            stop_reason="tool_use",
+        )
+        for i in range(_config.LOOP_DETECTION_THRESHOLD + 1)
+    )
     turns.append(_message([_text("done")], stop_reason="end_turn"))
     client = make_mock_client(turns)
     agent = _make_agent(did, client)

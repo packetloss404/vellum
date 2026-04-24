@@ -40,7 +40,7 @@ import anthropic
 
 from .. import models as m
 from .. import storage
-from ..config import ANTHROPIC_API_KEY, MODEL
+from ..config import ANTHROPIC_API_KEY, MODEL, SUB_AGENT_MAX_TURNS, cost_usd_for_turn
 from ..tools import handlers
 from . import sub_prompt
 
@@ -113,6 +113,23 @@ def _coerce_tool_result(result: Any) -> str:
         return json.dumps(result, default=str)
     except (TypeError, ValueError):
         return str(result)
+
+
+def _extract_result_section_id(result_block: dict[str, Any]) -> Optional[str]:
+    if result_block.get("is_error"):
+        return None
+    content = result_block.get("content")
+    if not isinstance(content, str) or not content:
+        return None
+    try:
+        parsed = json.loads(content)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(parsed, dict):
+        section_id = parsed.get("section_id")
+        if isinstance(section_id, str) and section_id:
+            return section_id
+    return None
 
 
 def _inject_sub_id(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -292,15 +309,13 @@ async def run_sub_investigation(
     scope: str,
     questions: list[str],
     model: Optional[str] = None,
-    max_turns: int = 60,
+    max_turns: Optional[int] = None,
 ) -> dict[str, Any]:
     """Drive one sub-agent loop to completion.
 
-    Opens a dedicated work_session (trigger=resume — there's no "sub"
-    trigger in the enum yet; resume keeps token accounting and change_log
-    attribution clean by isolating this run), walks the sub-agent through
-    turns until it calls ``complete_sub_investigation`` or we force it
-    to, then closes the session.
+    Reuses the parent active work_session when present; otherwise opens and
+    owns a temporary session. Walks the sub-agent through turns until it calls
+    ``complete_sub_investigation`` or we force it to complete.
 
     Returns a dict shaped like the ``complete_sub_investigation`` handler
     result plus a ``return_summary`` mirror — the parent's
@@ -312,12 +327,23 @@ async def run_sub_investigation(
     resolved_model = model or MODEL
     client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY or None)
 
-    # Dedicated sub session: keeps this run's change_log entries and token
-    # usage separated from the parent's session. Using `resume` because
-    # no "sub" trigger exists in WorkSessionTrigger.
-    session = storage.start_work_session(
-        parent_dossier_id, m.WorkSessionTrigger.resume
+    effective_max_turns = max(
+        1, min(int(max_turns or SUB_AGENT_MAX_TURNS), SUB_AGENT_MAX_TURNS)
     )
+
+    # Preserve the invariant that a dossier has at most one active session.
+    # When called inside the parent runtime, reuse its session; when invoked
+    # standalone, create and own a temporary session for this sub run.
+    owns_session = False
+    session = storage.get_active_work_session(parent_dossier_id)
+    if session is None:
+        try:
+            session = storage.start_work_session(
+                parent_dossier_id, m.WorkSessionTrigger.resume
+            )
+            owns_session = True
+        except storage.ActiveWorkSessionExists as exc:
+            session = exc.session
     session_id = session.id
 
     tools = _build_sub_tool_definitions()
@@ -338,9 +364,11 @@ async def run_sub_investigation(
     completion_args: Optional[dict[str, Any]] = None
     prods = 0
     force_completed = False
+    last_section_id: Optional[str] = None
+    from . import stuck as stuck_mod
 
     try:
-        while turns < max_turns:
+        while turns < effective_max_turns:
             turns += 1
 
             # Streaming is required for long operations (see runtime.py).
@@ -356,8 +384,17 @@ async def run_sub_investigation(
             if response.usage is not None:
                 input_tokens = getattr(response.usage, "input_tokens", 0) or 0
                 output_tokens = getattr(response.usage, "output_tokens", 0) or 0
-                storage.increment_session_tokens(
-                    session_id, input_tokens + output_tokens
+                turn_cost = cost_usd_for_turn(
+                    resolved_model, input_tokens, output_tokens
+                )
+                storage.record_session_usage(
+                    session_id, input_tokens, output_tokens, turn_cost
+                )
+                storage.record_budget_usage(
+                    input_tokens, output_tokens, turn_cost
+                )
+                stuck_mod.record_input_tokens(
+                    session_id, last_section_id, input_tokens
                 )
 
             messages.append({"role": "assistant", "content": response.content})
@@ -418,6 +455,10 @@ async def run_sub_investigation(
                     tu.id,
                 )
                 tool_results.append(block)
+                if tool_name == "upsert_section":
+                    real_id = _extract_result_section_id(block)
+                    if real_id:
+                        last_section_id = real_id
                 if maybe_completion is not None and completion_args is None:
                     completion_args = maybe_completion
 
@@ -443,7 +484,7 @@ async def run_sub_investigation(
         if force_completed and completion_args is None:
             logger.warning(
                 "sub_runtime: sub %s force-completing at max_turns=%d",
-                sub_id, max_turns,
+                sub_id, effective_max_turns,
             )
             fallback_summary = "[incomplete — max_turns reached]"
             try:
@@ -531,15 +572,16 @@ async def run_sub_investigation(
 
     finally:
         CURRENT_SUB_INVESTIGATION_ID.reset(token)
-        try:
-            storage.end_work_session(session_id)
-        except Exception:  # noqa: BLE001 — cleanup must not mask result
-            pass
-        try:
-            from . import stuck as stuck_mod
-            stuck_mod.reset_session(session_id)
-        except Exception:  # noqa: BLE001
-            pass
+        if owns_session:
+            try:
+                storage.end_work_session(session_id)
+            except Exception:  # noqa: BLE001 — cleanup must not mask result
+                pass
+            try:
+                from . import stuck as stuck_mod
+                stuck_mod.reset_session(session_id)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def spawn_handler(parent_dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -554,10 +596,15 @@ def spawn_handler(parent_dossier_id: str, args: dict[str, Any]) -> dict[str, Any
     # the active session if present, otherwise open one. The storage
     # spawn call will log the change against the parent's session.
     parent_session = storage.get_active_work_session(parent_dossier_id)
+    parent_session_created = False
     if parent_session is None:
-        parent_session = storage.start_work_session(
-            parent_dossier_id, m.WorkSessionTrigger.resume
-        )
+        try:
+            parent_session = storage.start_work_session(
+                parent_dossier_id, m.WorkSessionTrigger.resume
+            )
+            parent_session_created = True
+        except storage.ActiveWorkSessionExists as exc:
+            parent_session = exc.session
     parent_session_id = parent_session.id
 
     spawn_data = m.SubInvestigationSpawn(**args)
@@ -628,6 +675,15 @@ def spawn_handler(parent_dossier_id: str, args: dict[str, Any]) -> dict[str, Any
                 "sub_runtime: failed to abandon stuck sub %s after error",
                 sub.id,
             )
+    finally:
+        if parent_session_created:
+            try:
+                storage.end_work_session(parent_session_id)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "sub_runtime: failed to close temporary parent session %s",
+                    parent_session_id,
+                )
 
     fetched = storage.get_sub_investigation(sub.id)
     final_state = (

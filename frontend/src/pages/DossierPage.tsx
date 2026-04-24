@@ -21,6 +21,7 @@ import { PlanDiffSidebar } from "../components/plan-diff/PlanDiffSidebar";
 import {
   useChangeLog,
   useDossier,
+  useAgentStatus,
   useInvestigationLogCounts,
   useResumeAgent,
   useResumeState,
@@ -73,12 +74,23 @@ function CenteredMessage({ children }: { children: React.ReactNode }) {
   );
 }
 
-export default function DossierPage() {
+export default function DossierPage({
+  readOnlyFixture = false,
+  fixtureId,
+}: {
+  readOnlyFixture?: boolean;
+  fixtureId?: string;
+}) {
   const { id } = useParams<{ id: string }>();
-  const dossierId = id ?? "";
-  const { data, isLoading, error } = useDossier(dossierId);
-  const changeLog = useChangeLog(dossierId);
+  const dossierId = fixtureId ?? id ?? "";
   const resumeState = useResumeState(dossierId);
+  const agentStatus = useAgentStatus(dossierId);
+  const liveDossierPolling =
+    agentStatus.data?.running || resumeState.data?.wake_pending ? 3000 : false;
+  const { data, isLoading, error } = useDossier(dossierId, {
+    refetchInterval: liveDossierPolling,
+  });
+  const changeLog = useChangeLog(dossierId);
   const resumeAgent = useResumeAgent();
   const visit = useVisitDossier();
   const logCounts = useInvestigationLogCounts(dossierId);
@@ -93,14 +105,15 @@ export default function DossierPage() {
   const changeLogSettled = changeLog.isSuccess || changeLog.isError;
   useEffect(() => {
     if (!dossierId) return;
+    if (readOnlyFixture) return;
     if (visitedRef.current) return;
     if (!changeLogSettled) return;
     visitedRef.current = true;
     visit.mutate(dossierId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dossierId, changeLogSettled]);
+  }, [dossierId, changeLogSettled, readOnlyFixture]);
 
-  if (!id) {
+  if (!dossierId) {
     return (
       <div className="min-h-screen bg-paper">
         <Header />

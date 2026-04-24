@@ -2,6 +2,7 @@ import re
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .. import models as m
@@ -314,7 +315,17 @@ def add_ruled_out(
 
 @router.post("/dossiers/{dossier_id}/work-sessions", response_model=m.WorkSession)
 def start_work_session(dossier_id: str, data: m.WorkSessionStart) -> m.WorkSession:
-    return storage.start_work_session(dossier_id, data.trigger)
+    try:
+        return storage.start_work_session(dossier_id, data.trigger)
+    except storage.ActiveWorkSessionExists as exc:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": "work_session already active for this dossier",
+                "dossier_id": dossier_id,
+                "active_work_session_id": exc.session.id,
+            },
+        )
 
 
 @router.post("/work-sessions/{session_id}/end", response_model=m.WorkSession)

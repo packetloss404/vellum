@@ -54,6 +54,22 @@ STUCK_REVISION_STALL_THRESHOLD = int(
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
+# Optional local API guard. Empty token keeps localhost development unchanged
+# unless VELLUM_API_AUTH_REQUIRED is explicitly enabled.
+API_TOKEN = os.getenv("VELLUM_API_TOKEN", "")
+API_AUTH_REQUIRED = os.getenv("VELLUM_API_AUTH_REQUIRED", "").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+# Hard run limits. Budget signals are still soft, but these caps prevent a
+# direct API/scheduler path from starting unbounded agent work.
+AGENT_MAX_TURNS = int(os.getenv("VELLUM_AGENT_MAX_TURNS", "200"))
+SUB_AGENT_MAX_TURNS = int(os.getenv("VELLUM_SUB_AGENT_MAX_TURNS", "60"))
+AGENT_MAX_CONCURRENT_RUNS = int(os.getenv("VELLUM_AGENT_MAX_CONCURRENT_RUNS", "2"))
+
 
 # ---------------------------------------------------------------------------
 # Sleep mode

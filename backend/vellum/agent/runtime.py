@@ -353,12 +353,29 @@ class DossierAgent:
                 pass
 
     def _resolve_session(self) -> str:
+        expected_session_id = getattr(self, "expected_session_id", None)
+        if expected_session_id:
+            expected = storage.get_work_session(expected_session_id)
+            if expected is None:
+                raise RuntimeError(f"expected work_session {expected_session_id} not found")
+            if expected.dossier_id != self.dossier_id:
+                raise RuntimeError(
+                    f"expected work_session {expected_session_id} belongs to "
+                    f"{expected.dossier_id}, not {self.dossier_id}"
+                )
+            if expected.ended_at is not None:
+                raise RuntimeError(f"expected work_session {expected_session_id} is already ended")
+            return expected.id
+
         existing = storage.get_active_work_session(self.dossier_id)
         if existing is not None:
             return existing.id
-        return storage.start_work_session(
-            self.dossier_id, m.WorkSessionTrigger.resume
-        ).id
+        try:
+            return storage.start_work_session(
+                self.dossier_id, m.WorkSessionTrigger.resume
+            ).id
+        except storage.ActiveWorkSessionExists as exc:
+            return exc.session.id
 
     def _snapshot_content(self, prompt_mod: Any) -> list[dict[str, Any]]:
         dossier_full = storage.get_dossier_full(self.dossier_id)

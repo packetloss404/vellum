@@ -29,6 +29,9 @@ export const qk = {
     ["dossier", id, "investigation-log", "counts"] as const,
   consideredAndRejected: (id: string) =>
     ["dossier", id, "considered-and-rejected"] as const,
+  agentStatus: (id: string) => ["dossier", id, "agent-status"] as const,
+  resumeState: (id: string) => ["dossier", id, "resume-state"] as const,
+  runningAgents: () => ["agents", "running"] as const,
 };
 
 // ---------- queries ----------
@@ -36,11 +39,16 @@ export const qk = {
 export const useDossierList = () =>
   useQuery({ queryKey: qk.dossiers(), queryFn: api.listDossiers });
 
-export const useDossier = (id: string) =>
+export const useDossier = (
+  id: string,
+  opts?: { refetchInterval?: number | false },
+) =>
   useQuery({
     queryKey: qk.dossier(id),
     queryFn: () => api.getDossier(id),
     enabled: !!id,
+    refetchInterval: opts?.refetchInterval ?? false,
+    staleTime: opts?.refetchInterval ? 0 : undefined,
   });
 
 export const useChangeLog = (id: string) =>
@@ -128,7 +136,7 @@ export const useIntake = (id: string) =>
 
 export const useAgentStatus = (dossierId: string) =>
   useQuery({
-    queryKey: ["dossier", dossierId, "agent-status"] as const,
+    queryKey: qk.agentStatus(dossierId),
     queryFn: () => api.agentStatus(dossierId),
     enabled: !!dossierId,
     // Poll so the activity indicator goes live as soon as the scheduler
@@ -146,7 +154,7 @@ export const useAgentStatus = (dossierId: string) =>
  */
 export const useRunningAgents = () =>
   useQuery({
-    queryKey: ["agents", "running"] as const,
+    queryKey: qk.runningAgents(),
     queryFn: () => api.listRunningAgents(),
     refetchInterval: 3000,
     staleTime: 0,
@@ -194,6 +202,10 @@ export function useResolveNeedsInput() {
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: qk.dossier(vars.dossierId) });
       qc.invalidateQueries({ queryKey: qk.changeLog(vars.dossierId) });
+      qc.invalidateQueries({ queryKey: qk.resumeState(vars.dossierId) });
+      qc.invalidateQueries({ queryKey: qk.agentStatus(vars.dossierId) });
+      qc.invalidateQueries({ queryKey: qk.runningAgents() });
+      qc.invalidateQueries({ queryKey: qk.dossiers() });
     },
   });
 }
@@ -216,6 +228,10 @@ export function useResolveDecisionPoint() {
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: qk.dossier(vars.dossierId) });
       qc.invalidateQueries({ queryKey: qk.changeLog(vars.dossierId) });
+      qc.invalidateQueries({ queryKey: qk.resumeState(vars.dossierId) });
+      qc.invalidateQueries({ queryKey: qk.agentStatus(vars.dossierId) });
+      qc.invalidateQueries({ queryKey: qk.runningAgents() });
+      qc.invalidateQueries({ queryKey: qk.dossiers() });
     },
   });
 }
@@ -282,9 +298,11 @@ export function useStartAgent() {
     mutationFn: (vars: { dossierId: string; maxTurns?: number }) =>
       api.startAgent(vars.dossierId, vars.maxTurns),
     onSuccess: (_data, vars) => {
-      qc.invalidateQueries({
-        queryKey: ["dossier", vars.dossierId, "agent-status"],
-      });
+      qc.invalidateQueries({ queryKey: qk.agentStatus(vars.dossierId) });
+      qc.invalidateQueries({ queryKey: qk.resumeState(vars.dossierId) });
+      qc.invalidateQueries({ queryKey: qk.runningAgents() });
+      qc.invalidateQueries({ queryKey: qk.dossier(vars.dossierId) });
+      qc.invalidateQueries({ queryKey: qk.dossiers() });
     },
   });
 }
@@ -294,11 +312,12 @@ export function useStopAgent() {
   return useMutation({
     mutationFn: (dossierId: string) => api.stopAgent(dossierId),
     onSuccess: (_data, dossierId) => {
-      qc.invalidateQueries({
-        queryKey: ["dossier", dossierId, "agent-status"],
-      });
+      qc.invalidateQueries({ queryKey: qk.agentStatus(dossierId) });
+      qc.invalidateQueries({ queryKey: qk.resumeState(dossierId) });
+      qc.invalidateQueries({ queryKey: qk.runningAgents() });
       qc.invalidateQueries({ queryKey: qk.dossier(dossierId) });
       qc.invalidateQueries({ queryKey: qk.changeLog(dossierId) });
+      qc.invalidateQueries({ queryKey: qk.dossiers() });
     },
   });
 }
@@ -314,7 +333,7 @@ export function useStopAgent() {
  */
 export const useResumeState = (dossierId: string) =>
   useQuery({
-    queryKey: ["dossier", dossierId, "resume-state"] as const,
+    queryKey: qk.resumeState(dossierId),
     queryFn: () => api.getResumeState(dossierId),
     enabled: !!dossierId,
     retry: false,
@@ -330,13 +349,11 @@ export function useResumeAgent() {
   return useMutation({
     mutationFn: (dossierId: string) => api.resumeAgent(dossierId),
     onSuccess: (_data, dossierId) => {
-      qc.invalidateQueries({
-        queryKey: ["dossier", dossierId, "agent-status"],
-      });
-      qc.invalidateQueries({
-        queryKey: ["dossier", dossierId, "resume-state"],
-      });
+      qc.invalidateQueries({ queryKey: qk.agentStatus(dossierId) });
+      qc.invalidateQueries({ queryKey: qk.resumeState(dossierId) });
+      qc.invalidateQueries({ queryKey: qk.runningAgents() });
       qc.invalidateQueries({ queryKey: qk.dossier(dossierId) });
+      qc.invalidateQueries({ queryKey: qk.dossiers() });
     },
   });
 }
