@@ -7,6 +7,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import db, storage
 from .agent.orchestrator import ORCHESTRATOR
 from .agent.scheduler import SCHEDULER
+# Import purely for side-effect: registers sub_runtime.spawn_handler into
+# handlers.HANDLER_OVERRIDES["spawn_sub_investigation"] on module load. If
+# we DON'T import this, the default stub in tools/handlers.py runs — it
+# inserts a row in `running` state and returns without ever executing a
+# real sub-agent loop. 21 sub-investigations accumulated as zombies in
+# prod before this was caught (dos_cbf0 + dos_fc07, day 4).
+from .agent import sub_runtime  # noqa: F401
 from .api.agent_routes import router as agent_router
 from .api.intake_routes import router as intake_router
 from .api.routes import router as crud_router
