@@ -1182,6 +1182,7 @@ def update_working_theory(
                     else patch_data["confidence"],
                 why=patch_data["why"],
                 what_would_change_it=patch_data["what_would_change_it"],
+                unresolved_assumptions=patch_data.get("unresolved_assumptions", []),
                 updated_at=now,
             )
             old_confidence = None
