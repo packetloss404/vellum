@@ -36,6 +36,10 @@ _REQUIRED_COLUMNS: list[tuple[str, str, str]] = [
     # Phase 4 SA3: per-session summary — sub_investigation ids whose state or
     # current_finding moved during this session.
     ("session_summaries", "questions_advanced", "TEXT NOT NULL DEFAULT '[]'"),
+    # Day-4 post-Phase-4: plan-item ↔ sub-investigation linkage so spawning
+    # a sub flips the source plan item from `planned` to `in_progress`,
+    # completing flips to `completed`, and abandoning flips to `abandoned`.
+    ("sub_investigations", "plan_item_id", "TEXT"),
 ]
 
 

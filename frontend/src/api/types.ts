@@ -457,6 +457,7 @@ export type SubInvestigation = {
   parent_section_id: string | null;
   // Day-4 additions. Optional on the wire because older sub-investigation
   // rows predate the migration — backend sends null, TS treats missing === null.
+  plan_item_id?: string | null;      // FK into InvestigationPlanItem.id when spawned from a plan entry
   title?: string | null;             // short identifier; falls back to scope for display
   scope: string;
   questions: string[];
@@ -482,6 +483,7 @@ export type SubInvestigationSpawn = {
   title?: string | null;
   questions?: string[];
   parent_section_id?: string | null;
+  plan_item_id?: string | null;
   // Phase 4 — optional semantic fields at spawn time.
   why_it_matters?: string | null;
   known_facts?: string[];

@@ -531,6 +531,7 @@ class SubInvestigation(BaseModel):
     id: str                               # prefix: "sub"
     dossier_id: str
     parent_section_id: Optional[str] = None    # optional link to a parent dossier section
+    plan_item_id: Optional[str] = None    # FK to InvestigationPlanItem.id when spawned from a plan entry
     title: Optional[str] = None           # short identifier ("Verify debt ownership"); scope is fallback
     scope: str                            # short scope statement
     questions: list[str] = Field(default_factory=list)
@@ -554,6 +555,7 @@ class SubInvestigationSpawn(BaseModel):
     title: Optional[str] = None           # short identifier for the UI — falls back to scope when absent
     questions: list[str] = Field(default_factory=list)
     parent_section_id: Optional[str] = None
+    plan_item_id: Optional[str] = None    # pass to sync the source plan item to `in_progress`
     why_it_matters: Optional[str] = None
     known_facts: list[str] = Field(default_factory=list)
     missing_facts: list[str] = Field(default_factory=list)

@@ -1813,6 +1813,7 @@ def _row_to_sub_investigation(row: sqlite3.Row) -> m.SubInvestigation:
         id=row["id"],
         dossier_id=row["dossier_id"],
         parent_section_id=row["parent_section_id"],
+        plan_item_id=_row_get(row, "plan_item_id"),
         title=_row_get(row, "title"),
         scope=row["scope"],
         questions=_json_list(row["questions"]),
@@ -1832,6 +1833,46 @@ def _row_to_sub_investigation(row: sqlite3.Row) -> m.SubInvestigation:
     )
 
 
+def _set_plan_item_status(
+    conn: sqlite3.Connection,
+    dossier_id: str,
+    plan_item_id: Optional[str],
+    new_status: str,
+) -> None:
+    """Flip a single plan item's status in the investigation_plan JSON blob.
+
+    No-op when plan_item_id is None, the dossier's plan is missing, the
+    item id isn't found in the plan, or the item is already at new_status.
+    Writes through Pydantic (model_copy) so extra validation still runs.
+    Caller already emits change_log for the owning action
+    (sub_investigation_spawned / _completed / _abandoned); we don't add a
+    separate plan_updated entry — that would be noise.
+    """
+    if not plan_item_id:
+        return
+    row = conn.execute(
+        "SELECT investigation_plan FROM dossiers WHERE id = ?", (dossier_id,)
+    ).fetchone()
+    if not row or not row["investigation_plan"]:
+        return
+    plan = m.InvestigationPlan.model_validate_json(row["investigation_plan"])
+    new_items: list[m.InvestigationPlanItem] = []
+    changed = False
+    for item in plan.items:
+        if item.id == plan_item_id and item.status != new_status:
+            new_items.append(item.model_copy(update={"status": new_status}))
+            changed = True
+        else:
+            new_items.append(item)
+    if not changed:
+        return
+    new_plan = plan.model_copy(update={"items": new_items})
+    conn.execute(
+        "UPDATE dossiers SET investigation_plan = ? WHERE id = ?",
+        (new_plan.model_dump_json(), dossier_id),
+    )
+
+
 def spawn_sub_investigation(
     dossier_id: str,
     data: m.SubInvestigationSpawn,
@@ -1842,6 +1883,7 @@ def spawn_sub_investigation(
         id=m.new_id("sub"),
         dossier_id=dossier_id,
         parent_section_id=data.parent_section_id,
+        plan_item_id=data.plan_item_id,
         title=data.title,
         scope=data.scope,
         questions=data.questions,
@@ -1854,17 +1896,18 @@ def spawn_sub_investigation(
     with connect() as conn:
         conn.execute(
             """
-            INSERT INTO sub_investigations (id, dossier_id, parent_section_id, title, scope,
-                                            questions, state, return_summary,
+            INSERT INTO sub_investigations (id, dossier_id, parent_section_id, plan_item_id,
+                                            title, scope, questions, state, return_summary,
                                             findings_section_ids, findings_artifact_ids,
                                             why_it_matters, known_facts, missing_facts,
                                             started_at, completed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 sub.id,
                 dossier_id,
                 sub.parent_section_id,
+                sub.plan_item_id,
                 sub.title,
                 sub.scope,
                 json.dumps(sub.questions),
@@ -1879,6 +1922,9 @@ def spawn_sub_investigation(
                 None,
             ),
         )
+        # Sync plan-item status: planned → in_progress when the agent spawns
+        # from a plan entry.
+        _set_plan_item_status(conn, dossier_id, sub.plan_item_id, "in_progress")
         # Change-log note prefers title when present; scope is the fallback
         # so the plan-diff reads naturally ("Spawned sub-investigation:
         # Verify debt ownership" vs. the longer scope sentence).
@@ -1946,6 +1992,18 @@ def update_sub_investigation_state(
             f"sub-investigation '{display}': "
             f"{existing['state']} → {patch.new_state.value} ({patch.reason})",
         )
+        # Sync plan-item status on terminal transitions. Blocked is
+        # recoverable — the item stays in_progress so the user sees the
+        # thread is still open. Abandoned and delivered are terminal and
+        # propagate to the plan item.
+        if patch.new_state == m.SubInvestigationState.abandoned:
+            _set_plan_item_status(
+                conn, dossier_id, _row_get(existing, "plan_item_id"), "abandoned",
+            )
+        elif patch.new_state == m.SubInvestigationState.delivered:
+            _set_plan_item_status(
+                conn, dossier_id, _row_get(existing, "plan_item_id"), "completed",
+            )
         _touch_dossier(conn, dossier_id)
         row = conn.execute(
             "SELECT * FROM sub_investigations WHERE id = ?", (sub_id,)
@@ -2050,6 +2108,10 @@ def complete_sub_investigation(
             conn, dossier_id, work_session_id, "sub_investigation_completed",
             f"Completed sub-investigation '{existing['scope']}': {data.return_summary}",
         )
+        # Sync plan-item status: in_progress → completed.
+        _set_plan_item_status(
+            conn, dossier_id, _row_get(existing, "plan_item_id"), "completed",
+        )
         _touch_dossier(conn, dossier_id)
         row = conn.execute(
             "SELECT * FROM sub_investigations WHERE id = ?", (sub_id,)
@@ -2078,6 +2140,10 @@ def abandon_sub_investigation(
         _log_change(
             conn, dossier_id, work_session_id, "sub_investigation_abandoned",
             f"Abandoned sub-investigation '{existing['scope']}': {reason}",
+        )
+        # Sync plan-item status: in_progress → abandoned.
+        _set_plan_item_status(
+            conn, dossier_id, _row_get(existing, "plan_item_id"), "abandoned",
         )
         _touch_dossier(conn, dossier_id)
         row = conn.execute(

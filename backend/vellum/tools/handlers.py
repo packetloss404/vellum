@@ -740,7 +740,13 @@ TOOL_DESCRIPTIONS = {
         "rationale shown in the linked-question card), known_facts (short bullet strings the "
         "user's prompt or prior work has already established — usually empty on spawn), and "
         "missing_facts (what you need to confirm to resolve this thread). Push the thread "
-        "forward between spawn and complete via update_sub_investigation."
+        "forward between spawn and complete via update_sub_investigation. "
+        "When this sub corresponds to a plan item (check the investigation_plan — each item has "
+        "`id` and `as_sub_investigation`), pass `plan_item_id` with that item's id so the plan "
+        "card flips from 'planned' to 'in_progress' automatically. Completing the sub flips it "
+        "to 'completed'; abandoning flips to 'abandoned'. Items without a matching sub stay "
+        "'planned' — if you decided an item doesn't need a sub after all, either spawn anyway "
+        "and complete-without-findings, or revise the plan to remove the item."
     ),
     "complete_sub_investigation": (
         "The sub-agent's ONLY exit call. Pass a 3-8 sentence return_summary (lead with the "
