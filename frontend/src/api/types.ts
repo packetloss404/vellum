@@ -120,6 +120,8 @@ export interface Dossier {
   investigation_plan?: InvestigationPlan | null;
   // Phase 2
   working_theory?: WorkingTheory | null;
+  // Phase 4 — premise challenge surface (SA1/SA6).
+  premise_challenge?: PremiseChallenge | null;
 }
 
 export type WorkingTheoryConfidence = "high" | "medium" | "low";
@@ -129,6 +131,16 @@ export interface WorkingTheory {
   confidence: WorkingTheoryConfidence;
   why: string;
   what_would_change_it: string;
+  unresolved_assumptions?: string[];
+  updated_at: string;
+}
+
+export interface PremiseChallenge {
+  original_question: string;
+  hidden_assumptions: string[];
+  why_answering_now_is_risky: string;
+  safer_reframe: string;
+  required_evidence_before_answering: string[];
   updated_at: string;
 }
 
@@ -237,6 +249,7 @@ export interface SessionSummary {
   confirmed: string[];
   ruled_out: string[];
   blocked_on: string[];
+  questions_advanced?: string[]; // sub_investigation ids
   recommended_next_action: string | null;
   cost_usd: number;
   created_at: string; // ISO
@@ -436,6 +449,8 @@ export type SubInvestigationState =
   | "blocked"
   | "abandoned";
 
+export type InvestigationConfidence = "unknown" | "low" | "medium" | "high";
+
 export type SubInvestigation = {
   id: string;
   dossier_id: string;
@@ -452,6 +467,14 @@ export type SubInvestigation = {
   blocked_reason?: string | null;    // populated when state === "blocked"
   started_at: string;
   completed_at: string | null;
+  // Phase 4 — semantic sub-investigation fields (SA2/SA6). All optional
+  // because older rows predate the migration.
+  why_it_matters?: string | null;
+  known_facts?: string[];
+  missing_facts?: string[];
+  current_finding?: string | null;
+  recommended_next_step?: string | null;
+  confidence?: InvestigationConfidence;
 };
 
 export type SubInvestigationSpawn = {
@@ -459,6 +482,10 @@ export type SubInvestigationSpawn = {
   title?: string | null;
   questions?: string[];
   parent_section_id?: string | null;
+  // Phase 4 — optional semantic fields at spawn time.
+  why_it_matters?: string | null;
+  known_facts?: string[];
+  missing_facts?: string[];
 };
 
 export type SubInvestigationComplete = {

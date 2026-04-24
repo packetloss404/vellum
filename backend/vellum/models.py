@@ -127,6 +127,7 @@ class WorkingTheory(BaseModel):
     confidence: WorkingTheoryConfidence
     why: str                              # why this is the current theory
     what_would_change_it: str             # what evidence or event would shift it
+    unresolved_assumptions: list[str] = Field(default_factory=list)
     updated_at: datetime
 
 
@@ -140,6 +141,31 @@ class WorkingTheoryUpdate(BaseModel):
     confidence: Optional[WorkingTheoryConfidence] = None
     why: Optional[str] = None
     what_would_change_it: Optional[str] = None
+    unresolved_assumptions: Optional[list[str]] = None
+
+
+class PremiseChallenge(BaseModel):
+    """The agent's structured audit of the user's original question.
+
+    Distinct from working_theory (current belief) and sections (evidence) —
+    this is the 'what is this question smuggling in?' artifact the user
+    sees near the top of the dossier.
+    """
+    original_question: str
+    hidden_assumptions: list[str] = Field(default_factory=list)
+    why_answering_now_is_risky: str
+    safer_reframe: str
+    required_evidence_before_answering: list[str] = Field(default_factory=list)
+    updated_at: datetime
+
+
+class PremiseChallengeUpdate(BaseModel):
+    """Partial-merge update. First write requires all five content fields."""
+    original_question: Optional[str] = None
+    hidden_assumptions: Optional[list[str]] = None
+    why_answering_now_is_risky: Optional[str] = None
+    safer_reframe: Optional[str] = None
+    required_evidence_before_answering: Optional[list[str]] = None
 
 
 class Dossier(BaseModel):
@@ -153,6 +179,7 @@ class Dossier(BaseModel):
     debrief: Optional[Debrief] = None
     investigation_plan: Optional[InvestigationPlan] = None
     working_theory: Optional[WorkingTheory] = None
+    premise_challenge: Optional[PremiseChallenge] = None
     last_visited_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
@@ -493,6 +520,13 @@ class SubInvestigationState(str, Enum):
     abandoned = "abandoned"
 
 
+class InvestigationConfidence(str, Enum):
+    unknown = "unknown"
+    low = "low"
+    medium = "medium"
+    high = "high"
+
+
 class SubInvestigation(BaseModel):
     id: str                               # prefix: "sub"
     dossier_id: str
@@ -504,6 +538,12 @@ class SubInvestigation(BaseModel):
     return_summary: Optional[str] = None  # populated on complete
     findings_section_ids: list[str] = Field(default_factory=list)  # sections produced by sub
     findings_artifact_ids: list[str] = Field(default_factory=list) # artifacts produced by sub
+    why_it_matters: Optional[str] = None              # 1-sentence rationale
+    known_facts: list[str] = Field(default_factory=list)
+    missing_facts: list[str] = Field(default_factory=list)
+    current_finding: Optional[str] = None             # narrative of where the thread is
+    recommended_next_step: Optional[str] = None
+    confidence: InvestigationConfidence = InvestigationConfidence.unknown
     blocked_reason: Optional[str] = None  # populated when state flips to blocked
     started_at: datetime
     completed_at: Optional[datetime] = None
@@ -514,6 +554,9 @@ class SubInvestigationSpawn(BaseModel):
     title: Optional[str] = None           # short identifier for the UI — falls back to scope when absent
     questions: list[str] = Field(default_factory=list)
     parent_section_id: Optional[str] = None
+    why_it_matters: Optional[str] = None
+    known_facts: list[str] = Field(default_factory=list)
+    missing_facts: list[str] = Field(default_factory=list)
 
 
 class SubInvestigationComplete(BaseModel):
@@ -525,6 +568,17 @@ class SubInvestigationComplete(BaseModel):
 class SubInvestigationStateUpdate(BaseModel):
     new_state: SubInvestigationState  # typically `blocked`
     reason: str
+
+
+class SubInvestigationUpdate(BaseModel):
+    """Partial-merge update to an existing sub-investigation's semantic fields.
+    Any field omitted retains its prior value."""
+    why_it_matters: Optional[str] = None
+    known_facts: Optional[list[str]] = None
+    missing_facts: Optional[list[str]] = None
+    current_finding: Optional[str] = None
+    recommended_next_step: Optional[str] = None
+    confidence: Optional[InvestigationConfidence] = None
 
 
 # --- v2: investigation_log ---
@@ -607,6 +661,7 @@ class SessionSummary(BaseModel):
     confirmed: list[str] = Field(default_factory=list)
     ruled_out: list[str] = Field(default_factory=list)
     blocked_on: list[str] = Field(default_factory=list)
+    questions_advanced: list[str] = Field(default_factory=list)
     recommended_next_action: Optional[str] = None
     cost_usd: float = 0.0
     created_at: datetime
@@ -618,6 +673,7 @@ class SummarizeSessionArgs(BaseModel):
     confirmed: list[str] = Field(default_factory=list)
     ruled_out: list[str] = Field(default_factory=list)
     blocked_on: list[str] = Field(default_factory=list)
+    questions_advanced: list[str] = Field(default_factory=list)
     recommended_next_action: Optional[str] = None
 
 

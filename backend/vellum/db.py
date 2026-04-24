@@ -23,8 +23,19 @@ _REQUIRED_COLUMNS: list[tuple[str, str, str]] = [
     # Day-4 (phase 1): sub-investigation identity.
     ("sub_investigations", "title", "TEXT"),
     ("sub_investigations", "blocked_reason", "TEXT"),
+    # Phase 4 SA2: linked-question richness on sub-investigations.
+    ("sub_investigations", "why_it_matters", "TEXT"),
+    ("sub_investigations", "known_facts", "TEXT NOT NULL DEFAULT '[]'"),
+    ("sub_investigations", "missing_facts", "TEXT NOT NULL DEFAULT '[]'"),
+    ("sub_investigations", "current_finding", "TEXT"),
+    ("sub_investigations", "recommended_next_step", "TEXT"),
+    ("sub_investigations", "confidence", "TEXT NOT NULL DEFAULT 'unknown'"),
     # Day-4 (phase 2): working theory — JSON-encoded WorkingTheory model.
     ("dossiers", "working_theory", "TEXT"),
+    ("dossiers", "premise_challenge", "TEXT"),
+    # Phase 4 SA3: per-session summary — sub_investigation ids whose state or
+    # current_finding moved during this session.
+    ("session_summaries", "questions_advanced", "TEXT NOT NULL DEFAULT '[]'"),
 ]
 
 

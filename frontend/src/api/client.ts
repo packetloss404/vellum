@@ -88,6 +88,9 @@ export const api = {
   getDossier: (id: string) =>
     request<DossierFull>("GET", `/api/dossiers/${id}`),
 
+  seedDossier: () =>
+    request<Dossier>("POST", "/api/dossiers/seed"),
+
   visitDossier: (id: string) =>
     request<Dossier>("POST", `/api/dossiers/${id}/visit`),
 

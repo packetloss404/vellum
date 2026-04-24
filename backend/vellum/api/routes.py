@@ -10,6 +10,23 @@ from ..agent import telemetry
 router = APIRouter(prefix="/api")
 
 
+# Seed content is deliberately domain-neutral. The hackathon demo story
+# isn't picked yet — we want a dossier that plays equally well for debt
+# negotiation, ransomware, layoffs, migration, or any other high-stakes
+# decision, so the product mechanics (premise challenge, linked questions,
+# working theory, plan approval) can be demonstrated without the story
+# pre-committing us.
+SEED_PROBLEM_STATEMENT = (
+    "We are facing a high-stakes decision with several unknowns. "
+    "Leadership wants a recommendation quickly, but the obvious answer may "
+    "be dangerous if key facts are wrong. Help us investigate the decision, "
+    "identify what must be true before choosing a path, and recommend the "
+    "safest next step."
+)
+
+SEED_DOSSIER_TITLE = "Untitled high-stakes decision"
+
+
 # ---------- dossier ----------
 
 
@@ -52,6 +69,23 @@ def mark_visited(dossier_id: str) -> m.Dossier:
     if not result:
         raise HTTPException(404, "dossier not found")
     return result
+
+
+@router.post("/dossiers/seed", response_model=m.Dossier)
+def seed_dossier() -> m.Dossier:
+    """Create a generic high-stakes dossier with neutral seed copy.
+
+    Does NOT start the agent — the user clicks Resume to begin. This
+    keeps seeding reversible (no spend) and lets the user rename / edit
+    the problem statement before the first turn if they want.
+    """
+    return storage.create_dossier(
+        m.DossierCreate(
+            title=SEED_DOSSIER_TITLE,
+            problem_statement=SEED_PROBLEM_STATEMENT,
+            dossier_type=m.DossierType.investigation,
+        )
+    )
 
 
 @router.post("/dossiers/{dossier_id}/replan")

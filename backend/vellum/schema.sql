@@ -268,6 +268,7 @@ CREATE TABLE IF NOT EXISTS session_summaries (
     blocked_on TEXT NOT NULL DEFAULT '[]',
     recommended_next_action TEXT,
     cost_usd REAL NOT NULL DEFAULT 0,
+    questions_advanced TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     FOREIGN KEY (session_id) REFERENCES work_sessions(id) ON DELETE CASCADE,
     FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE

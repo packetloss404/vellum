@@ -182,6 +182,8 @@ _PROGRESS_TOOL_NAMES: set = {
     "check_stuck",
     "request_user_paste",
     "summarize_session",
+    "record_premise_challenge",
+    "update_sub_investigation",
 }
 
 

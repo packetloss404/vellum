@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Header } from "../components/layout/Header";
 import { EmptyState } from "../components/common/EmptyState";
 import { DossierCard } from "../components/dossier/DossierCard";
-import { useDossierList } from "../api/hooks";
+import { useDossierList, useSeedDossier } from "../api/hooks";
 import { useDocumentTitle } from "../utils/useDocumentTitle";
 import type { Dossier } from "../api/types";
 
@@ -32,6 +32,20 @@ function NewDossierButton({ className = "" }: { className?: string }) {
     >
       Open a new dossier
     </Link>
+  );
+}
+
+function SeedDossierButton() {
+  const seed = useSeedDossier();
+  return (
+    <button
+      type="button"
+      onClick={() => seed.mutate()}
+      disabled={seed.isPending}
+      className="font-sans text-xs text-ink-faint hover:text-accent transition-colors uppercase tracking-wide disabled:opacity-60"
+    >
+      {seed.isPending ? "Seeding…" : "Seed demo dossier"}
+    </button>
   );
 }
 
@@ -120,7 +134,10 @@ export default function DossierListPage() {
             )}
           </div>
           {data && data.length > 0 ? (
-            <NewDossierButton className="shrink-0" />
+            <div className="flex items-center gap-4 shrink-0">
+              <SeedDossierButton />
+              <NewDossierButton />
+            </div>
           ) : null}
         </div>
 

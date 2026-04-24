@@ -151,6 +151,7 @@ export function SessionsSummary({
               summary.confirmed.length > 0 ||
               summary.ruled_out.length > 0 ||
               summary.blocked_on.length > 0 ||
+              (summary.questions_advanced?.length ?? 0) > 0 ||
               !!summary.recommended_next_action);
           return (
             <li
@@ -200,6 +201,23 @@ export function SessionsSummary({
                   <BulletList label="Confirmed" items={summary.confirmed} />
                   <BulletList label="Ruled out" items={summary.ruled_out} />
                   <BulletList label="Blocked on" items={summary.blocked_on} />
+                  {summary.questions_advanced && summary.questions_advanced.length > 0 ? (
+                    <div className="mt-1.5">
+                      <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-ink-faint">
+                        Questions advanced
+                      </div>
+                      <div className="mt-0.5 flex flex-wrap gap-1">
+                        {summary.questions_advanced.map((id) => (
+                          <code
+                            key={id}
+                            className="font-mono text-[10px] text-ink-muted bg-paper-dark px-1.5 py-0.5 rounded"
+                          >
+                            {id}
+                          </code>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                   {summary.recommended_next_action ? (
                     <div className="mt-1.5">
                       <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-ink-faint mr-1.5">

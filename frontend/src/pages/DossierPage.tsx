@@ -7,6 +7,7 @@ import { PlanApprovalBlock } from "../components/plan-approval/PlanApprovalBlock
 import { DossierHero } from "../components/common/DossierHero";
 import { AgentActivityIndicator } from "../components/dossier/AgentActivityIndicator";
 import { DebriefBlock } from "../components/dossier/DebriefBlock";
+import { PremiseChallengeBlock } from "../components/dossier/PremiseChallengeBlock";
 import { WorkingTheoryBlock } from "../components/dossier/WorkingTheoryBlock";
 import { PlanBlock } from "../components/dossier/PlanBlock";
 import { SectionList } from "../components/dossier/SectionList";
@@ -209,6 +210,10 @@ export default function DossierPage() {
               </button>
             ) : null}
           </div>
+        </div>
+
+        <div className="mt-8">
+          <PremiseChallengeBlock challenge={dossier.premise_challenge} />
         </div>
 
         <div className="mt-8">

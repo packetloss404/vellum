@@ -41,6 +41,7 @@ def _row_to_dossier(row: sqlite3.Row) -> m.Dossier:
     debrief_json = row["debrief"]
     plan_json = row["investigation_plan"]
     theory_json = _row_get(row, "working_theory")
+    pc_json = _row_get(row, "premise_challenge")
     return m.Dossier(
         id=row["id"],
         title=row["title"],
@@ -55,6 +56,9 @@ def _row_to_dossier(row: sqlite3.Row) -> m.Dossier:
         ),
         working_theory=(
             m.WorkingTheory.model_validate_json(theory_json) if theory_json else None
+        ),
+        premise_challenge=(
+            m.PremiseChallenge.model_validate_json(pc_json) if pc_json else None
         ),
         last_visited_at=_dt(row["last_visited_at"]),
         created_at=_dt(row["created_at"]),
@@ -1219,6 +1223,76 @@ def update_working_theory(
     return get_dossier(dossier_id)
 
 
+# ---------- PremiseChallenge (phase 4) ----------
+
+
+def update_premise_challenge(
+    dossier_id: str,
+    patch: m.PremiseChallengeUpdate,
+    work_session_id: Optional[str] = None,
+) -> Optional[m.Dossier]:
+    """Partial-merge update. First write requires all five content fields.
+
+    Emits a `debrief_updated` change_log entry (re-using the existing Plan
+    & debrief category in the plan-diff) with a terse note. We deliberately
+    do NOT add a new ChangeKind for premise-challenge updates — the
+    frontend already categorizes `debrief_updated` under plan & debrief,
+    which is the right bucket for this surface.
+    """
+    now = m.utc_now()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT premise_challenge FROM dossiers WHERE id = ?", (dossier_id,)
+        ).fetchone()
+        if not row:
+            return None
+        existing_raw = _row_get(row, "premise_challenge")
+        current: Optional[m.PremiseChallenge] = (
+            m.PremiseChallenge.model_validate_json(existing_raw)
+            if existing_raw else None
+        )
+        patch_data = patch.model_dump(exclude_none=True)
+        if current is None:
+            required = {
+                "original_question", "hidden_assumptions",
+                "why_answering_now_is_risky", "safer_reframe",
+                "required_evidence_before_answering",
+            }
+            missing = sorted(required - set(patch_data.keys()))
+            if missing:
+                raise ValueError(
+                    "update_premise_challenge: first write must include all "
+                    f"fields; missing: {', '.join(missing)}"
+                )
+            merged = m.PremiseChallenge(
+                original_question=patch_data["original_question"],
+                hidden_assumptions=patch_data["hidden_assumptions"],
+                why_answering_now_is_risky=patch_data["why_answering_now_is_risky"],
+                safer_reframe=patch_data["safer_reframe"],
+                required_evidence_before_answering=patch_data["required_evidence_before_answering"],
+                updated_at=now,
+            )
+        else:
+            merged = current.model_copy(update={**patch_data, "updated_at": now})
+
+        conn.execute(
+            "UPDATE dossiers SET premise_challenge = ? WHERE id = ?",
+            (merged.model_dump_json(), dossier_id),
+        )
+        changed_fields = list(patch_data.keys())
+        note_body = ", ".join(changed_fields) if changed_fields else "(no changes)"
+        note = (
+            f"Premise challenge drafted: {merged.safer_reframe[:120]}"
+            if current is None
+            else f"Premise challenge updated: {note_body}"
+        )
+        _log_change(
+            conn, dossier_id, work_session_id, "debrief_updated", note,
+        )
+        _touch_dossier(conn, dossier_id)
+    return get_dossier(dossier_id)
+
+
 # ---------- InvestigationPlan ----------
 
 
@@ -1745,6 +1819,12 @@ def _row_to_sub_investigation(row: sqlite3.Row) -> m.SubInvestigation:
         return_summary=row["return_summary"],
         findings_section_ids=_json_list(row["findings_section_ids"]),
         findings_artifact_ids=_json_list(row["findings_artifact_ids"]),
+        why_it_matters=_row_get(row, "why_it_matters"),
+        known_facts=_json_list(_row_get(row, "known_facts") or "[]"),
+        missing_facts=_json_list(_row_get(row, "missing_facts") or "[]"),
+        current_finding=_row_get(row, "current_finding"),
+        recommended_next_step=_row_get(row, "recommended_next_step"),
+        confidence=m.InvestigationConfidence(_row_get(row, "confidence") or "unknown"),
         blocked_reason=_row_get(row, "blocked_reason"),
         started_at=_dt(row["started_at"]),
         completed_at=_dt(row["completed_at"]),
@@ -1765,6 +1845,9 @@ def spawn_sub_investigation(
         scope=data.scope,
         questions=data.questions,
         state=m.SubInvestigationState.running,
+        why_it_matters=data.why_it_matters,
+        known_facts=data.known_facts,
+        missing_facts=data.missing_facts,
         started_at=now,
     )
     with connect() as conn:
@@ -1773,8 +1856,9 @@ def spawn_sub_investigation(
             INSERT INTO sub_investigations (id, dossier_id, parent_section_id, title, scope,
                                             questions, state, return_summary,
                                             findings_section_ids, findings_artifact_ids,
+                                            why_it_matters, known_facts, missing_facts,
                                             started_at, completed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 sub.id,
@@ -1787,6 +1871,9 @@ def spawn_sub_investigation(
                 sub.return_summary,
                 json.dumps(sub.findings_section_ids),
                 json.dumps(sub.findings_artifact_ids),
+                sub.why_it_matters,
+                json.dumps(sub.known_facts),
+                json.dumps(sub.missing_facts),
                 _dt_str(sub.started_at),
                 None,
             ),
@@ -1858,6 +1945,69 @@ def update_sub_investigation_state(
             f"sub-investigation '{display}': "
             f"{existing['state']} → {patch.new_state.value} ({patch.reason})",
         )
+        _touch_dossier(conn, dossier_id)
+        row = conn.execute(
+            "SELECT * FROM sub_investigations WHERE id = ?", (sub_id,)
+        ).fetchone()
+    return _row_to_sub_investigation(row)
+
+
+def update_sub_investigation(
+    dossier_id: str,
+    sub_id: str,
+    patch: m.SubInvestigationUpdate,
+    work_session_id: Optional[str] = None,
+) -> Optional[m.SubInvestigation]:
+    """Partial-merge update of a sub-investigation's semantic fields.
+
+    Updates why_it_matters / known_facts / missing_facts / current_finding /
+    recommended_next_step / confidence. Fields omitted retain prior value.
+    Emits a `state_changed` change_log entry only when confidence actually
+    changes — the label-prefix format ("sub-investigation 'title': old ->
+    new") is the one the frontend parser already handles. Text-only updates
+    skip change_log (still flow through _touch_dossier so updated_at advances);
+    the session_summary tool is the user's surface for text-only progress.
+    """
+    patch_data = patch.model_dump(exclude_none=True)
+    if not patch_data:
+        return get_sub_investigation(sub_id)
+    with connect() as conn:
+        existing = conn.execute(
+            "SELECT * FROM sub_investigations WHERE id = ? AND dossier_id = ?",
+            (sub_id, dossier_id),
+        ).fetchone()
+        if not existing:
+            return None
+        # Build dynamic SET clause from whichever fields are in patch_data.
+        set_parts: list[str] = []
+        values: list[object] = []
+        for k, v in patch_data.items():
+            if k in ("known_facts", "missing_facts"):
+                set_parts.append(f"{k} = ?")
+                values.append(json.dumps(v))
+            elif k == "confidence":
+                set_parts.append(f"{k} = ?")
+                values.append(v.value if hasattr(v, "value") else str(v))
+            else:
+                set_parts.append(f"{k} = ?")
+                values.append(v)
+        values.append(sub_id)
+        conn.execute(
+            f"UPDATE sub_investigations SET {', '.join(set_parts)} WHERE id = ?",
+            values,
+        )
+        # Confidence drift: emit state_changed change_log with label prefix
+        # the frontend parser knows how to render.
+        if "confidence" in patch_data:
+            old_conf = _row_get(existing, "confidence") or "unknown"
+            new_conf_raw = patch_data["confidence"]
+            new_conf = new_conf_raw.value if hasattr(new_conf_raw, "value") else str(new_conf_raw)
+            if old_conf != new_conf:
+                display = _row_get(existing, "title") or existing["scope"]
+                _log_change(
+                    conn, dossier_id, work_session_id, "state_changed",
+                    f"sub-investigation '{display[:40]}': {old_conf} -> {new_conf}",
+                )
         _touch_dossier(conn, dossier_id)
         row = conn.execute(
             "SELECT * FROM sub_investigations WHERE id = ?", (sub_id,)
@@ -2610,8 +2760,9 @@ def save_session_summary(data: m.SessionSummary) -> m.SessionSummary:
             """
             INSERT INTO session_summaries
                 (session_id, dossier_id, summary, confirmed, ruled_out,
-                 blocked_on, recommended_next_action, cost_usd, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 blocked_on, questions_advanced, recommended_next_action,
+                 cost_usd, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 summary = CASE
                     WHEN excluded.summary != '' THEN excluded.summary
@@ -2629,6 +2780,10 @@ def save_session_summary(data: m.SessionSummary) -> m.SessionSummary:
                     WHEN excluded.blocked_on != '[]' THEN excluded.blocked_on
                     ELSE session_summaries.blocked_on
                 END,
+                questions_advanced = CASE
+                    WHEN excluded.questions_advanced != '[]' THEN excluded.questions_advanced
+                    ELSE session_summaries.questions_advanced
+                END,
                 recommended_next_action = COALESCE(
                     excluded.recommended_next_action,
                     session_summaries.recommended_next_action
@@ -2642,6 +2797,7 @@ def save_session_summary(data: m.SessionSummary) -> m.SessionSummary:
                 json.dumps(data.confirmed),
                 json.dumps(data.ruled_out),
                 json.dumps(data.blocked_on),
+                json.dumps(data.questions_advanced),
                 data.recommended_next_action,
                 float(data.cost_usd),
                 _dt_str(data.created_at),
@@ -2678,6 +2834,7 @@ def _row_to_session_summary(row: sqlite3.Row) -> m.SessionSummary:
         confirmed=_json_list(row["confirmed"]),
         ruled_out=_json_list(row["ruled_out"]),
         blocked_on=_json_list(row["blocked_on"]),
+        questions_advanced=_json_list(_row_get(row, "questions_advanced") or "[]"),
         recommended_next_action=row["recommended_next_action"],
         cost_usd=float(row["cost_usd"] or 0.0),
         created_at=_dt(row["created_at"]),

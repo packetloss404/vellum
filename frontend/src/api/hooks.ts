@@ -153,6 +153,17 @@ export function useVisitDossier() {
   });
 }
 
+export function useSeedDossier() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.seedDossier(),
+    onSuccess: () => {
+      // Invalidate the dossier list so the new one appears immediately.
+      qc.invalidateQueries({ queryKey: qk.dossiers() });
+    },
+  });
+}
+
 export function useResolveNeedsInput() {
   const qc = useQueryClient();
   return useMutation({

@@ -189,6 +189,35 @@ def update_working_theory(dossier_id: str, args: dict[str, Any]) -> dict[str, An
     }
 
 
+def record_premise_challenge(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Record the agent's audit of the user's original question.
+
+    This is a GATE on substantive work alongside plan approval. Call it
+    early — after intake's plan is surfaced but before real source-reading
+    begins — naming the hidden assumptions in the user's prompt. The
+    frontend renders this near the top of the dossier so the user sees
+    the reframe immediately on their first visit.
+
+    Partial merge: first write requires all five content fields; any
+    subsequent call may supply a subset (fields omitted retain prior values).
+    """
+    session_id = _ensure_session(dossier_id)
+    try:
+        result = storage.update_premise_challenge(
+            dossier_id, m.PremiseChallengeUpdate(**args), session_id
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": "missing_required_fields", "message": str(exc)}
+    if result is None or result.premise_challenge is None:
+        return {"ok": False, "reason": "dossier_not_found"}
+    pc = result.premise_challenge
+    return {
+        "ok": True,
+        "updated_at": pc.updated_at.isoformat(),
+        "assumption_count": len(pc.hidden_assumptions),
+    }
+
+
 def add_artifact(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
     """Create a usable artifact (letter, script, table, etc.)."""
     session_id = _ensure_session(dossier_id)
@@ -232,6 +261,32 @@ def complete_sub_investigation(dossier_id: str, args: dict[str, Any]) -> dict[st
     return {
         "sub_investigation_id": getattr(sub, "id", sub_investigation_id),
         "state": getattr(getattr(sub, "state", None), "value", "completed"),
+    }
+
+
+def update_sub_investigation(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Partial-merge update of an existing sub-investigation's semantic fields.
+
+    Use this to push the thread forward between `spawn_sub_investigation` and
+    `complete_sub_investigation`: record known_facts you've confirmed, add
+    missing_facts you've identified, write a `current_finding` as the picture
+    clarifies, raise or lower `confidence` as evidence shifts. The user sees
+    these fields in the linked-question card and uses them to see which
+    threads are advancing.
+    """
+    sub_id = args.pop("sub_investigation_id", None) or args.pop("sub_id", None)
+    if not sub_id:
+        return {"ok": False, "reason": "missing_sub_investigation_id"}
+    session_id = _ensure_session(dossier_id)
+    result = storage.update_sub_investigation(
+        dossier_id, sub_id, m.SubInvestigationUpdate(**args), session_id
+    )
+    if result is None:
+        return {"ok": False, "reason": "sub_investigation_not_found"}
+    return {
+        "ok": True,
+        "sub_investigation_id": result.id,
+        "confidence": result.confidence.value,
     }
 
 
@@ -404,6 +459,7 @@ def summarize_session(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
             confirmed=parsed.confirmed,
             ruled_out=parsed.ruled_out,
             blocked_on=parsed.blocked_on,
+            questions_advanced=parsed.questions_advanced,
             recommended_next_action=parsed.recommended_next_action,
             cost_usd=cost,
             created_at=m.utc_now(),
@@ -520,10 +576,12 @@ HANDLERS = {
     "update_investigation_plan": update_investigation_plan,
     "update_debrief": update_debrief,
     "update_working_theory": update_working_theory,
+    "record_premise_challenge": record_premise_challenge,
     "add_artifact": add_artifact,
     "update_artifact": update_artifact,
     "spawn_sub_investigation": spawn_sub_investigation,
     "complete_sub_investigation": complete_sub_investigation,
+    "update_sub_investigation": update_sub_investigation,
     "log_source_consulted": log_source_consulted,
     "mark_considered_and_rejected": mark_considered_and_rejected,
     "set_next_action": set_next_action,
@@ -639,6 +697,20 @@ TOOL_DESCRIPTIONS = {
         "question. Stale working theories are worse than none — better to drop confidence to 'low' "
         "than to keep a stale 'high'."
     ),
+    "record_premise_challenge": (
+        "Audit the user's original question for hidden assumptions BEFORE you answer it. "
+        "This is a gate alongside plan approval: the user sees your premise challenge "
+        "near the top of the dossier and uses it to decide whether your reframe is sound. "
+        "Call this early — after the plan is surfaced, before substantive source-reading. "
+        "First call must include all five fields: "
+        "original_question (quote the user's prompt verbatim), "
+        "hidden_assumptions (list — what is the question smuggling in as true?), "
+        "why_answering_now_is_risky (one sentence — what breaks if we answer before this is resolved?), "
+        "safer_reframe (one sentence — how should the question be posed instead?), "
+        "required_evidence_before_answering (list — what must be true before a recommendation is responsible?). "
+        "Later calls may supply any subset to revise. Do NOT repeat this call at every turn; "
+        "revise it only when the user provides new facts that invalidate a prior assumption."
+    ),
     "add_artifact": (
         "Draft a usable object the user can copy, send, or run through: letter, script, "
         "comparison table, timeline, checklist, offer template. Content is markdown. "
@@ -663,7 +735,12 @@ TOOL_DESCRIPTIONS = {
         "Example: title='CA SOL on credit card debt', scope='California statute of limitations "
         "on credit card accounts', questions=['Does CA SOL bar this collection?', 'Does the "
         "choice-of-law clause change it?']. "
-        "Do NOT spawn for trivial lookups — a single source read is log_source_consulted."
+        "Do NOT spawn for trivial lookups — a single source read is log_source_consulted. "
+        "Optional richness fields (strongly recommended): why_it_matters (one-sentence "
+        "rationale shown in the linked-question card), known_facts (short bullet strings the "
+        "user's prompt or prior work has already established — usually empty on spawn), and "
+        "missing_facts (what you need to confirm to resolve this thread). Push the thread "
+        "forward between spawn and complete via update_sub_investigation."
     ),
     "complete_sub_investigation": (
         "The sub-agent's ONLY exit call. Pass a 3-8 sentence return_summary (lead with the "
@@ -671,6 +748,18 @@ TOOL_DESCRIPTIONS = {
         "conditional), plus findings_section_ids for the sections you wrote and "
         "findings_artifact_ids for artifacts you drafted. Only a sub-agent calls this; the main "
         "agent never does."
+    ),
+    "update_sub_investigation": (
+        "Push a sub-investigation forward between spawn and complete. Partial merge — "
+        "supply sub_investigation_id plus ANY subset of the semantic fields. "
+        "why_it_matters: one-sentence rationale (usually set on spawn, rarely revised). "
+        "known_facts / missing_facts: short bullet strings; append to these as you learn. "
+        "current_finding: narrative of where the thread is right now — this is what the "
+        "user reads in the sub's card. "
+        "recommended_next_step: what you'd do next on this thread specifically. "
+        "confidence: unknown | low | medium | high. Drop confidence when evidence weakens — "
+        "a stale 'high' is worse than an honest 'low'. A change in confidence emits a "
+        "state_changed change_log entry so the user sees the drift in the plan-diff sidebar."
     ),
     "log_source_consulted": (
         "Call ONCE PER SOURCE you actually read. Searching does not count — log only after you "
@@ -772,6 +861,7 @@ def _maybe_add(name: str, attr: str) -> None:
 _maybe_add("update_investigation_plan", "InvestigationPlanUpdate")
 _maybe_add("update_debrief", "DebriefUpdate")
 _maybe_add("update_working_theory", "WorkingTheoryUpdate")
+_maybe_add("record_premise_challenge", "PremiseChallengeUpdate")
 _maybe_add("add_artifact", "ArtifactCreate")
 _maybe_add("spawn_sub_investigation", "SubInvestigationSpawn")
 _maybe_add("mark_considered_and_rejected", "ConsideredAndRejectedCreate")
@@ -1012,6 +1102,37 @@ def tool_schemas() -> list[dict[str, Any]]:
                     "return_summary": {"type": "string"},
                 },
                 "required": ["sub_investigation_id", "return_summary"],
+                "additionalProperties": True,
+            },
+        })
+
+    # update_sub_investigation: sub_investigation_id + SubInvestigationUpdate fields merged.
+    sub_update_model = getattr(m, "SubInvestigationUpdate", None)
+    if sub_update_model is not None:
+        inner = sub_update_model.model_json_schema()
+        props = {"sub_investigation_id": {"type": "string"}}
+        props.update(inner.get("properties", {}))
+        required = ["sub_investigation_id"] + list(inner.get("required", []))
+        schema = {"type": "object", "properties": props, "required": required}
+        if "$defs" in inner:
+            schema["$defs"] = inner["$defs"]
+        schemas.append({
+            "name": "update_sub_investigation",
+            "description": TOOL_DESCRIPTIONS["update_sub_investigation"],
+            "input_schema": schema,
+        })
+    else:
+        schemas.append({
+            "name": "update_sub_investigation",
+            "description": TOOL_DESCRIPTIONS["update_sub_investigation"],
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "sub_investigation_id": {"type": "string"},
+                    "current_finding": {"type": "string"},
+                    "confidence": {"type": "string"},
+                },
+                "required": ["sub_investigation_id"],
                 "additionalProperties": True,
             },
         })

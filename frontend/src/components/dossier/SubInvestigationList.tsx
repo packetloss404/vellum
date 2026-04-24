@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import type {
   Artifact,
+  InvestigationConfidence,
   Section,
   SubInvestigation,
   SubInvestigationState,
@@ -74,6 +75,45 @@ function StatePip({ state }: { state: SubInvestigationState }) {
   );
 }
 
+// ---------- Confidence pip ----------
+
+/**
+ * Small pip rendered in the card header next to the state pip. Hidden when
+ * confidence is undefined or "unknown" so older rows / under-specified
+ * subs stay quiet.
+ */
+const CONFIDENCE_TONE: Record<
+  Exclude<InvestigationConfidence, "unknown">,
+  { pipClass: string; labelClass: string }
+> = {
+  high: {
+    pipClass: "bg-state-confident",
+    labelClass: "text-state-confident",
+  },
+  medium: {
+    pipClass: "bg-state-provisional",
+    labelClass: "text-state-provisional",
+  },
+  low: {
+    pipClass: "bg-state-blocked",
+    labelClass: "text-state-blocked",
+  },
+};
+
+function ConfidencePip({ confidence }: { confidence?: InvestigationConfidence }) {
+  if (!confidence || confidence === "unknown") return null;
+  const tone = CONFIDENCE_TONE[confidence];
+  return (
+    <span className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wide">
+      <span
+        aria-hidden="true"
+        className={`inline-block h-2 w-2 rounded-full ${tone.pipClass}`}
+      />
+      <span className={tone.labelClass}>{confidence} confidence</span>
+    </span>
+  );
+}
+
 // ---------- Finding chips ----------
 
 /**
@@ -136,6 +176,12 @@ function SubCard({
   const abandoned = sub.state === "abandoned";
   const blocked = sub.state === "blocked";
   const hasTitle = !!sub.title && sub.title.trim().length > 0;
+  const hasWhyItMatters =
+    !!sub.why_it_matters && sub.why_it_matters.trim().length > 0;
+  const hasCurrentFinding =
+    !!sub.current_finding && sub.current_finding.trim().length > 0;
+  const hasMissingFacts =
+    !!sub.missing_facts && sub.missing_facts.length > 0;
   // When a title is present, it becomes the card heading and the scope
   // demotes to a subtitle. Without a title, scope keeps the heading role
   // (matches legacy sub-investigations pre-title).
@@ -163,6 +209,7 @@ function SubCard({
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-3 mb-1">
               <StatePip state={sub.state} />
+              <ConfidencePip confidence={sub.confidence} />
             </div>
             {hasTitle ? (
               <>
@@ -172,6 +219,11 @@ function SubCard({
             ) : (
               <div className={headingClass}>{sub.scope}</div>
             )}
+            {hasWhyItMatters ? (
+              <div className={`mt-1 ${subtitleClass}`}>
+                {sub.why_it_matters}
+              </div>
+            ) : null}
             {blocked && sub.blocked_reason ? (
               <div className="mt-2 font-mono text-xs text-state-blocked leading-snug">
                 blocked: {sub.blocked_reason}
@@ -231,6 +283,35 @@ function SubCard({
                     className="font-serif italic text-sm text-ink-muted leading-relaxed"
                   >
                     {q}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {hasCurrentFinding ? (
+            <div>
+              <div className="font-mono text-xs uppercase tracking-wide text-ink-faint mb-1.5">
+                Current finding
+              </div>
+              <p className="font-serif text-sm text-ink leading-relaxed m-0 whitespace-pre-wrap">
+                {sub.current_finding}
+              </p>
+            </div>
+          ) : null}
+
+          {hasMissingFacts ? (
+            <div>
+              <div className="font-mono text-xs uppercase tracking-wide text-ink-faint mb-1.5">
+                Missing facts
+              </div>
+              <ul className="list-disc pl-5 space-y-1 m-0">
+                {(sub.missing_facts ?? []).map((f, idx) => (
+                  <li
+                    key={idx}
+                    className="font-serif italic text-sm text-ink-muted leading-relaxed"
+                  >
+                    {f}
                   </li>
                 ))}
               </ul>
@@ -316,7 +397,8 @@ export function SubInvestigationList({
   return (
     <section className="space-y-4">
       <h2 className="font-mono text-xs uppercase tracking-wide text-ink-faint">
-        Sub-investigations{ordered.length > 0 ? ` (${ordered.length})` : ""}
+        Linked investigation questions
+        {ordered.length > 0 ? ` (${ordered.length})` : ""}
       </h2>
       {ordered.length === 0 ? (
         <EmptyState />

@@ -119,6 +119,23 @@ export function WorkingTheoryBlock({ theory }: Props) {
               {theory.what_would_change_it}
             </p>
           </div>
+          {theory.unresolved_assumptions && theory.unresolved_assumptions.length > 0 ? (
+            <div>
+              <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-faint mb-1">
+                Unresolved assumptions
+              </div>
+              <ul className="list-none p-0 m-0 space-y-0.5">
+                {theory.unresolved_assumptions.map((a, i) => (
+                  <li
+                    key={i}
+                    className="font-serif text-sm text-ink-muted leading-relaxed pl-3 relative before:content-['·'] before:absolute before:left-0 before:text-ink-faint"
+                  >
+                    {a}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </section>
