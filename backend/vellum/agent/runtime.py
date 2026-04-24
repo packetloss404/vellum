@@ -493,6 +493,30 @@ class DossierAgent:
             f"{detail} Soft signal only — I'll keep working unless you tell "
             f"me otherwise, but this is worth a check-in."
         )
+        # Trust mode: if the user flipped the setting on, don't surface a
+        # decision_point for budget cap-cross. Append a reasoning_trail note
+        # instead so the agent sees it on the next state snapshot and the
+        # event is auditable, but the user isn't interrupted. Mirrors the
+        # tier-2 stuck behavior in _surface_stuck. The hard guardrail (the
+        # cap itself) is the user's editable knob in /settings — trust mode
+        # just chooses "don't ask me about it, keep going."
+        try:
+            trust_mode = bool(storage.get_setting("trust_mode_enabled", False))
+        except Exception:
+            trust_mode = False
+        if trust_mode:
+            try:
+                handlers.HANDLERS["append_reasoning"](
+                    self.dossier_id,
+                    {
+                        "note": f"[trust_mode:auto] Budget {kind} crossed — continuing. {detail}",
+                        "tags": ["budget", "budget_auto_dismissed", "trust_mode"],
+                    },
+                )
+            except Exception:
+                pass
+            return
+
         options = [
             {
                 "label": "Keep going",
