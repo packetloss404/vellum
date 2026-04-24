@@ -1,3 +1,4 @@
+import re
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -218,6 +219,14 @@ def add_decision_point(
     return storage.add_decision_point(dossier_id, data, work_session_id)
 
 
+_DELIVER_CHOICE_RE = re.compile(
+    r"\b(?:mark(?:\s+(?:it|this|what\s+i\s+have))?\s+as\s+delivered|"
+    r"deliver\s+now|"
+    r"mark\s+(?:it\s+)?delivered)\b",
+    flags=re.IGNORECASE,
+)
+
+
 @router.post("/dossiers/{dossier_id}/decision-points/{decision_id}/resolve", response_model=m.DecisionPoint)
 def resolve_decision_point(
     dossier_id: str,
@@ -228,6 +237,51 @@ def resolve_decision_point(
     result = storage.resolve_decision_point(dossier_id, decision_id, data.chosen, work_session_id)
     if not result:
         raise HTTPException(404, "decision_point not found")
+
+    # When the user picks a "mark as delivered"-flavored option on any
+    # decision (typically the budget soft-cap DP or a stuck DP), execute
+    # the delivery server-side. Without this, the user's choice gets
+    # recorded but never acted on — the scheduler wakes a fresh agent
+    # session which immediately re-trips the same cap and surfaces a new
+    # DP. Endless loop observed on dos_fc07 day 4.
+    #
+    # mark_investigation_delivered has its own preflight guards (open
+    # needs_input / running subs / plan_approval); on refusal we log and
+    # let the user sort it out — better than silently re-looping.
+    if _DELIVER_CHOICE_RE.search(data.chosen or ""):
+        try:
+            from ..tools import handlers as _handlers
+            outcome = _handlers.mark_investigation_delivered(
+                dossier_id,
+                {
+                    "why_enough": (
+                        f"User resolved decision_point {decision_id} with "
+                        f"choice '{data.chosen}'. Auto-delivering on that "
+                        f"signal (see decision_points history for context)."
+                    ),
+                },
+            )
+            if not outcome.get("ok"):
+                # Preflight guard refused — surface as a warning through
+                # the reasoning trail so the user sees WHY their choice
+                # didn't deliver. Keeps the resolve succeeding (DP is
+                # already resolved) so the UI reflects their click.
+                storage.append_reasoning(
+                    dossier_id,
+                    m.ReasoningAppend(
+                        note=(
+                            f"[auto_deliver_refused] User picked '{data.chosen}' "
+                            f"on a decision_point but mark_investigation_delivered "
+                            f"refused: {outcome.get('reason')}. "
+                            f"{outcome.get('message', '')}"
+                        ),
+                        tags=["auto_deliver", "auto_deliver_refused"],
+                    ),
+                    work_session_id,
+                )
+        except Exception:  # noqa: BLE001 — never block the resolve on this
+            pass
+
     return result
 
 
