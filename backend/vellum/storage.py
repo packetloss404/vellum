@@ -18,6 +18,16 @@ from . import models as m
 from .db import connect
 
 
+class ActiveWorkSessionExists(Exception):
+    """Raised when a dossier already has an open work_session."""
+
+    def __init__(self, session: m.WorkSession) -> None:
+        self.session = session
+        super().__init__(
+            f"work_session already active for dossier {session.dossier_id}: {session.id}"
+        )
+
+
 # TypeAdapters for list[PydanticModel] round-trips.
 _SourceList = TypeAdapter(list[m.Source])
 _OptionList = TypeAdapter(list[m.DecisionOption])
@@ -501,13 +511,9 @@ def get_dossier_resume_state(dossier_id: str) -> Optional[dict]:
 
 
 def mark_dossier_visited(dossier_id: str) -> Optional[m.Dossier]:
-    """End any active work_session and update last_visited_at. Called when the user opens the dossier."""
+    """Update last_visited_at when the user opens the dossier."""
     now = _dt_str(m.utc_now())
     with connect() as conn:
-        conn.execute(
-            "UPDATE work_sessions SET ended_at = ? WHERE dossier_id = ? AND ended_at IS NULL",
-            (now, dossier_id),
-        )
         conn.execute(
             "UPDATE dossiers SET last_visited_at = ?, updated_at = ? WHERE id = ?",
             (now, now, dossier_id),
@@ -842,6 +848,17 @@ def add_decision_point(
         created_at=now,
     )
     with connect() as conn:
+        if data.kind == "plan_approval":
+            existing = conn.execute(
+                """
+                SELECT * FROM decision_points
+                 WHERE dossier_id = ? AND kind = 'plan_approval' AND resolved_at IS NULL
+                 ORDER BY created_at DESC LIMIT 1
+                """,
+                (dossier_id,),
+            ).fetchone()
+            if existing is not None:
+                return _row_to_decision_point(existing)
         conn.execute(
             """
             INSERT INTO decision_points (id, dossier_id, title, options, recommendation,
@@ -1031,14 +1048,30 @@ def start_work_session(
         started_at=now,
         trigger=trigger,
     )
-    with connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO work_sessions (id, dossier_id, started_at, trigger, token_budget_used)
-            VALUES (?, ?, ?, ?, 0)
-            """,
-            (session.id, dossier_id, _dt_str(now), trigger.value),
-        )
+    try:
+        with connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT * FROM work_sessions
+                 WHERE dossier_id = ? AND ended_at IS NULL
+                 ORDER BY started_at DESC LIMIT 1
+                """,
+                (dossier_id,),
+            ).fetchone()
+            if existing is not None:
+                raise ActiveWorkSessionExists(_row_to_work_session(existing))
+            conn.execute(
+                """
+                INSERT INTO work_sessions (id, dossier_id, started_at, trigger, token_budget_used)
+                VALUES (?, ?, ?, ?, 0)
+                """,
+                (session.id, dossier_id, _dt_str(now), trigger.value),
+            )
+    except sqlite3.IntegrityError as exc:
+        existing = get_active_work_session(dossier_id)
+        if existing is not None:
+            raise ActiveWorkSessionExists(existing) from exc
+        raise
     return session
 
 
@@ -2024,6 +2057,70 @@ def _set_plan_item_status(
         "UPDATE dossiers SET investigation_plan = ? WHERE id = ?",
         (new_plan.model_dump_json(), dossier_id),
     )
+
+
+def finalize_plan_on_delivery(
+    dossier_id: str,
+    work_session_id: Optional[str] = None,
+) -> dict:
+    """Sweep non-terminal plan items to `completed` when a dossier delivers.
+
+    Without this, dossiers whose sub-investigations predate the
+    plan_item_id linkage (or whose agent forgot to pass it on spawn) ship
+    delivered with every plan item still reading "planned" — misleading.
+    The dossier reaching delivered IS the terminal state for the whole
+    investigation; we treat any not-yet-terminal plan item as completed
+    by the delivery itself.
+
+    Items already in `completed` or `abandoned` are left untouched. Items
+    in `planned` or `in_progress` flip to `completed`. Emits one
+    `plan_updated` change_log entry when at least one item moved.
+
+    Returns a dict describing what changed so the caller can surface it.
+    Safe when no plan exists (returns zeros).
+    """
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT investigation_plan FROM dossiers WHERE id = ?", (dossier_id,)
+        ).fetchone()
+        if not row or not row["investigation_plan"]:
+            return {"items_flipped": 0, "from_planned": 0, "from_in_progress": 0}
+
+        plan = m.InvestigationPlan.model_validate_json(row["investigation_plan"])
+        from_planned = 0
+        from_in_progress = 0
+        new_items: list[m.InvestigationPlanItem] = []
+        for item in plan.items:
+            if item.status in ("completed", "abandoned"):
+                new_items.append(item)
+                continue
+            if item.status == "planned":
+                from_planned += 1
+            elif item.status == "in_progress":
+                from_in_progress += 1
+            new_items.append(item.model_copy(update={"status": "completed"}))
+        total = from_planned + from_in_progress
+        if total == 0:
+            return {"items_flipped": 0, "from_planned": 0, "from_in_progress": 0}
+
+        new_plan = plan.model_copy(update={"items": new_items})
+        conn.execute(
+            "UPDATE dossiers SET investigation_plan = ? WHERE id = ?",
+            (new_plan.model_dump_json(), dossier_id),
+        )
+        note = (
+            f"Plan finalized on delivery: {total} item(s) flipped to completed "
+            f"({from_planned} planned, {from_in_progress} in_progress)."
+        )
+        _log_change(
+            conn, dossier_id, work_session_id, "plan_updated", note,
+        )
+        _touch_dossier(conn, dossier_id)
+    return {
+        "items_flipped": total,
+        "from_planned": from_planned,
+        "from_in_progress": from_in_progress,
+    }
 
 
 def spawn_sub_investigation(

@@ -34,7 +34,10 @@ def _ensure_session(dossier_id: str) -> str:
     session = storage.get_active_work_session(dossier_id)
     if session:
         return session.id
-    return storage.start_work_session(dossier_id, m.WorkSessionTrigger.resume).id
+    try:
+        return storage.start_work_session(dossier_id, m.WorkSessionTrigger.resume).id
+    except storage.ActiveWorkSessionExists as exc:
+        return exc.session.id
 
 
 # ===================================================================
@@ -540,6 +543,13 @@ def mark_investigation_delivered(dossier_id: str, args: dict[str, Any]) -> dict[
     storage.update_dossier(
         dossier_id, m.DossierUpdate(status=m.DossierStatus.delivered)
     )
+    # Sweep plan items: anything still `planned` or `in_progress` at
+    # delivery flips to `completed`. Without this, pre-fix dossiers (whose
+    # sub-investigations lack plan_item_id linkage) ship delivered with
+    # every plan item visibly still "planned" — misleading. Going forward
+    # this is also a belt+braces for dossiers where the agent delivers
+    # while a plan_item_id happens to be missing on an individual sub.
+    plan_sweep = storage.finalize_plan_on_delivery(dossier_id, session_id)
     storage.append_reasoning(
         dossier_id,
         m.ReasoningAppend(
@@ -552,6 +562,7 @@ def mark_investigation_delivered(dossier_id: str, args: dict[str, Any]) -> dict[
         "ok": True,
         "dossier_id": dossier_id,
         "status": m.DossierStatus.delivered.value,
+        "plan_items_swept": plan_sweep,
     }
 
 
@@ -632,7 +643,7 @@ TOOL_DESCRIPTIONS = {
         "user now has to decide. Set kind='plan_approval' when surfacing the investigation plan "
         "for the user's sign-off. "
         "Example: title='Send verification letter now or wait for SOL research?', "
-        "kind='strategy', options=[{'label': 'Send now', 'implications': 'starts 30-day "
+        "kind='generic', options=[{'label': 'Send now', 'implications': 'starts 30-day "
         "clock'}, {'label': 'Wait', 'implications': 'preserves optionality'}]. "
         "Do NOT use for factual questions (flag_needs_input) or when you are actually stuck "
         "(declare_stuck)."
@@ -668,15 +679,10 @@ TOOL_DESCRIPTIONS = {
         "whether it becomes a sub-investigation, and a rationale. The user sees this and may "
         "redirect; call again whenever scope shifts materially. "
         "Example items: [{'question': 'Does CA SOL bar this debt?', 'becomes_sub_investigation': "
-        "true, 'rationale': 'Jurisdiction-specific, worth dedicated dig'}, {'question': 'Draft "
-        "a §1692g letter', 'becomes_sub_investigation': false}]. "
+        "true}, {'question': 'Draft a verification letter', 'becomes_sub_investigation': false}]. "
         "Set approve=true to self-approve only when the user has given you a clear go-ahead; "
         "otherwise leave false and surface the plan via flag_decision_point(kind='plan_approval'). "
-        "If the plan is already approved, a MINOR revision (adding items, tweaking rationale / "
-        "expected_sources / as_sub_investigation) preserves the user's approval — no re-gate. "
-        "A MAJOR revision (removing items, rewriting an existing item's question) unapproves the "
-        "plan and will surface a fresh plan_approval decision_point. Revise freely for continuous "
-        "refinement; only reshape the plan if the investigation genuinely pivoted."
+        "Minor approved-plan edits preserve approval; major pivots unapprove and re-gate."
     ),
     "update_debrief": (
         "Rewrite the top-of-dossier 2-minute read: what you did, what you found, what the user "
@@ -689,32 +695,20 @@ TOOL_DESCRIPTIONS = {
     "update_working_theory": (
         "Maintain the dossier's 'if you had to decide right now, here's what I think' surface. "
         "Distinct from update_debrief (process narrative) and upsert_section (evidence/analysis) "
-        "— working theory is the CURRENT BELIEF and its confidence, updated whenever evidence "
-        "shifts. First call must supply all four fields (recommendation, confidence, why, "
-        "what_would_change_it); subsequent calls can update any subset (partial merge). "
-        "recommendation: concise belief or recommended next move (1 sentence). "
-        "confidence: 'high' | 'medium' | 'low' — a confidence drop is informative; don't inflate. "
-        "why: one sentence on what supports this belief right now. "
-        "what_would_change_it: what evidence or event would move the theory — the user should be "
-        "able to read this and know what to provide next. "
-        "Call this early (after plan approval, once you have even a tentative direction) and "
-        "REVISE it whenever a sub returns, a section flips state, or the user answers a blocking "
-        "question. Stale working theories are worse than none — better to drop confidence to 'low' "
-        "than to keep a stale 'high'."
+        "— working theory is the CURRENT BELIEF and confidence. First call supplies "
+        "recommendation, confidence, why, and what_would_change_it; later calls partial-merge. "
+        "Call once you have a tentative direction, then revise when a sub returns, a section flips, "
+        "or the user answers a blocker. Drop confidence when evidence weakens; stale high is worse "
+        "than honest low."
     ),
     "record_premise_challenge": (
         "Audit the user's original question for hidden assumptions BEFORE you answer it. "
         "This is a gate alongside plan approval: the user sees your premise challenge "
         "near the top of the dossier and uses it to decide whether your reframe is sound. "
         "Call this early — after the plan is surfaced, before substantive source-reading. "
-        "First call must include all five fields: "
-        "original_question (quote the user's prompt verbatim), "
-        "hidden_assumptions (list — what is the question smuggling in as true?), "
-        "why_answering_now_is_risky (one sentence — what breaks if we answer before this is resolved?), "
-        "safer_reframe (one sentence — how should the question be posed instead?), "
-        "required_evidence_before_answering (list — what must be true before a recommendation is responsible?). "
-        "Later calls may supply any subset to revise. Do NOT repeat this call at every turn; "
-        "revise it only when the user provides new facts that invalidate a prior assumption."
+        "First call quotes original_question, lists hidden_assumptions, explains risk, gives a "
+        "safer_reframe, and names required_evidence_before_answering. Later calls may supply any "
+        "subset to revise. Do NOT repeat every turn; revise only when facts change."
     ),
     "add_artifact": (
         "Draft a usable object the user can copy, send, or run through: letter, script, "
@@ -740,18 +734,8 @@ TOOL_DESCRIPTIONS = {
         "Example: title='CA SOL on credit card debt', scope='California statute of limitations "
         "on credit card accounts', questions=['Does CA SOL bar this collection?', 'Does the "
         "choice-of-law clause change it?']. "
-        "Do NOT spawn for trivial lookups — a single source read is log_source_consulted. "
-        "Optional richness fields (strongly recommended): why_it_matters (one-sentence "
-        "rationale shown in the linked-question card), known_facts (short bullet strings the "
-        "user's prompt or prior work has already established — usually empty on spawn), and "
-        "missing_facts (what you need to confirm to resolve this thread). Push the thread "
-        "forward between spawn and complete via update_sub_investigation. "
-        "When this sub corresponds to a plan item (check the investigation_plan — each item has "
-        "`id` and `as_sub_investigation`), pass `plan_item_id` with that item's id so the plan "
-        "card flips from 'planned' to 'in_progress' automatically. Completing the sub flips it "
-        "to 'completed'; abandoning flips to 'abandoned'. Items without a matching sub stay "
-        "'planned' — if you decided an item doesn't need a sub after all, either spawn anyway "
-        "and complete-without-findings, or revise the plan to remove the item."
+        "Do NOT spawn for trivial lookups; a single source read is log_source_consulted. Include "
+        "why_it_matters / missing_facts when useful; pass plan_item_id for plan items."
     ),
     "complete_sub_investigation": (
         "The sub-agent's ONLY exit call. Pass a 3-8 sentence return_summary (lead with the "
@@ -763,14 +747,10 @@ TOOL_DESCRIPTIONS = {
     "update_sub_investigation": (
         "Push a sub-investigation forward between spawn and complete. Partial merge — "
         "supply sub_investigation_id plus ANY subset of the semantic fields. "
-        "why_it_matters: one-sentence rationale (usually set on spawn, rarely revised). "
-        "known_facts / missing_facts: short bullet strings; append to these as you learn. "
-        "current_finding: narrative of where the thread is right now — this is what the "
-        "user reads in the sub's card. "
-        "recommended_next_step: what you'd do next on this thread specifically. "
-        "confidence: unknown | low | medium | high. Drop confidence when evidence weakens — "
-        "a stale 'high' is worse than an honest 'low'. A change in confidence emits a "
-        "state_changed change_log entry so the user sees the drift in the plan-diff sidebar."
+        "Update why_it_matters, known_facts, missing_facts, current_finding, recommended_next_step, "
+        "or confidence. current_finding is what the user reads in the card. Drop confidence when "
+        "evidence weakens — stale high is worse than honest low. Confidence changes emit a "
+        "state_changed change_log entry."
     ),
     "log_source_consulted": (
         "Call ONCE PER SOURCE you actually read. Searching does not count — log only after you "
@@ -818,25 +798,18 @@ TOOL_DESCRIPTIONS = {
         "turn or schedule_wake. If you skip this, the runtime writes a minimal "
         "cost-only fallback row and the user loses the qualitative narrative. "
         "summary: 1–2 sentences. Lead with the verb — 'Confirmed X, ruled out Y, "
-        "blocked on Z.' Not 'I worked on the investigation.' "
-        "confirmed / ruled_out / blocked_on: short bullets (one clause each, no prose). "
-        "recommended_next_action: optional, include only if the user should do something "
-        "specific before the next agent turn. "
-        "Call at most once per session — repeated calls update the same row."
+        "blocked on Z.' Not 'I worked on the investigation.' confirmed / ruled_out / blocked_on "
+        "are short bullets; recommended_next_action is optional. Call at most once per session."
     ),
     "schedule_wake": (
         "Schedule your own next wake-up. Non-terminating: after this call, end the turn "
         "(stop producing tool_uses) — the runtime will pause you, and the scheduler will "
         "resume you with a fresh work_session after hours_from_now have passed. "
-        "Use when you need real-world time to pass before more work is productive: waiting "
-        "for a caller to call back, a SOL clock to tick, a scheduled bulletin to publish, "
-        "or for the user's next action to land (though for user actions prefer flag_needs_input). "
-        "Don't use to pad the run — if you're out of substantive moves and the blocker is "
-        "the user, flag_needs_input or flag_decision_point and end the turn; the scheduler "
-        "will resume you when the user resolves it. "
+        "Use when real-world time must pass: callback pending, SOL clock ticking, scheduled bulletin, "
+        "or user's external action. Do not use when the blocker is a user answer; "
+        "use flag_needs_input or flag_decision_point and end the turn. "
         "reason is a short string logged in the reasoning trail so you (on resume) and the "
-        "user can see why you stepped back. hours_from_now accepts fractions (e.g. 0.5 for "
-        "30 minutes). The schedule_wake_max_hours setting caps the interval."
+        "user can see why you stepped back. hours_from_now accepts fractions; schedule_wake_max_hours caps it."
     ),
 }
 
