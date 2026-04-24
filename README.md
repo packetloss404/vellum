@@ -1,8 +1,17 @@
 # Vellum
 
-A tool for durable thinking on consequential problems.
+**A durable investigation system where the dossier is the primary surface, not chat.**
 
-The unit isn't a chat session — it's a **dossier**: a structured, typed document that an agent works on over hours or days, and that you return to on your own schedule. Close the laptop. Come back. The dossier has evolved — new sections, revised conclusions, flagged open questions, surfaced decision points. A plan-diff sidebar shows what changed since you were last here.
+The unit isn't a chat session — it's a **dossier**: a structured, typed case file that an agent works on over hours or days, and that you return to on your own schedule. Close the laptop. Come back. The dossier has evolved — new sections, revised conclusions, flagged open questions, surfaced decision points. A plan-diff sidebar shows what changed since you were last here.
+
+Vellum is for the kind of question that doesn't belong in a chat window — a consequential decision with several unknowns, where the obvious answer may be dangerous if key facts are wrong.
+
+## For hackathon reviewers
+
+- **[SUMMARY.md](./SUMMARY.md)** — three-paragraph project summary (problem / product / architecture).
+- **[NARRATION.md](./NARRATION.md)** — 3-minute demo video script with timing and shot list.
+- **Demo dossiers** — the repo's SQLite DB ships with three fully-worked investigations (credit-card debt, housing/proximity decision, fertility/ambivalence) that demonstrate premise challenges, working theories, sub-investigations, plan approval, and delivered-state sweep.
+- **Scope freeze** — out of scope for v1: multi-user, auth, notifications, mobile, rich-text editor, LLMs other than Claude, Claude Agent SDK migration, Postgres, Temporal. Everything listed works on localhost against the Anthropic Messages API.
 
 ## What makes it different
 
@@ -75,10 +84,12 @@ Most routes follow standard CRUD patterns on `/api/dossiers/{id}/...`; a few hav
 
 - **`POST /api/dossiers/{id}/resume`** — explicit agent restart on an existing dossier.
 
+- **Optional API token guard** — set `VELLUM_API_TOKEN` on the backend and `VITE_VELLUM_API_TOKEN` on the frontend to require a bearer token for `/api/*`. `/health` remains public. Empty token keeps localhost dev unchanged unless `VELLUM_API_AUTH_REQUIRED=true`.
+
 - **`GET /api/settings`, `PUT /api/settings/{key}`** — DB-backed settings (sleep-mode toggle, budget caps, warn fractions, progress-forcing threshold). Soft signals only; crossing a cap surfaces a decision_point rather than terminating the agent.
 
 - **`GET /api/budget/today`, `GET /api/budget/range?days=N`** — daily USD + token rollups. `today` includes a `state` field (`ok` | `warn` | `soft_cap_crossed`) derived from the current cap + warn-fraction settings.
 
 ## Status
 
-v1, single-user, localhost. Out of scope: auth, multi-user, notifications, mobile, rich text, LLMs other than Claude.
+v1, single-user, localhost. Optional local-token API guard exists for tunneled or shared dev instances. Out of scope: multi-user, notifications, mobile, rich text, LLMs other than Claude.
