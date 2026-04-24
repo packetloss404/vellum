@@ -148,6 +148,15 @@ export const api = {
   agentStatus: (dossierId: string) =>
     request<AgentStatus>("GET", `/api/dossiers/${dossierId}/agent/status`),
 
+  // Fleet-wide snapshot of which dossiers currently have an agent task
+  // in flight. One request powers the "Researching" pill on every
+  // dossier card in the list view — avoids an N+1 fanout.
+  listRunningAgents: () =>
+    request<Array<{ dossier_id: string; started_at?: string | null }>>(
+      "GET",
+      "/api/agents/running",
+    ),
+
   // ---------- v2: Resume ----------
   // Resume kicks the agent back on for an existing dossier. The backend
   // route is being added by another agent in parallel; the detail page

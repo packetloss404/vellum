@@ -138,6 +138,24 @@ export const useAgentStatus = (dossierId: string) =>
     staleTime: 0,
   });
 
+/**
+ * useRunningAgents — fleet-wide set of dossier ids with an agent task in
+ * flight. Powers the "Researching" pill on the DossierListPage without an
+ * N+1 fanout. Returns a Set<string> for O(1) lookup; the underlying query
+ * caches the raw array so cost accounting in React Query is honest.
+ */
+export const useRunningAgents = () =>
+  useQuery({
+    queryKey: ["agents", "running"] as const,
+    queryFn: () => api.listRunningAgents(),
+    refetchInterval: 3000,
+    staleTime: 0,
+    // List view should stay responsive even if the fleet fetch errors —
+    // treat a transient failure as "none running" rather than a blocking
+    // error state.
+    retry: false,
+  });
+
 // ---------- dossier mutations ----------
 
 export function useVisitDossier() {

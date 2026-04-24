@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Header } from "../components/layout/Header";
 import { EmptyState } from "../components/common/EmptyState";
 import { DossierCard } from "../components/dossier/DossierCard";
-import { useDossierList, useSeedDossier } from "../api/hooks";
+import { useDossierList, useRunningAgents, useSeedDossier } from "../api/hooks";
 import { useDocumentTitle } from "../utils/useDocumentTitle";
 import type { Dossier } from "../api/types";
 
@@ -107,10 +107,15 @@ function formatSubhead(list: readonly Dossier[]): string {
 export default function DossierListPage() {
   useDocumentTitle("Vellum");
   const { data, isLoading, error } = useDossierList();
+  const running = useRunningAgents();
 
   const sorted = React.useMemo(
     () => (data ? sortByUpdated(data) : []),
     [data],
+  );
+  const runningIds = React.useMemo(
+    () => new Set((running.data ?? []).map((r) => r.dossier_id)),
+    [running.data],
   );
 
   return (
@@ -158,7 +163,11 @@ export default function DossierListPage() {
           <ul className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 list-none p-0 m-0">
             {sorted.map((d) => (
               <li key={d.id} className="h-full">
-                <DossierCard dossier={d} counts={extractCounts(d)} />
+                <DossierCard
+                  dossier={d}
+                  counts={extractCounts(d)}
+                  running={runningIds.has(d.id)}
+                />
               </li>
             ))}
           </ul>

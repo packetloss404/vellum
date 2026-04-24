@@ -12,6 +12,12 @@ import { truncate } from "../../utils/format";
  * Shows title + truncated problem_statement + a mono metadata line
  * (status, counts, last_visited_at). Click routes into the detail page.
  * Day-3 scaffold; day-4 polishes the visual hierarchy.
+ *
+ * `running` is a runtime overlay on the persistent status — when true,
+ * we show a live "researching" pill instead of the persistent status.
+ * The persistent status (active / paused / delivered) still matters for
+ * sorting, completion counts, etc. — we just surface the live state
+ * first on the card when it's in flight.
  */
 
 const TRUNCATE_LIMIT = 180;
@@ -31,6 +37,26 @@ function statusPill(status: string): {
   }
 }
 
+interface ResearchingPillProps {}
+
+/**
+ * ResearchingPill — live amber pulse, distinct from both the persistent
+ * "active" (accent/brown) and the delivered green. Matches the language
+ * AgentActivityIndicator uses on the dossier detail page so the same
+ * word means the same thing in both places.
+ */
+function ResearchingPill(_: ResearchingPillProps) {
+  return (
+    <span className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.08em] text-attention">
+      <span
+        aria-hidden="true"
+        className="inline-block h-2 w-2 rounded-full bg-attention animate-pulse"
+      />
+      researching
+    </span>
+  );
+}
+
 export interface DossierCardProps {
   dossier: Dossier;
   // Counts come from the backend list payload if/when present; we accept
@@ -41,9 +67,13 @@ export interface DossierCardProps {
     sub_investigations?: number;
     artifacts?: number;
   };
+  // True when an agent task is currently in flight for this dossier
+  // (GET /api/agents/running reports it). List page fetches once and
+  // passes through — no per-card polling.
+  running?: boolean;
 }
 
-export function DossierCard({ dossier, counts }: DossierCardProps) {
+export function DossierCard({ dossier, counts, running }: DossierCardProps) {
   const preview = truncate(dossier.problem_statement ?? "", TRUNCATE_LIMIT);
   const typeLabel = dossier.dossier_type.replace(/_/g, " ");
   const visited = dossier.last_visited_at
@@ -72,14 +102,18 @@ export function DossierCard({ dossier, counts }: DossierCardProps) {
         <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-ink-faint mt-4">
           <span className="lowercase tracking-wide">{typeLabel}</span>
           <span aria-hidden="true">·</span>
-          {(() => {
-            const sp = statusPill(dossier.status);
-            return (
-              <Pill variant={sp.variant} state={sp.state}>
-                {dossier.status}
-              </Pill>
-            );
-          })()}
+          {running ? (
+            <ResearchingPill />
+          ) : (
+            (() => {
+              const sp = statusPill(dossier.status);
+              return (
+                <Pill variant={sp.variant} state={sp.state}>
+                  {dossier.status}
+                </Pill>
+              );
+            })()
+          )}
           {hasCounts ? (
             <>
               <span aria-hidden="true">·</span>
