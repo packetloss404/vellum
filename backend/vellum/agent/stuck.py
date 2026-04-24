@@ -71,6 +71,10 @@ class StuckSignal:
     detail: str                     # short human-readable explanation
     summary_of_attempts: str        # ready to feed into check_stuck tool's `summary_of_attempts`
     options_for_user: list[dict]    # [{"label": ..., "implications": ..., "recommended": bool}, ...]
+    # Escalation tier (1 = heads-up, 2 = decision_point, 3+ = forced-recommended
+    # decision_point). Default 2 matches pre-tier behavior; callers set
+    # explicitly via ``_assign_tier_and_emit``.
+    tier: int = 2
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +112,19 @@ class _SessionState:
     # write two stuck_declared entries for the same underlying signal.
     investigation_log_emitted: set = field(default_factory=set)
 
+    # Phase 2: progress-forcing. Counts turns since the last turn that
+    # emitted at least one "progress" tool call. Reset to 0 when a progress
+    # tool is observed; incremented on every end-of-turn where it wasn't.
+    turns_since_progress: int = 0
+    no_progress_reported: bool = False
+
+    # Phase 3 part C: stuck-escalation tier tracking. Every surfaced signal
+    # bumps this counter; the signal's ``tier`` is ``min(count, 3)``. The
+    # runtime uses tier to decide whether to emit a heads-up-only note
+    # (tier 1), a standard decision_point (tier 2), or a forced-recommended
+    # decision_point (tier 3+).
+    stuck_escalation_count: int = 0
+
 
 _STATE_LOCK = threading.Lock()
 _SESSION_STATE: dict[str, _SessionState] = {}
@@ -140,6 +157,32 @@ _SESSION_BUDGET_MULTIPLIER = config.STUCK_SESSION_BUDGET_MULT
 # v2: same_tool_no_progress threshold — same tool name (any args) called
 # this many times in a session without creating any new section fires.
 _SAME_TOOL_NO_PROGRESS_THRESHOLD = 8
+
+# Phase 2: progress-forcing. A turn that calls any tool in this set counts
+# as "progress" — the agent moved the investigation state in a way that's
+# not just refining prose. Tools NOT in this set (upsert_section,
+# update_section_state, append_reasoning, log_source_consulted,
+# update_debrief, update_investigation_plan, update_artifact, reorder_sections)
+# can all be called in loops without advancing the case, so they don't
+# reset the counter. declare_stuck / check_stuck are included — declaring
+# stuck IS an action, and excluding them would produce the absurd state
+# where the agent's stuck declaration trips another stuck signal.
+_PROGRESS_TOOL_NAMES: set = {
+    "flag_needs_input",
+    "flag_decision_point",
+    "spawn_sub_investigation",
+    "complete_sub_investigation",
+    "mark_considered_and_rejected",
+    "mark_ruled_out",
+    "add_artifact",
+    "schedule_wake",
+    "mark_investigation_delivered",
+    "update_working_theory",
+    "declare_stuck",
+    "check_stuck",
+    "request_user_paste",
+    "summarize_session",
+}
 
 
 def _state(session_id: str) -> _SessionState:
@@ -212,6 +255,34 @@ def _emit_investigation_log(session_id: str, signal: StuckSignal) -> None:
             "stuck: investigation_log emit failed for %s/%s", signal.kind, session_id,
             exc_info=True,
         )
+
+
+def _assign_tier_and_emit(session_id: str, signal: StuckSignal) -> StuckSignal:
+    """Stamp a tier onto ``signal`` based on how many stuck signals have
+    been surfaced in this session so far, emit the investigation_log entry,
+    and return the (mutated) signal.
+
+    Tier policy (see Phase 3 part C):
+      * 1st signal in session -> tier 1 (heads-up; runtime suppresses
+        decision_point and just appends a reasoning note).
+      * 2nd signal            -> tier 2 (standard decision_point).
+      * 3rd and beyond        -> tier 3 (decision_point with the FIRST
+        option's ``recommended`` forced True; others forced False).
+
+    This is the single place tier assignment happens; every caller that
+    previously did ``_emit_investigation_log(...); return signal`` now does
+    ``return _assign_tier_and_emit(...)``.
+    """
+    with _STATE_LOCK:
+        st = _state(session_id)
+        st.stuck_escalation_count += 1
+        tier = min(st.stuck_escalation_count, 3)
+    signal.tier = tier
+    if tier >= 3 and signal.options_for_user:
+        for i, opt in enumerate(signal.options_for_user):
+            opt["recommended"] = (i == 0)
+    _emit_investigation_log(session_id, signal)
+    return signal
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +439,7 @@ def record_tool_call(session_id: str, tool_name: str, args: dict) -> Optional[St
                 )
 
     if signal is not None:
-        _emit_investigation_log(session_id, signal)
+        return _assign_tier_and_emit(session_id, signal)
     return signal
 
 
@@ -440,7 +511,7 @@ def check_section_budget(dossier_id: str, session_id: str) -> Optional[StuckSign
                 )
                 break
     if signal is not None:
-        _emit_investigation_log(session_id, signal)
+        return _assign_tier_and_emit(session_id, signal)
     return signal
 
 
@@ -497,7 +568,7 @@ def check_revision_stall(dossier_id: str, session_id: str) -> Optional[StuckSign
                 )
                 break
     if signal is not None:
-        _emit_investigation_log(session_id, signal)
+        return _assign_tier_and_emit(session_id, signal)
     return signal
 
 
@@ -554,7 +625,7 @@ def check_session_budget(session_id: str) -> Optional[StuckSignal]:
                 options_for_user=options,
             )
     if signal is not None:
-        _emit_investigation_log(session_id, signal)
+        return _assign_tier_and_emit(session_id, signal)
     return signal
 
 
@@ -562,9 +633,14 @@ def check_stuck_state(dossier_id: str, session_id: str) -> Optional[StuckSignal]
     """Composite check — runtime calls this each turn. Returns the first
     signal found from any sub-check. Priority: loop signals are emitted
     inline from record_tool_call, so here we focus on the standing-state
-    checks in order of specificity (revision_stall -> section_budget ->
-    session_budget).
+    checks in order of specificity (no_progress -> revision_stall ->
+    section_budget -> session_budget). no_progress runs first because it's
+    the one that catches "nothing is advancing" before any of the narrower
+    checks have a chance to trip.
     """
+    sig = check_no_progress(session_id)
+    if sig is not None:
+        return sig
     for check in (check_revision_stall, check_section_budget):
         sig = check(dossier_id, session_id)
         if sig is not None:
@@ -581,6 +657,95 @@ def mark_needs_input_resolved(session_id: str) -> None:
         st = _state(session_id)
         st.upsert_counts_since_resolve.clear()
         st.revision_stall_reported.clear()
+
+
+def record_turn_end(session_id: str, tool_names_this_turn: list[str]) -> None:
+    """Increment turns_since_progress, or reset if a progress tool fired.
+
+    Called once per agent turn after all tool dispatches for the turn are
+    complete. The counter feeds check_no_progress(). Idempotent for empty
+    lists (still increments — a turn with no tool calls is NOT progress).
+    """
+    tool_set = set(tool_names_this_turn)
+    with _STATE_LOCK:
+        st = _state(session_id)
+        if tool_set & _PROGRESS_TOOL_NAMES:
+            st.turns_since_progress = 0
+            st.no_progress_reported = False
+        else:
+            st.turns_since_progress += 1
+
+
+def check_no_progress(session_id: str) -> Optional[StuckSignal]:
+    """Fire a soft signal when the agent has gone too many turns without a
+    progress-tool call. Threshold reads from the ``progress_forcing_turns``
+    setting; 0 disables the check entirely.
+    """
+    # Lazy import — storage isn't available at module-import time because
+    # stuck.py is imported from runtime.py which imports storage itself.
+    try:
+        from vellum import storage as _storage
+        threshold = int(_storage.get_setting("progress_forcing_turns", 5) or 0)
+    except Exception:
+        threshold = 5
+    if threshold <= 0:
+        return None
+    signal: Optional[StuckSignal] = None
+    with _STATE_LOCK:
+        st = _state(session_id)
+        if st.turns_since_progress < threshold or st.no_progress_reported:
+            return None
+        st.no_progress_reported = True
+        count = st.turns_since_progress
+        detail = (
+            f"The last {count} turns have not produced a progress action "
+            f"(decision point, sub-investigation, artifact, theory update, "
+            f"needs_input, etc.). The investigation may be stuck refining "
+            f"without advancing."
+        )
+        summary = (
+            f"I've spent {count} turns editing sections / reading / logging "
+            f"without actually moving the investigation forward. A turn "
+            f"should reduce uncertainty, eliminate an option, request "
+            f"missing input, or update the working theory — I haven't done "
+            f"any of those in a while. Worth pausing to choose a direction."
+        )
+        options = [
+            {
+                "label": "Update the working theory with what you know",
+                "implications": (
+                    "Force a `update_working_theory` call that names the "
+                    "current belief and what would change it. This is the "
+                    "lowest-cost way to turn a stall into a concrete move."
+                ),
+                "recommended": True,
+            },
+            {
+                "label": "Spawn a focused sub-investigation",
+                "implications": (
+                    "Pick the single most load-bearing open question and "
+                    "spawn a scoped sub with it as its goal."
+                ),
+                "recommended": False,
+            },
+            {
+                "label": "Pause and ask the user for direction",
+                "implications": (
+                    "Surface a flag_decision_point with 2–3 concrete paths "
+                    "forward and let the user pick."
+                ),
+                "recommended": False,
+            },
+        ]
+        signal = StuckSignal(
+            kind="no_progress",
+            detail=detail,
+            summary_of_attempts=summary,
+            options_for_user=options,
+        )
+    if signal is not None:
+        return _assign_tier_and_emit(session_id, signal)
+    return signal
 
 
 def reset_session(session_id: str) -> None:
@@ -670,6 +835,32 @@ def _run_self_test() -> None:
 
     reset_session(sid)
     print("all stuck checks OK")
+
+    # Tier escalation: first signal -> tier=1, second -> 2, third -> 3.
+    reset_session(sid)
+    # Tier 1: trip any signal. Use the exact-args loop path (easy to fire).
+    sig1 = None
+    for _ in range(config.LOOP_DETECTION_THRESHOLD):
+        sig1 = record_tool_call(sid, "web_search", {"q": "tier1"})
+        if sig1 is not None:
+            break
+    assert sig1 is not None and sig1.tier == 1, f"expected tier 1, got {getattr(sig1, 'tier', None)}"
+
+    # Tier 2: trip another distinct signal.
+    sig2 = None
+    for _ in range(config.LOOP_DETECTION_THRESHOLD):
+        sig2 = record_tool_call(sid, "get_url", {"url": "https://x"})
+        if sig2 is not None:
+            break
+    assert sig2 is not None and sig2.tier == 2
+
+    # Tier 3+: trip a third signal; confirm recommended=True on first option.
+    record_input_tokens(sid, "sec_t3", config.SECTION_TOKEN_BUDGET + 1)
+    sig3 = check_section_budget(did, sid)
+    assert sig3 is not None and sig3.tier == 3
+    assert sig3.options_for_user[0]["recommended"] is True
+    assert all(o["recommended"] is False for o in sig3.options_for_user[1:])
+    print("tier escalation 1 -> 2 -> 3 OK")
 
 
 if __name__ == "__main__":

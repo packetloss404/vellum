@@ -82,7 +82,9 @@ export type ChangeKind =
   | "next_action_completed"
   | "next_action_removed"
   | "investigation_log_appended"
-  | "considered_and_rejected_added";
+  | "considered_and_rejected_added"
+  // Phase 2
+  | "working_theory_updated";
 
 export type IntakeMessageRole = "user" | "assistant";
 
@@ -116,6 +118,18 @@ export interface Dossier {
   // v2 additions (nullable — older dossiers may not have these populated)
   debrief?: Debrief | null;
   investigation_plan?: InvestigationPlan | null;
+  // Phase 2
+  working_theory?: WorkingTheory | null;
+}
+
+export type WorkingTheoryConfidence = "high" | "medium" | "low";
+
+export interface WorkingTheory {
+  recommendation: string;
+  confidence: WorkingTheoryConfidence;
+  why: string;
+  what_would_change_it: string;
+  updated_at: string;
 }
 
 export interface Section {
@@ -216,6 +230,18 @@ export interface ChangeLogEntry {
   created_at: string;
 }
 
+export interface SessionSummary {
+  session_id: string;
+  dossier_id: string;
+  summary: string; // 1–2 sentence narrative; empty on fallback rows
+  confirmed: string[];
+  ruled_out: string[];
+  blocked_on: string[];
+  recommended_next_action: string | null;
+  cost_usd: number;
+  created_at: string; // ISO
+}
+
 export interface DossierFull {
   dossier: Dossier;
   sections: Section[];
@@ -230,6 +256,8 @@ export interface DossierFull {
   investigation_log?: InvestigationLogEntry[];
   considered_and_rejected?: ConsideredAndRejected[];
   next_actions?: NextAction[];
+  // Phase 3 — per-session summaries written at end-of-turn.
+  session_summaries?: SessionSummary[];
 }
 
 // ---------- API request shapes (Pydantic *Create / *Update / etc.) ----------
@@ -412,18 +440,23 @@ export type SubInvestigation = {
   id: string;
   dossier_id: string;
   parent_section_id: string | null;
+  // Day-4 additions. Optional on the wire because older sub-investigation
+  // rows predate the migration — backend sends null, TS treats missing === null.
+  title?: string | null;             // short identifier; falls back to scope for display
   scope: string;
   questions: string[];
   state: SubInvestigationState;
   return_summary: string | null;
   findings_section_ids: string[];
   findings_artifact_ids: string[];
+  blocked_reason?: string | null;    // populated when state === "blocked"
   started_at: string;
   completed_at: string | null;
 };
 
 export type SubInvestigationSpawn = {
   scope: string;
+  title?: string | null;
   questions?: string[];
   parent_section_id?: string | null;
 };

@@ -251,6 +251,47 @@ def commit_intake(intake_id: str, args: dict[str, Any]) -> dict[str, Any]:
         dossier_storage.update_investigation_plan(dossier.id, patch)
         result["plan_seeded"] = True
         result["plan_item_count"] = len(items)
+        # Create the plan_approval decision_point inline, so the user can
+        # approve/redirect the moment they open the dossier — without
+        # needing to click Resume first to let the agent produce it.
+        # resolve_decision_point already sets wake_pending on any resolve,
+        # so approval wakes the agent through the same reactive path as
+        # any other decision. Shape matches what the agent itself would
+        # generate via flag_decision_point(kind="plan_approval").
+        approval_options = [
+            m.DecisionOption(
+                label="Approve",
+                implications=(
+                    "Approve the plan as drafted. The agent will start "
+                    "substantive investigation on its next wake."
+                ),
+                recommended=True,
+            ),
+            m.DecisionOption(
+                label="Redirect",
+                implications=(
+                    "Ask the agent to reframe before starting — useful if "
+                    "the plan is missing a key angle or assumes the wrong "
+                    "framing. The agent will re-draft the plan and surface "
+                    "a fresh approval."
+                ),
+                recommended=False,
+            ),
+        ]
+        dossier_storage.add_decision_point(
+            dossier.id,
+            m.DecisionPointCreate(
+                title="Approve investigation plan, or redirect?",
+                options=approval_options,
+                recommendation=(
+                    "Review the plan items above. Approve to unblock "
+                    "substantive work, or redirect if the framing is off."
+                ),
+                kind="plan_approval",
+            ),
+            work_session_id=None,
+        )
+        result["plan_approval_created"] = True
     return result
 
 

@@ -40,6 +40,7 @@ def _json_list(text: str) -> list:
 def _row_to_dossier(row: sqlite3.Row) -> m.Dossier:
     debrief_json = row["debrief"]
     plan_json = row["investigation_plan"]
+    theory_json = _row_get(row, "working_theory")
     return m.Dossier(
         id=row["id"],
         title=row["title"],
@@ -51,6 +52,9 @@ def _row_to_dossier(row: sqlite3.Row) -> m.Dossier:
         debrief=m.Debrief.model_validate_json(debrief_json) if debrief_json else None,
         investigation_plan=(
             m.InvestigationPlan.model_validate_json(plan_json) if plan_json else None
+        ),
+        working_theory=(
+            m.WorkingTheory.model_validate_json(theory_json) if theory_json else None
         ),
         last_visited_at=_dt(row["last_visited_at"]),
         created_at=_dt(row["created_at"]),
@@ -436,6 +440,7 @@ def get_dossier_full(dossier_id: str) -> Optional[m.DossierFull]:
         # aggregate payload bounded on hot dossiers.
         investigation_log=list_investigation_log(dossier_id, limit=500),
         considered_and_rejected=list_considered_and_rejected(dossier_id),
+        session_summaries=list_session_summaries_for_dossier(dossier_id),
     )
 
 
@@ -791,6 +796,25 @@ def resolve_decision_point(
             f"Decided '{row['title']}' → {chosen}",
         )
         _touch_dossier(conn, dossier_id)
+        # Reactive wake: same contract as resolve_needs_input — when the user
+        # decides, the scheduler picks it up on the next tick and resumes the
+        # agent. Without this hook, a plan_approval sits forever after the
+        # user clicks Approve. Sleep-mode-gated so a disabled-mode user still
+        # drives resumes manually.
+        sleep_mode_on = True
+        try:
+            setting = conn.execute(
+                "SELECT value_json FROM settings WHERE key = 'sleep_mode_enabled'"
+            ).fetchone()
+            if setting is not None:
+                sleep_mode_on = json.loads(setting["value_json"])
+        except Exception:
+            pass
+        if sleep_mode_on:
+            conn.execute(
+                "UPDATE dossiers SET wake_pending = 1, wake_reason = ? WHERE id = ?",
+                (m.WakeReason.decision_resolved.value, dossier_id),
+            )
         row = conn.execute("SELECT * FROM decision_points WHERE id = ?", (decision_id,)).fetchone()
     resolved = _row_to_decision_point(row)
     # Auto-approve plan if this is a plan_approval decision with an approving choice.
@@ -1102,6 +1126,95 @@ def update_debrief(
         note_parts = [k for k, v in patch.model_dump(exclude_none=True).items()]
         note = "Debrief updated: " + (", ".join(note_parts) if note_parts else "(no changes)")
         _log_change(conn, dossier_id, work_session_id, "debrief_updated", note)
+        _touch_dossier(conn, dossier_id)
+    return get_dossier(dossier_id)
+
+
+# ---------- WorkingTheory (phase 2) ----------
+
+
+def update_working_theory(
+    dossier_id: str,
+    patch: m.WorkingTheoryUpdate,
+    work_session_id: Optional[str] = None,
+) -> Optional[m.Dossier]:
+    """Partial-merge update with a required-fields gate on first write.
+
+    - If no prior theory exists on the dossier, patch MUST supply all four
+      fields (recommendation, confidence, why, what_would_change_it) —
+      there's no meaningful state to merge onto. We raise ValueError with a
+      list of missing fields so the tool layer can surface a clear message.
+    - If a prior theory exists, any field omitted retains its prior value.
+    - updated_at is always refreshed.
+    - Emits a ``working_theory_updated`` change_log entry. When
+      ``confidence`` changes specifically, an additional ``state_changed``
+      entry is also emitted so the plan-diff shows the transition prominently.
+    """
+    now = m.utc_now()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT working_theory FROM dossiers WHERE id = ?", (dossier_id,)
+        ).fetchone()
+        if not row:
+            return None
+        existing_raw = _row_get(row, "working_theory")
+        current: Optional[m.WorkingTheory] = (
+            m.WorkingTheory.model_validate_json(existing_raw)
+            if existing_raw else None
+        )
+        patch_data = patch.model_dump(exclude_none=True)
+        if current is None:
+            required = {"recommendation", "confidence", "why", "what_would_change_it"}
+            missing = sorted(required - set(patch_data.keys()))
+            if missing:
+                raise ValueError(
+                    "update_working_theory: first write must include all fields; "
+                    f"missing: {', '.join(missing)}"
+                )
+            merged = m.WorkingTheory(
+                recommendation=patch_data["recommendation"],
+                confidence=m.WorkingTheoryConfidence(patch_data["confidence"])
+                    if not isinstance(patch_data["confidence"], m.WorkingTheoryConfidence)
+                    else patch_data["confidence"],
+                why=patch_data["why"],
+                what_would_change_it=patch_data["what_would_change_it"],
+                updated_at=now,
+            )
+            old_confidence = None
+        else:
+            merged = current.model_copy(update={**patch_data, "updated_at": now})
+            old_confidence = current.confidence
+
+        conn.execute(
+            "UPDATE dossiers SET working_theory = ? WHERE id = ?",
+            (merged.model_dump_json(), dossier_id),
+        )
+
+        confidence_changed = (
+            old_confidence is not None and old_confidence != merged.confidence
+        )
+        changed_fields = list(patch_data.keys())
+        note_body = (
+            ", ".join(changed_fields) if changed_fields else "(no changes)"
+        )
+        if current is None:
+            note = (
+                f"Working theory drafted ({merged.confidence.value}): "
+                f"{merged.recommendation[:120]}"
+            )
+        else:
+            note = (
+                f"Working theory updated ({merged.confidence.value}): "
+                f"{note_body}"
+            )
+        _log_change(
+            conn, dossier_id, work_session_id, "working_theory_updated", note,
+        )
+        if confidence_changed:
+            _log_change(
+                conn, dossier_id, work_session_id, "state_changed",
+                f"working_theory: {old_confidence.value} → {merged.confidence.value}",
+            )
         _touch_dossier(conn, dossier_id)
     return get_dossier(dossier_id)
 
@@ -1512,12 +1625,14 @@ def _row_to_sub_investigation(row: sqlite3.Row) -> m.SubInvestigation:
         id=row["id"],
         dossier_id=row["dossier_id"],
         parent_section_id=row["parent_section_id"],
+        title=_row_get(row, "title"),
         scope=row["scope"],
         questions=_json_list(row["questions"]),
         state=m.SubInvestigationState(row["state"]),
         return_summary=row["return_summary"],
         findings_section_ids=_json_list(row["findings_section_ids"]),
         findings_artifact_ids=_json_list(row["findings_artifact_ids"]),
+        blocked_reason=_row_get(row, "blocked_reason"),
         started_at=_dt(row["started_at"]),
         completed_at=_dt(row["completed_at"]),
     )
@@ -1533,6 +1648,7 @@ def spawn_sub_investigation(
         id=m.new_id("sub"),
         dossier_id=dossier_id,
         parent_section_id=data.parent_section_id,
+        title=data.title,
         scope=data.scope,
         questions=data.questions,
         state=m.SubInvestigationState.running,
@@ -1541,15 +1657,17 @@ def spawn_sub_investigation(
     with connect() as conn:
         conn.execute(
             """
-            INSERT INTO sub_investigations (id, dossier_id, parent_section_id, scope, questions,
-                                            state, return_summary, findings_section_ids,
-                                            findings_artifact_ids, started_at, completed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO sub_investigations (id, dossier_id, parent_section_id, title, scope,
+                                            questions, state, return_summary,
+                                            findings_section_ids, findings_artifact_ids,
+                                            started_at, completed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 sub.id,
                 dossier_id,
                 sub.parent_section_id,
+                sub.title,
                 sub.scope,
                 json.dumps(sub.questions),
                 sub.state.value,
@@ -1560,9 +1678,13 @@ def spawn_sub_investigation(
                 None,
             ),
         )
+        # Change-log note prefers title when present; scope is the fallback
+        # so the plan-diff reads naturally ("Spawned sub-investigation:
+        # Verify debt ownership" vs. the longer scope sentence).
+        display = sub.title or sub.scope
         _log_change(
             conn, dossier_id, work_session_id, "sub_investigation_spawned",
-            f"Spawned sub-investigation: {sub.scope}",
+            f"Spawned sub-investigation: {display}",
         )
         _touch_dossier(conn, dossier_id)
     return sub
@@ -1604,13 +1726,23 @@ def update_sub_investigation_state(
         ).fetchone()
         if not existing:
             return None
-        conn.execute(
-            "UPDATE sub_investigations SET state = ? WHERE id = ?",
-            (patch.new_state.value, sub_id),
-        )
+        # When flipping to blocked, persist the reason; when leaving blocked,
+        # clear the field. Both paths go through the same UPDATE so state and
+        # reason stay consistent.
+        if patch.new_state == m.SubInvestigationState.blocked:
+            conn.execute(
+                "UPDATE sub_investigations SET state = ?, blocked_reason = ? WHERE id = ?",
+                (patch.new_state.value, patch.reason, sub_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE sub_investigations SET state = ?, blocked_reason = NULL WHERE id = ?",
+                (patch.new_state.value, sub_id),
+            )
+        display = _row_get(existing, "title") or existing["scope"]
         _log_change(
             conn, dossier_id, work_session_id, "state_changed",
-            f"sub-investigation '{existing['scope']}': "
+            f"sub-investigation '{display}': "
             f"{existing['state']} → {patch.new_state.value} ({patch.reason})",
         )
         _touch_dossier(conn, dossier_id)
@@ -2346,3 +2478,94 @@ def seed_default_settings(defaults: dict) -> None:
                 "INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)",
                 (key, json.dumps(value), _dt_str(m.utc_now())),
             )
+
+
+# ---------- Session summaries (Phase 3) ----------
+
+
+def save_session_summary(data: m.SessionSummary) -> m.SessionSummary:
+    """UPSERT on session_id. created_at on insert is preserved on conflict.
+
+    The happy path is a single INSERT: the agent calls summarize_session once
+    near end-of-session and this writes the row. The runtime fallback may
+    race against the agent call if a turn overruns; ON CONFLICT preserves
+    whichever reached storage first, with a best-effort update of narrative
+    fields so a real summary isn't clobbered by the empty fallback.
+    """
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO session_summaries
+                (session_id, dossier_id, summary, confirmed, ruled_out,
+                 blocked_on, recommended_next_action, cost_usd, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                summary = CASE
+                    WHEN excluded.summary != '' THEN excluded.summary
+                    ELSE session_summaries.summary
+                END,
+                confirmed = CASE
+                    WHEN excluded.confirmed != '[]' THEN excluded.confirmed
+                    ELSE session_summaries.confirmed
+                END,
+                ruled_out = CASE
+                    WHEN excluded.ruled_out != '[]' THEN excluded.ruled_out
+                    ELSE session_summaries.ruled_out
+                END,
+                blocked_on = CASE
+                    WHEN excluded.blocked_on != '[]' THEN excluded.blocked_on
+                    ELSE session_summaries.blocked_on
+                END,
+                recommended_next_action = COALESCE(
+                    excluded.recommended_next_action,
+                    session_summaries.recommended_next_action
+                ),
+                cost_usd = excluded.cost_usd
+            """,
+            (
+                data.session_id,
+                data.dossier_id,
+                data.summary,
+                json.dumps(data.confirmed),
+                json.dumps(data.ruled_out),
+                json.dumps(data.blocked_on),
+                data.recommended_next_action,
+                float(data.cost_usd),
+                _dt_str(data.created_at),
+            ),
+        )
+    return data
+
+
+def get_session_summary(session_id: str) -> Optional[m.SessionSummary]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM session_summaries WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+    return _row_to_session_summary(row) if row else None
+
+
+def list_session_summaries_for_dossier(dossier_id: str) -> list[m.SessionSummary]:
+    """All session summaries for a dossier, ordered by created_at ascending
+    (oldest first; the UI reverses for "most recent session at top")."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM session_summaries WHERE dossier_id = ? ORDER BY created_at",
+            (dossier_id,),
+        ).fetchall()
+    return [_row_to_session_summary(r) for r in rows]
+
+
+def _row_to_session_summary(row: sqlite3.Row) -> m.SessionSummary:
+    return m.SessionSummary(
+        session_id=row["session_id"],
+        dossier_id=row["dossier_id"],
+        summary=row["summary"] or "",
+        confirmed=_json_list(row["confirmed"]),
+        ruled_out=_json_list(row["ruled_out"]),
+        blocked_on=_json_list(row["blocked_on"]),
+        recommended_next_action=row["recommended_next_action"],
+        cost_usd=float(row["cost_usd"] or 0.0),
+        created_at=_dt(row["created_at"]),
+    )

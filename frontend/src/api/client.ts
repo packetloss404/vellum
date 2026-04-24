@@ -153,14 +153,25 @@ export const api = {
   resumeAgent: (dossierId: string) =>
     request<unknown>("POST", `/api/dossiers/${dossierId}/resume`),
 
-  // Returns { active_work_session_id: string | null, ... }. If the
-  // endpoint doesn't exist yet (404) the caller will receive an ApiError
-  // and must degrade gracefully.
+  // Returns the full resume-state payload. Legacy shape carried only
+  // active_work_session_id; day-3 sleep-mode added wake_at / wake_pending /
+  // wake_reason so the activity indicator can read the scheduler's view
+  // of the dossier without a second round-trip.
   getResumeState: (dossierId: string) =>
-    request<{ active_work_session_id: string | null }>(
-      "GET",
-      `/api/dossiers/${dossierId}/resume-state`,
-    ),
+    request<{
+      dossier_id: string;
+      has_plan: boolean;
+      plan_approved: boolean;
+      active_work_session_id: string | null;
+      last_session_ended_at: string | null;
+      last_visited_at: string | null;
+      open_needs_input_count: number;
+      open_decision_point_count: number;
+      delivered: boolean;
+      wake_at: string | null;
+      wake_pending: boolean;
+      wake_reason: string | null;
+    }>("GET", `/api/dossiers/${dossierId}/resume-state`),
 
   // ---------- v2: Artifacts ----------
   createArtifact: (

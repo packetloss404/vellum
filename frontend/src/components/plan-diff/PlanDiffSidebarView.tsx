@@ -1,5 +1,9 @@
 import { useMemo } from "react";
-import type { ChangeLogEntry, WorkSession } from "../../api/types";
+import type {
+  ChangeLogEntry,
+  SessionSummary,
+  WorkSession,
+} from "../../api/types";
 import { relativeTime } from "../../utils/time";
 import {
   ChangeEntry,
@@ -28,6 +32,9 @@ interface PlanDiffSidebarViewProps {
    *  visit" summary block at the top of the sidebar. Optional — if omitted
    *  the summary hides gracefully. */
   workSessions?: WorkSession[];
+  /** Per-session end-of-turn summaries keyed by session_id. Optional — if
+   *  omitted/empty the sessions block renders compact-only. */
+  summaries?: SessionSummary[];
   /** ISO of dossier.last_visited_at at the moment this sidebar took its
    *  snapshot. `null` means this is the user's first visit. `undefined`
    *  means "not known yet" (dossier still loading). */
@@ -43,6 +50,7 @@ const HEADER_LABEL = "Since your last visit";
 export function PlanDiffSidebarView({
   entries,
   workSessions,
+  summaries,
   lastVisitedAt,
   isLoading,
   error,
@@ -120,6 +128,7 @@ export function PlanDiffSidebarView({
               workSessions={workSessions}
               entries={entries}
               lastVisitedAt={lastVisitedAt}
+              summaries={summaries}
             />
           ) : null}
           {grouped.map((group) => (

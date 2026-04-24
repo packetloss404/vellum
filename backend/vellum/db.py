@@ -20,6 +20,11 @@ _REQUIRED_COLUMNS: list[tuple[str, str, str]] = [
     ("work_sessions", "output_tokens", "INTEGER NOT NULL DEFAULT 0"),
     ("work_sessions", "cost_usd", "REAL NOT NULL DEFAULT 0"),
     ("work_sessions", "end_reason", "TEXT"),
+    # Day-4 (phase 1): sub-investigation identity.
+    ("sub_investigations", "title", "TEXT"),
+    ("sub_investigations", "blocked_reason", "TEXT"),
+    # Day-4 (phase 2): working theory — JSON-encoded WorkingTheory model.
+    ("dossiers", "working_theory", "TEXT"),
 ]
 
 

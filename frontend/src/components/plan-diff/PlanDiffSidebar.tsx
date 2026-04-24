@@ -4,7 +4,7 @@ import {
   useVisitDossier,
 } from "../../api/hooks";
 import { PlanDiffSidebarView } from "./PlanDiffSidebarView";
-import type { WorkSession } from "../../api/types";
+import type { SessionSummary, WorkSession } from "../../api/types";
 
 /**
  * PlanDiffSidebar — sidebar shell.
@@ -40,11 +40,13 @@ export function PlanDiffSidebar({ dossierId }: PlanDiffSidebarProps) {
     (diff.isLoading && !diff.snapshotReady);
 
   const workSessions: WorkSession[] = dossier.data?.work_sessions ?? [];
+  const summaries: SessionSummary[] = dossier.data?.session_summaries ?? [];
 
   return (
     <PlanDiffSidebarView
       entries={diff.entries}
       workSessions={workSessions}
+      summaries={summaries}
       lastVisitedAt={lastVisitedAt}
       isLoading={isLoading}
       error={diff.error}

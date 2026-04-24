@@ -25,7 +25,7 @@ from typing import Any, Optional
 
 import anthropic
 
-from ..config import ANTHROPIC_API_KEY, MODEL
+from ..config import ANTHROPIC_API_KEY, INTAKE_MODEL
 from . import storage
 from .models import IntakeState, IntakeStatus, IntakeTurnResult
 
@@ -54,7 +54,10 @@ class IntakeAgent:
 
     def __init__(self, intake_id: str, model: Optional[str] = None) -> None:
         self.intake_id = intake_id
-        self.model = model or MODEL
+        # Intake defaults to INTAKE_MODEL (Sonnet 4.6) — a constrained
+        # conversational flow doesn't need Opus. Callers can still override
+        # per-session (useful for debug / quality comparison).
+        self.model = model or INTAKE_MODEL
         self._client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY or None)
 
     async def process_turn(self, user_message: str) -> IntakeTurnResult:
@@ -297,6 +300,6 @@ if __name__ == "__main__":
 
     agent = _rt.IntakeAgent(intake_id="fake")
     assert agent.intake_id == "fake"
-    assert agent.model  # falls back to config.MODEL
+    assert agent.model  # falls back to config.INTAKE_MODEL
     assert _Result is not None
-    print("intake runtime structural OK")
+    print(f"intake runtime structural OK (model={agent.model})")

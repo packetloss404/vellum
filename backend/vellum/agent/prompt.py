@@ -12,7 +12,7 @@ Two surfaces:
 from __future__ import annotations
 
 from datetime import timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:  # pragma: no cover - type hints only
     from .. import models as m
@@ -52,6 +52,43 @@ user must pick between framings.
 
 "I'll note that assumption" is not pushback. "I can't answer this until you tell me Y" is. Do \
 not paper over a bad frame by answering around it. Fluency and urgency are not calibration data.
+
+## Worked example: credit-card debt
+
+"What percentage should I open with?" is the classic mis-framed question. Before a negotiation \
+number has meaning, you need answers to these, in roughly this order — each is a \
+`flag_needs_input` (if only the user can answer) or a `spawn_sub_investigation` (if research can \
+resolve it):
+
+1. **Who currently owns the debt?** Original creditor, assigned to a collection agency, or sold \
+to a debt buyer? Ownership determines who you're negotiating with and what leverage exists.
+2. **Is there documentation proving that ownership?** Under FDCPA §1692g the collector has to \
+produce it on request. A collector who can't is negotiating from weakness.
+3. **What is the date of first delinquency?** The SOL clock starts here, not at the date of the \
+last statement. Needed for the SOL sub-investigation.
+4. **What is the relevant state or jurisdiction?** SOL, validation windows, and credit-reporting \
+caps vary by state. Without this, everything downstream is guesswork.
+5. **Is the statute of limitations expired?** If yes, the negotiation is about credit-report \
+impact and harassment risk, not legal exposure. If no, leverage is different.
+6. **Is the collector reporting to credit bureaus?** A reporting collector has different leverage \
+(and the user may want pay-for-delete language) than a non-reporting one.
+7. **What is the user actually trying to do — settle, validate, dispute, or negotiate deletion?** \
+These are four different playbooks with four different opening moves. "Settle" and "negotiate \
+deletion" can look identical on the surface and require very different artifacts.
+
+If any of 1–4 are unknown, a settlement percentage is premature. Surface the missing ones via \
+`flag_needs_input` or spawn the resolving `spawn_sub_investigation` items, and DO NOT produce a \
+number in the meantime.
+
+## Scope: investigation support, not legal advice
+
+You are a research and decision-preparation tool. You map the options, surface the considerations, \
+and draft the artifacts (verification letters, negotiation scripts, deletion-request language). \
+You do NOT give legal advice, and any artifact you produce should say so where the user might \
+conflate the two. When the user asks "what should I do," the answer is a structured set of \
+options with tradeoffs, not a directive. If the question actually requires a licensed \
+professional (contested litigation, bankruptcy strategy, tax consequences of settlement), say so \
+and do not substitute.
 
 # Plan before you dive in
 
@@ -125,6 +162,14 @@ Call it after substantial progress, before any check-in surface, and definitely 
 `mark_investigation_delivered`. Write it for someone scanning for thirty seconds: what was \
 found, what is drafted, what is still open, what you recommend they look at first.
 
+`update_working_theory` is a DIFFERENT surface: the "if you had to decide right now, here's what \
+I think" block the user reads first. Call it once you have even a tentative direction (right \
+after plan approval is typical) and REVISE it whenever evidence shifts — a sub returns with a \
+finding, a section flips state, the user answers a blocking question. It is fine — and often \
+correct — to drop confidence to `low` when evidence weakens. A stale `high` is worse than an \
+honest `low`. The theory is short: one-sentence recommendation, a confidence level, one \
+sentence on why, and one sentence on what would change it.
+
 # Quiet by default
 
 No status pings. No "I'm working on it." The dossier is a destination the user walks to, not a \
@@ -153,6 +198,16 @@ they answer, without any `schedule_wake` call needed. schedule_wake is for *time
 
 schedule_wake is non-terminating: emit it, then stop producing tool_uses so the turn ends \
 naturally. Do not mix schedule_wake with further substantive tool calls in the same turn.
+
+# Summarize before you sleep
+
+When you end a session — whether by `schedule_wake`, `mark_investigation_delivered`, \
+or just naturally ending a turn with no more tool uses — call `summarize_session` \
+FIRST. Lead with the verb: "Confirmed X, ruled out Y, blocked on Z." The user \
+scans this when they return; it is the primary "what happened while I was away" \
+surface. Skip only when the session did literally nothing (e.g. you hit a budget \
+cap on turn 1); otherwise the runtime writes an empty fallback row and the user \
+wonders what the cost was for.
 
 # Stuck — declare it
 
@@ -192,8 +247,10 @@ work into the main thread and call it thorough.
 - `update_debrief` — after meaningful progress, before you step away, before mark_delivered.
 - `set_next_action` — what you (or the user) should do next, always current.
 - `flag_needs_input` / `flag_decision_point` — only to surface real blocks.
+- `summarize_session` — your final tool call before the turn ends. Never skip.
 - `declare_stuck` — when the loop is the problem.
 - `schedule_wake` — when real-world time (not the user) is the blocker.
+- `update_working_theory` — your current belief, revised as evidence shifts.
 - `mark_investigation_delivered` — when `why_enough` is credible."""
 
 
@@ -302,6 +359,82 @@ def _age(created_at, now) -> str:
     return f"{secs // 86400}d"
 
 
+def _budget_pressure_block(now) -> Optional[str]:
+    """Render a 'Budget pressure' snapshot section only when near/past the cap.
+
+    Returns None when:
+      - settings / budget rollup are unreadable (best-effort, never raise)
+      - daily_cap_usd is 0 (user disabled caps)
+      - today's spend is below warn_fraction of the cap
+
+    When we DO render, the block tells the agent how to adapt: narrow scope,
+    summarize, or consider pausing. Budgets remain SOFT — we never demand a
+    mark_delivered; we recommend strategies so the agent plans accordingly.
+    """
+    try:
+        from .. import storage as _storage
+    except Exception:
+        return None
+    try:
+        cap = float(_storage.get_setting("budget_daily_soft_cap_usd", 0) or 0)
+        warn_fraction = float(_storage.get_setting("budget_daily_warn_fraction", 0.8) or 0.8)
+        session_cap = float(_storage.get_setting("budget_per_session_soft_cap_usd", 0) or 0)
+    except Exception:
+        return None
+    if cap <= 0:
+        return None
+    try:
+        roll = _storage.get_budget_today()
+    except Exception:
+        return None
+    spent = roll.spent_usd
+    warn_threshold = cap * warn_fraction
+    if spent < warn_threshold:
+        return None
+    crossed = spent >= cap
+    pct = (spent / cap * 100.0) if cap > 0 else 0.0
+
+    lines: list[str] = ["## Budget pressure"]
+    if crossed:
+        lines.append(
+            f"Today's spend ${spent:.2f} has crossed the soft cap of ${cap:.2f} ({pct:.0f}%)."
+        )
+        lines.append(
+            "Budgets are SOFT — nobody is terminating this run. But the cost-benefit has "
+            "changed: every additional turn needs to be clearly high-leverage. Adapt now:"
+        )
+        lines.append(
+            "  - STOP broad exploration. No new sub-investigations unless one is the only "
+            "path to a blocking answer."
+        )
+        lines.append(
+            "  - NARROW any in-flight research to the single question that would most "
+            "change the current working theory."
+        )
+        lines.append(
+            "  - Prefer `update_working_theory` + `update_debrief` + `set_next_action` over "
+            "new evidence-gathering. Summarize what you know over hunting for more."
+        )
+        lines.append(
+            "  - If marginal value looks low: surface a `flag_decision_point` asking the "
+            "user whether to continue, pause, or deliver with current best recommendation. "
+            "Do NOT silently keep spending as if nothing changed."
+        )
+    else:
+        lines.append(
+            f"Today's spend ${spent:.2f} is {pct:.0f}% of the ${cap:.2f} soft cap — "
+            f"inside the warn zone."
+        )
+        lines.append(
+            "No hard action yet, but start leaning conservative: prefer narrow, "
+            "high-signal moves over broad exploration. Revise the working theory when a "
+            "sub returns rather than spawning another parallel one."
+        )
+    if session_cap > 0:
+        lines.append(f"(per-session soft cap is ${session_cap:.2f}; check how much this session has spent.)")
+    return "\n".join(lines)
+
+
 def build_state_snapshot(dossier_full: "m.DossierFull") -> str:
     """Compact per-turn state block. Target ~500-1500 tokens."""
     from .. import models as m  # local import to avoid circularity at import time
@@ -312,6 +445,31 @@ def build_state_snapshot(dossier_full: "m.DossierFull") -> str:
     lines: list[str] = []
     lines.append(_SNAPSHOT_PREAMBLE)
     lines.append("")
+
+    # Budget pressure — only rendered when >= warn fraction, and only if a
+    # daily cap is configured. Placed near the top because it changes how the
+    # agent should plan the rest of its moves.
+    bp = _budget_pressure_block(now)
+    if bp is not None:
+        lines.append(bp)
+        lines.append("")
+
+    # Working theory — current belief, if any.
+    wt = d.working_theory
+    if wt is not None:
+        lines.append("## Current working theory")
+        lines.append(f"confidence: {wt.confidence.value}")
+        lines.append(f"recommendation: {_trunc(wt.recommendation, 200)}")
+        lines.append(f"why: {_trunc(wt.why, 200)}")
+        lines.append(f"what would change it: {_trunc(wt.what_would_change_it, 200)}")
+        lines.append(f"(updated {_age(wt.updated_at, now)} ago)")
+        lines.append("")
+    else:
+        lines.append("## Current working theory")
+        lines.append(
+            "(none yet — call `update_working_theory` once you have a tentative direction)"
+        )
+        lines.append("")
 
     # Plan approval status — the gate on substantive work.
     plan = d.investigation_plan

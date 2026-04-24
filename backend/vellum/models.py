@@ -109,6 +109,39 @@ class NextAction(BaseModel):
     created_at: datetime
 
 
+class WorkingTheoryConfidence(str, Enum):
+    high = "high"
+    medium = "medium"
+    low = "low"
+
+
+class WorkingTheory(BaseModel):
+    """Point-in-time executive summary of what the agent currently believes.
+
+    Distinct from Debrief (what I did / what I found — process narrative).
+    Distinct from sections (evidence and analysis). This is the "if you had
+    to decide right now, here's what I think" surface the user reads first
+    on return.
+    """
+    recommendation: str                   # concise belief or recommended next move
+    confidence: WorkingTheoryConfidence
+    why: str                              # why this is the current theory
+    what_would_change_it: str             # what evidence or event would shift it
+    updated_at: datetime
+
+
+class WorkingTheoryUpdate(BaseModel):
+    """Partial-merge update. Any field omitted leaves the prior value intact.
+
+    If any field is supplied on a dossier with no existing WorkingTheory,
+    all REQUIRED fields must be present — storage enforces this.
+    """
+    recommendation: Optional[str] = None
+    confidence: Optional[WorkingTheoryConfidence] = None
+    why: Optional[str] = None
+    what_would_change_it: Optional[str] = None
+
+
 class Dossier(BaseModel):
     id: str
     title: str
@@ -119,6 +152,7 @@ class Dossier(BaseModel):
     check_in_policy: CheckInPolicy = Field(default_factory=CheckInPolicy)
     debrief: Optional[Debrief] = None
     investigation_plan: Optional[InvestigationPlan] = None
+    working_theory: Optional[WorkingTheory] = None
     last_visited_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
@@ -275,6 +309,7 @@ ChangeKind = Literal[
     "sub_investigation_abandoned",
     "investigation_log_appended",
     "considered_and_rejected_added",
+    "working_theory_updated",
 ]
 
 
@@ -302,6 +337,7 @@ class DossierFull(BaseModel):
     sub_investigations: list["SubInvestigation"] = Field(default_factory=list)
     investigation_log: list["InvestigationLogEntry"] = Field(default_factory=list)
     considered_and_rejected: list["ConsideredAndRejected"] = Field(default_factory=list)
+    session_summaries: list["SessionSummary"] = Field(default_factory=list)
 
 
 # --- API request shapes ---
@@ -461,18 +497,21 @@ class SubInvestigation(BaseModel):
     id: str                               # prefix: "sub"
     dossier_id: str
     parent_section_id: Optional[str] = None    # optional link to a parent dossier section
+    title: Optional[str] = None           # short identifier ("Verify debt ownership"); scope is fallback
     scope: str                            # short scope statement
     questions: list[str] = Field(default_factory=list)
     state: SubInvestigationState = SubInvestigationState.running
     return_summary: Optional[str] = None  # populated on complete
     findings_section_ids: list[str] = Field(default_factory=list)  # sections produced by sub
     findings_artifact_ids: list[str] = Field(default_factory=list) # artifacts produced by sub
+    blocked_reason: Optional[str] = None  # populated when state flips to blocked
     started_at: datetime
     completed_at: Optional[datetime] = None
 
 
 class SubInvestigationSpawn(BaseModel):
     scope: str
+    title: Optional[str] = None           # short identifier for the UI — falls back to scope when absent
     questions: list[str] = Field(default_factory=list)
     parent_section_id: Optional[str] = None
 
@@ -556,6 +595,30 @@ class MarkDeliveredArgs(BaseModel):
     explicitly left open, what the next real action is.
     """
     why_enough: str
+
+
+# --- Phase 3: session summaries ---
+
+
+class SessionSummary(BaseModel):
+    session_id: str                                           # FK to work_sessions.id
+    dossier_id: str
+    summary: str = ""                                         # 1–2 sentence narrative
+    confirmed: list[str] = Field(default_factory=list)
+    ruled_out: list[str] = Field(default_factory=list)
+    blocked_on: list[str] = Field(default_factory=list)
+    recommended_next_action: Optional[str] = None
+    cost_usd: float = 0.0
+    created_at: datetime
+
+
+class SummarizeSessionArgs(BaseModel):
+    """Args for the `summarize_session` agent tool."""
+    summary: str
+    confirmed: list[str] = Field(default_factory=list)
+    ruled_out: list[str] = Field(default_factory=list)
+    blocked_on: list[str] = Field(default_factory=list)
+    recommended_next_action: Optional[str] = None
 
 
 # Resolve forward references for DossierFull.

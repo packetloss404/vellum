@@ -131,6 +131,11 @@ export const useAgentStatus = (dossierId: string) =>
     queryKey: ["dossier", dossierId, "agent-status"] as const,
     queryFn: () => api.agentStatus(dossierId),
     enabled: !!dossierId,
+    // Poll so the activity indicator goes live as soon as the scheduler
+    // picks up a wake. 3s is tight enough to feel responsive on the
+    // demo, loose enough not to spam the localhost backend.
+    refetchInterval: 3000,
+    staleTime: 0,
   });
 
 // ---------- dossier mutations ----------
@@ -284,6 +289,11 @@ export const useResumeState = (dossierId: string) =>
     queryFn: () => api.getResumeState(dossierId),
     enabled: !!dossierId,
     retry: false,
+    // Same rationale as useAgentStatus: the activity indicator reads
+    // wake_at / wake_pending from here, so the UI needs to reflect the
+    // scheduler's view within a few seconds of it changing.
+    refetchInterval: 3000,
+    staleTime: 0,
   });
 
 export function useResumeAgent() {

@@ -254,3 +254,22 @@ CREATE TABLE IF NOT EXISTS settings (
     value_json TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- Phase 3: per-session executive summary. One row per work_session at most.
+-- The agent authors summaries via the summarize_session tool (tool lives in
+-- tools/handlers.py — not your scope). Runtime fallback writes a minimal
+-- row on session end if the agent didn't call it (also not your scope).
+CREATE TABLE IF NOT EXISTS session_summaries (
+    session_id TEXT PRIMARY KEY,
+    dossier_id TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    confirmed TEXT NOT NULL DEFAULT '[]',
+    ruled_out TEXT NOT NULL DEFAULT '[]',
+    blocked_on TEXT NOT NULL DEFAULT '[]',
+    recommended_next_action TEXT,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES work_sessions(id) ON DELETE CASCADE,
+    FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_session_summaries_dossier ON session_summaries(dossier_id, created_at);

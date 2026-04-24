@@ -161,6 +161,34 @@ def update_debrief(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
     return {"debrief_id": getattr(debrief, "id", None)}
 
 
+def update_working_theory(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Update the dossier's current working theory.
+
+    Partial merge: any field omitted retains its prior value. First write
+    requires all four fields (enforced by storage). ``state_changed`` is
+    emitted to the plan-diff only when ``confidence`` actually changes.
+    """
+    session_id = _ensure_session(dossier_id)
+    try:
+        result = storage.update_working_theory(
+            dossier_id, m.WorkingTheoryUpdate(**args), session_id
+        )
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "reason": "missing_required_fields",
+            "message": str(exc),
+        }
+    if result is None or result.working_theory is None:
+        return {"ok": False, "reason": "dossier_not_found"}
+    theory = result.working_theory
+    return {
+        "ok": True,
+        "confidence": theory.confidence.value,
+        "updated_at": theory.updated_at.isoformat(),
+    }
+
+
 def add_artifact(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
     """Create a usable artifact (letter, script, table, etc.)."""
     session_id = _ensure_session(dossier_id)
@@ -355,6 +383,39 @@ def schedule_wake(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def summarize_session(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Agent-authored 'while you were away' executive summary for this session.
+
+    Call this as one of your FINAL tool calls before ending a session (e.g.
+    after mark_investigation_delivered, after schedule_wake, or just before
+    naturally ending a turn with no more tool_uses). The runtime writes a
+    minimal fallback row if you skip it, but the user loses the qualitative
+    narrative — call this when you can.
+    """
+    session_id = _ensure_session(dossier_id)
+    parsed = m.SummarizeSessionArgs(**args)
+    ws = storage.get_work_session(session_id)
+    cost = ws.cost_usd if ws is not None else 0.0
+    saved = storage.save_session_summary(
+        m.SessionSummary(
+            session_id=session_id,
+            dossier_id=dossier_id,
+            summary=parsed.summary,
+            confirmed=parsed.confirmed,
+            ruled_out=parsed.ruled_out,
+            blocked_on=parsed.blocked_on,
+            recommended_next_action=parsed.recommended_next_action,
+            cost_usd=cost,
+            created_at=m.utc_now(),
+        )
+    )
+    return {
+        "ok": True,
+        "session_id": saved.session_id,
+        "cost_usd": saved.cost_usd,
+    }
+
+
 def mark_investigation_delivered(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
     """Self-declare the investigation complete.
 
@@ -458,6 +519,7 @@ HANDLERS = {
     # v2
     "update_investigation_plan": update_investigation_plan,
     "update_debrief": update_debrief,
+    "update_working_theory": update_working_theory,
     "add_artifact": add_artifact,
     "update_artifact": update_artifact,
     "spawn_sub_investigation": spawn_sub_investigation,
@@ -468,6 +530,7 @@ HANDLERS = {
     "declare_stuck": declare_stuck,
     "schedule_wake": schedule_wake,
     "mark_investigation_delivered": mark_investigation_delivered,
+    "summarize_session": summarize_session,
 }
 
 
@@ -560,6 +623,22 @@ TOOL_DESCRIPTIONS = {
         "finding flips state, after the user answers a blocking question. Write for someone who "
         "has been away 18 hours and has 90 seconds."
     ),
+    "update_working_theory": (
+        "Maintain the dossier's 'if you had to decide right now, here's what I think' surface. "
+        "Distinct from update_debrief (process narrative) and upsert_section (evidence/analysis) "
+        "— working theory is the CURRENT BELIEF and its confidence, updated whenever evidence "
+        "shifts. First call must supply all four fields (recommendation, confidence, why, "
+        "what_would_change_it); subsequent calls can update any subset (partial merge). "
+        "recommendation: concise belief or recommended next move (1 sentence). "
+        "confidence: 'high' | 'medium' | 'low' — a confidence drop is informative; don't inflate. "
+        "why: one sentence on what supports this belief right now. "
+        "what_would_change_it: what evidence or event would move the theory — the user should be "
+        "able to read this and know what to provide next. "
+        "Call this early (after plan approval, once you have even a tentative direction) and "
+        "REVISE it whenever a sub returns, a section flips state, or the user answers a blocking "
+        "question. Stale working theories are worse than none — better to drop confidence to 'low' "
+        "than to keep a stale 'high'."
+    ),
     "add_artifact": (
         "Draft a usable object the user can copy, send, or run through: letter, script, "
         "comparison table, timeline, checklist, offer template. Content is markdown. "
@@ -632,6 +711,19 @@ TOOL_DESCRIPTIONS = {
         "next real action is. The user can re-open the dossier, but you should not call this "
         "speculatively — an under-baked delivery is the worst failure mode."
     ),
+    "summarize_session": (
+        "Write the 'while you were away' executive summary for THIS session, so the "
+        "user sees what happened in a form tighter than the change_log. Call this as "
+        "one of your final tool calls — after you've done the work, before you end the "
+        "turn or schedule_wake. If you skip this, the runtime writes a minimal "
+        "cost-only fallback row and the user loses the qualitative narrative. "
+        "summary: 1–2 sentences. Lead with the verb — 'Confirmed X, ruled out Y, "
+        "blocked on Z.' Not 'I worked on the investigation.' "
+        "confirmed / ruled_out / blocked_on: short bullets (one clause each, no prose). "
+        "recommended_next_action: optional, include only if the user should do something "
+        "specific before the next agent turn. "
+        "Call at most once per session — repeated calls update the same row."
+    ),
     "schedule_wake": (
         "Schedule your own next wake-up. Non-terminating: after this call, end the turn "
         "(stop producing tool_uses) — the runtime will pause you, and the scheduler will "
@@ -666,6 +758,7 @@ _INPUT_MODELS: dict[str, type] = {
     "mark_ruled_out": m.RuledOutCreate,
     "mark_investigation_delivered": m.MarkDeliveredArgs,
     "schedule_wake": m.ScheduleWakeArgs,
+    "summarize_session": m.SummarizeSessionArgs,
 }
 
 
@@ -678,6 +771,7 @@ def _maybe_add(name: str, attr: str) -> None:
 # v2 lazy-wire: only register if the model exists in this worktree.
 _maybe_add("update_investigation_plan", "InvestigationPlanUpdate")
 _maybe_add("update_debrief", "DebriefUpdate")
+_maybe_add("update_working_theory", "WorkingTheoryUpdate")
 _maybe_add("add_artifact", "ArtifactCreate")
 _maybe_add("spawn_sub_investigation", "SubInvestigationSpawn")
 _maybe_add("mark_considered_and_rejected", "ConsideredAndRejectedCreate")

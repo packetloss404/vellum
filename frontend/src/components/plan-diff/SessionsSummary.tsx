@@ -1,4 +1,9 @@
-import type { ChangeLogEntry, WorkSession, WorkSessionTrigger } from "../../api/types";
+import type {
+  ChangeLogEntry,
+  SessionSummary,
+  WorkSession,
+  WorkSessionTrigger,
+} from "../../api/types";
 import { relativeTime } from "../../utils/time";
 
 /**
@@ -11,12 +16,21 @@ import { relativeTime } from "../../utils/time";
  * Sessions shown: every WorkSession whose started_at falls after
  * lastVisitedAt, in ascending time order. If the user has never visited
  * before, all sessions appear.
+ *
+ * When a matching SessionSummary row exists for a session (keyed by
+ * session_id === work_session.id) and has a non-empty `summary`, we expand
+ * the session block with a short serif-prose summary plus bulleted lists
+ * for confirmed / ruled_out / blocked_on and an optional "Next" line.
+ * Sessions without a summary (or with an empty one — the runtime fallback
+ * row) fall back to the compact line-only view.
  */
 
 interface SessionsSummaryProps {
   workSessions: WorkSession[];
   entries: ChangeLogEntry[];
   lastVisitedAt?: string | null;
+  /** Optional — if omitted or empty, every session renders compact-only. */
+  summaries?: SessionSummary[];
 }
 
 const TRIGGER_LABEL: Record<WorkSessionTrigger, string> = {
@@ -45,10 +59,37 @@ function formatDuration(startIso: string, endIso?: string | null): string {
   return rem > 0 ? `${hours}h${rem}m` : `${hours}h`;
 }
 
+interface BulletListProps {
+  label: string;
+  items: string[];
+}
+
+function BulletList({ label, items }: BulletListProps) {
+  if (items.length === 0) return null;
+  return (
+    <div className="mt-1.5">
+      <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-ink-faint">
+        {label}
+      </div>
+      <ul className="list-none p-0 m-0 mt-0.5 space-y-0.5">
+        {items.map((item, i) => (
+          <li
+            key={i}
+            className="font-serif text-[12.5px] text-ink-muted leading-snug pl-3 relative before:content-['·'] before:absolute before:left-0 before:text-ink-faint"
+          >
+            {item}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function SessionsSummary({
   workSessions,
   entries,
   lastVisitedAt,
+  summaries,
 }: SessionsSummaryProps) {
   // Sessions to show: everything that started at or after lastVisitedAt.
   // A first-visit (lastVisitedAt === null) still collects the sessions,
@@ -74,6 +115,14 @@ export function SessionsSummary({
     );
   }
 
+  // Index summaries by session_id for O(1) lookup.
+  const summaryBySession = new Map<string, SessionSummary>();
+  if (summaries) {
+    for (const s of summaries) {
+      summaryBySession.set(s.session_id, s);
+    }
+  }
+
   const totalCost = relevant.reduce(
     (sum, ws) => sum + (ws.cost_usd ?? 0),
     0,
@@ -89,12 +138,20 @@ export function SessionsSummary({
           </span>
         ) : null}
       </h3>
-      <ol className="list-none p-0 m-0 space-y-2">
+      <ol className="list-none p-0 m-0 space-y-3">
         {relevant.map((ws) => {
           const count = entryCountsBySession.get(ws.id) ?? 0;
           const trigger = TRIGGER_LABEL[ws.trigger] ?? ws.trigger;
           const duration = formatDuration(ws.started_at, ws.ended_at);
           const isActive = !ws.ended_at;
+          const summary = summaryBySession.get(ws.id);
+          const hasExpansion =
+            summary !== undefined &&
+            (summary.summary.trim().length > 0 ||
+              summary.confirmed.length > 0 ||
+              summary.ruled_out.length > 0 ||
+              summary.blocked_on.length > 0 ||
+              !!summary.recommended_next_action);
           return (
             <li
               key={ws.id}
@@ -133,6 +190,28 @@ export function SessionsSummary({
                   {formatDollars(ws.cost_usd)}
                 </span>
               </div>
+              {hasExpansion && summary ? (
+                <div className="mt-1.5 pl-0">
+                  {summary.summary.trim().length > 0 ? (
+                    <p className="font-serif text-[13px] text-ink leading-snug">
+                      {summary.summary}
+                    </p>
+                  ) : null}
+                  <BulletList label="Confirmed" items={summary.confirmed} />
+                  <BulletList label="Ruled out" items={summary.ruled_out} />
+                  <BulletList label="Blocked on" items={summary.blocked_on} />
+                  {summary.recommended_next_action ? (
+                    <div className="mt-1.5">
+                      <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-ink-faint mr-1.5">
+                        Next
+                      </span>
+                      <span className="font-serif text-[12.5px] text-ink-muted leading-snug">
+                        {summary.recommended_next_action}
+                      </span>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </li>
           );
         })}

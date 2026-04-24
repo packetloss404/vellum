@@ -5,7 +5,9 @@ import { NeedsInputBlock } from "../components/needs-input/NeedsInputBlock";
 import { DecisionPointBlock } from "../components/decision-points/DecisionPointBlock";
 import { PlanApprovalBlock } from "../components/plan-approval/PlanApprovalBlock";
 import { DossierHero } from "../components/common/DossierHero";
+import { AgentActivityIndicator } from "../components/dossier/AgentActivityIndicator";
 import { DebriefBlock } from "../components/dossier/DebriefBlock";
+import { WorkingTheoryBlock } from "../components/dossier/WorkingTheoryBlock";
 import { PlanBlock } from "../components/dossier/PlanBlock";
 import { SectionList } from "../components/dossier/SectionList";
 import { SubInvestigationList } from "../components/dossier/SubInvestigationList";
@@ -194,16 +196,23 @@ export default function DossierPage() {
           <div className={showResume ? "pr-24" : undefined}>
             <DossierHero dossier={data} counts={logCounts.data} />
           </div>
-          {showResume ? (
-            <button
-              type="button"
-              onClick={() => resumeAgent.mutate(dossierId)}
-              disabled={resumeAgent.isPending}
-              className="absolute right-0 top-0 z-10 shrink-0 border border-rule-strong text-ink-muted hover:text-ink hover:border-accent px-3 py-1.5 font-sans text-xs rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed bg-surface"
-            >
-              {resumeAgent.isPending ? "Resuming…" : "Resume"}
-            </button>
-          ) : null}
+          <div className="absolute right-0 top-0 z-10 flex items-center gap-3">
+            <AgentActivityIndicator dossierId={dossierId} />
+            {showResume ? (
+              <button
+                type="button"
+                onClick={() => resumeAgent.mutate(dossierId)}
+                disabled={resumeAgent.isPending}
+                className="shrink-0 border border-rule-strong text-ink-muted hover:text-ink hover:border-accent px-3 py-1.5 font-sans text-xs rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed bg-surface"
+              >
+                {resumeAgent.isPending ? "Resuming…" : "Resume"}
+              </button>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="mt-8">
+          <WorkingTheoryBlock theory={dossier.working_theory} />
         </div>
 
         <div className="mt-10">

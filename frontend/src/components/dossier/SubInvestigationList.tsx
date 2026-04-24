@@ -134,9 +134,16 @@ function SubCard({
   const artifactById = new Map(artifacts.map((a) => [a.id, a]));
 
   const abandoned = sub.state === "abandoned";
-  const scopeClass = abandoned
+  const blocked = sub.state === "blocked";
+  const hasTitle = !!sub.title && sub.title.trim().length > 0;
+  // When a title is present, it becomes the card heading and the scope
+  // demotes to a subtitle. Without a title, scope keeps the heading role
+  // (matches legacy sub-investigations pre-title).
+  const headingClass = abandoned
     ? "font-serif text-lg text-ink-muted leading-snug line-through break-words"
     : "font-serif text-lg text-ink leading-snug break-words";
+  const subtitleClass =
+    "font-serif text-sm text-ink-muted leading-snug break-words italic";
 
   const chevron = expanded ? "▾" : "▸";
 
@@ -145,7 +152,7 @@ function SubCard({
       id={`sub-${sub.id}`}
       className="scroll-mt-24 border border-rule rounded bg-surface p-5 first:mt-0"
     >
-      {/* Header row: pip+state | scope | count+chevron */}
+      {/* Header row: pip+state | title/scope | count+chevron */}
       <button
         type="button"
         onClick={() => setExpanded((e) => !e)}
@@ -157,7 +164,19 @@ function SubCard({
             <div className="flex items-center gap-3 mb-1">
               <StatePip state={sub.state} />
             </div>
-            <div className={scopeClass}>{sub.scope}</div>
+            {hasTitle ? (
+              <>
+                <div className={headingClass}>{sub.title}</div>
+                <div className={`mt-1 ${subtitleClass}`}>{sub.scope}</div>
+              </>
+            ) : (
+              <div className={headingClass}>{sub.scope}</div>
+            )}
+            {blocked && sub.blocked_reason ? (
+              <div className="mt-2 font-mono text-xs text-state-blocked leading-snug">
+                blocked: {sub.blocked_reason}
+              </div>
+            ) : null}
           </div>
           <div className="shrink-0 flex items-center gap-3">
             <div className="text-right font-mono text-xs text-ink-faint leading-tight">

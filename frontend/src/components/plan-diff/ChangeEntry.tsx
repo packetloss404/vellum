@@ -50,6 +50,7 @@ export const CATEGORY_OF_KIND: Record<ChangeKind, PlanDiffCategory> = {
   // Plan & debrief
   debrief_updated: "plan_and_debrief",
   plan_updated: "plan_and_debrief",
+  working_theory_updated: "plan_and_debrief",
   // Sections
   section_created: "sections",
   section_updated: "sections",
@@ -179,6 +180,7 @@ const KIND_MAP: Record<ChangeKind, KindPresentation> = {
   // ---- Plan & debrief
   debrief_updated: { label: "Debrief", glyph: "§", accent: "neutral" },
   plan_updated: { label: "Plan", glyph: "§", accent: "neutral" },
+  working_theory_updated: { label: "Working theory", glyph: "◎", accent: "amber" },
 
   // ---- Housekeeping
   next_action_added: {
@@ -224,20 +226,45 @@ function truncate(text: string, max = MAX_NOTE_LENGTH): string {
   return text.slice(0, max - 1).trimEnd() + "…";
 }
 
-function parseStateTransition(
-  note: string,
-): { from: string; to: string } | null {
+/**
+ * Parse a state-change note into its constituent parts.
+ *
+ * Accepts:
+ *   "from → to"                                 → { label: null, from, to }
+ *   "label: from → to"                          → { label, from, to }
+ *
+ * The label form was added for working-theory confidence drift
+ * ("working_theory: medium → high") and also matches the sub-investigation
+ * flavour ("sub-investigation 'X': running → blocked (reason)"), so the
+ * tone regexes below get a clean `from`/`to` to classify.
+ */
+function parseStateTransition(note: string): {
+  label: string | null;
+  from: string;
+  to: string;
+} | null {
   const match = note.match(/^\s*(.+?)\s*(?:→|->)\s*(.+?)\s*$/);
   if (!match) return null;
-  return { from: match[1], to: match[2] };
+  let from = match[1];
+  let label: string | null = null;
+  // Split off a leading "<label>: " prefix, but only if it looks like a
+  // real label — a single colon-separated tag rather than a sentence that
+  // happens to include a colon. We require the label side not to contain
+  // a space-before-colon and the remainder to be non-empty.
+  const labelMatch = from.match(/^(.+?):\s+(.+)$/);
+  if (labelMatch) {
+    label = labelMatch[1].trim();
+    from = labelMatch[2].trim();
+  }
+  return { label, from, to: match[2] };
 }
 
 function stateToneClass(state: string): string {
   const s = state.toLowerCase();
-  if (/(confident|done|complete|ready|resolved)/.test(s))
+  if (/(confident|done|complete|ready|resolved|high)/.test(s))
     return "text-state-confident";
-  if (/(blocked|stuck|failed)/.test(s)) return "text-state-blocked";
-  if (/(provisional|draft|pending|wip)/.test(s))
+  if (/(blocked|stuck|failed|low)/.test(s)) return "text-state-blocked";
+  if (/(provisional|draft|pending|wip|medium)/.test(s))
     return "text-state-provisional";
   return "text-ink-muted";
 }
@@ -248,7 +275,12 @@ function StateChangeBody({ note }: { note: string }) {
     return <span>{truncate(note)}</span>;
   }
   return (
-    <span className="inline-flex items-baseline gap-1.5">
+    <span className="inline-flex items-baseline gap-1.5 flex-wrap">
+      {transition.label ? (
+        <span className="font-mono text-[11px] text-ink-faint">
+          {truncate(transition.label, 40)}
+        </span>
+      ) : null}
       <span className={`font-mono text-xs ${stateToneClass(transition.from)}`}>
         {truncate(transition.from, 40)}
       </span>

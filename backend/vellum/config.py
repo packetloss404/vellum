@@ -30,6 +30,15 @@ DB_PATH = _resolve_db_path()
 MODEL = os.getenv("VELLUM_MODEL", "claude-opus-4-7")
 MODEL_ALT = os.getenv("VELLUM_MODEL_ALT", "claude-sonnet-4-6")
 
+# Per-workload model routing.
+# INTAKE_MODEL: intake is a constrained conversational flow, not deep
+#   investigation — Sonnet 4.6 delivers the same quality at ~40% of Opus cost.
+# SUMMARY_MODEL: reserved for the Phase-3 `summarize_session` tool. Structured
+#   synthesis on known data; Haiku 4.5 is enough. Reads applied at the call
+#   site when that tool lands.
+INTAKE_MODEL = os.getenv("VELLUM_INTAKE_MODEL", "claude-sonnet-4-6")
+SUMMARY_MODEL = os.getenv("VELLUM_SUMMARY_MODEL", "claude-haiku-4-5")
+
 SECTION_TOKEN_BUDGET = int(os.getenv("VELLUM_SECTION_TOKEN_BUDGET", "30000"))
 LOOP_DETECTION_THRESHOLD = int(os.getenv("VELLUM_LOOP_DETECTION_THRESHOLD", "3"))
 
@@ -67,12 +76,11 @@ SCHEDULER_POLL_SECONDS = int(os.getenv("VELLUM_SCHEDULER_POLL_SECONDS", "30"))
 # mid-thought. Verify pricing from https://www.anthropic.com/pricing before
 # trusting the dollar column in any surfaced decision point.
 MODEL_PRICING_USD_PER_MTOK: dict[str, dict[str, float]] = {
-    # Verified from web search 2026-04-23: Opus 4.7 pricing unchanged from 4.6.
+    # Verified from platform.claude.com/docs/en/about-claude/pricing 2026-04-23.
+    # Opus 4.7 pricing unchanged from 4.6.
     "claude-opus-4-7": {"input": 5.0, "output": 25.0},
-    # Sonnet 4.6 — placeholder pricing (verify from pricing page before
-    # trusting any dollar figures derived from it); listed so the toggle
-    # doesn't crash the budget guard.
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
+    "claude-haiku-4-5": {"input": 1.0, "output": 5.0},
 }
 
 
@@ -112,4 +120,8 @@ DEFAULT_SETTINGS: dict[str, object] = {
     # Maximum hours the agent can schedule itself forward in a single
     # schedule_wake call. Guardrail against "wake me in 90 days" drift.
     "schedule_wake_max_hours": 72.0,
+    # Progress-forcing: surface a no_progress stuck signal when the agent
+    # has gone this many turns without calling any "progress" tool (list
+    # is in stuck._PROGRESS_TOOL_NAMES). 0 disables the check entirely.
+    "progress_forcing_turns": 5,
 }

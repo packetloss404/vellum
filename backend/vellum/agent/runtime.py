@@ -232,6 +232,12 @@ class DossierAgent:
                 if tool_results:
                     state.messages.append({"role": "user", "content": tool_results})
 
+                # Progress-forcing: record which tools fired this turn so
+                # the no_progress counter either resets (a progress-tool
+                # fired) or increments (only refinement-grade tools).
+                tool_names_this_turn = [tu.name for tu in tool_uses]
+                stuck_mod.record_turn_end(session_id, tool_names_this_turn)
+
                 if delivered:
                     return RunResult(
                         reason="delivered",
@@ -239,8 +245,8 @@ class DossierAgent:
                         session_id=session_id,
                     )
 
-                # Post-turn budget / revision-stall check, independent of
-                # record_tool_call's per-call looping check.
+                # Post-turn budget / revision-stall / no-progress check,
+                # independent of record_tool_call's per-call looping check.
                 if stuck_signal is None:
                     stuck_signal = stuck_mod.check_stuck_state(
                         self.dossier_id, session_id
@@ -280,6 +286,26 @@ class DossierAgent:
                 error=f"{type(exc).__name__}: {exc}",
             )
         finally:
+            # Phase 3 fallback: if the agent didn't call summarize_session,
+            # write a minimal row so every session has something for the UI
+            # to render. save_session_summary's UPSERT preserves real content
+            # on conflict, so a real summary written mid-run won't be
+            # clobbered by the empty fallback here.
+            try:
+                ws = storage.get_work_session(session_id)
+                if ws is not None:
+                    storage.save_session_summary(
+                        m.SessionSummary(
+                            session_id=session_id,
+                            dossier_id=self.dossier_id,
+                            summary="",
+                            cost_usd=ws.cost_usd,
+                            created_at=m.utc_now(),
+                        )
+                    )
+            except Exception:
+                # Fallback is best-effort — do not mask end_work_session.
+                pass
             storage.end_work_session(session_id)
             try:
                 stuck_mod.reset_session(session_id)
@@ -459,17 +485,45 @@ class DossierAgent:
             pass
 
     def _surface_stuck(self, signal: Any) -> None:
-        """Convert a StuckSignal into a check_stuck tool invocation.
+        """Convert a StuckSignal into the tier-appropriate user surface.
+
+        Phase 3 part C tier policy:
+          * Tier 1 — heads-up only. Append a ``stuck_L1``-tagged reasoning
+            note so the agent sees it on the next state snapshot and is
+            expected to narrow + continue. NO decision_point surfaced.
+          * Tier 2 — standard check_stuck decision_point (prior behavior).
+          * Tier 3+ — check_stuck decision_point with the first option
+            already flagged ``recommended=True`` by
+            stuck._assign_tier_and_emit.
 
         The stuck signal originated in the runtime, not the model, but the
-        user-facing surface still needs to be a decision_point — so we
-        route through the same handler the model would have called.
+        user-facing surface (tiers 2/3) still routes through the same
+        check_stuck handler the model would have called.
         """
+        tier = int(getattr(signal, "tier", 2) or 2)
         summary = (
             getattr(signal, "summary_of_attempts", None)
             or getattr(signal, "detail", None)
             or "Agent detected a stuck pattern."
         )
+        if tier == 1:
+            # Heads-up only — no decision_point. Agent reads the note on the
+            # next turn's state snapshot and is expected to narrow + continue.
+            try:
+                handlers.HANDLERS["append_reasoning"](
+                    self.dossier_id,
+                    {
+                        "note": f"[stuck_L1] {summary}",
+                        "tags": ["stuck", "stuck_L1"],
+                    },
+                )
+            except Exception:  # noqa: BLE001 — a failed L1 note must not mask the signal
+                pass
+            return
+
+        # Tier 2 and 3: surface a decision_point via the existing handler.
+        # Tier-3 options already had recommended=True forced by
+        # stuck._assign_tier_and_emit.
         options = getattr(signal, "options_for_user", None) or [
             {"label": "Let the agent keep going", "implications": "", "recommended": False},
             {"label": "Pause for your direction", "implications": "", "recommended": True},
