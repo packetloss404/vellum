@@ -671,7 +671,12 @@ TOOL_DESCRIPTIONS = {
         "true, 'rationale': 'Jurisdiction-specific, worth dedicated dig'}, {'question': 'Draft "
         "a §1692g letter', 'becomes_sub_investigation': false}]. "
         "Set approve=true to self-approve only when the user has given you a clear go-ahead; "
-        "otherwise leave false and surface the plan via flag_decision_point(kind='plan_approval')."
+        "otherwise leave false and surface the plan via flag_decision_point(kind='plan_approval'). "
+        "If the plan is already approved, a MINOR revision (adding items, tweaking rationale / "
+        "expected_sources / as_sub_investigation) preserves the user's approval — no re-gate. "
+        "A MAJOR revision (removing items, rewriting an existing item's question) unapproves the "
+        "plan and will surface a fresh plan_approval decision_point. Revise freely for continuous "
+        "refinement; only reshape the plan if the investigation genuinely pivoted."
     ),
     "update_debrief": (
         "Rewrite the top-of-dossier 2-minute read: what you did, what you found, what the user "

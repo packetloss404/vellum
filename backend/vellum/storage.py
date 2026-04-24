@@ -1404,6 +1404,27 @@ def update_premise_challenge(
 # ---------- InvestigationPlan ----------
 
 
+def _plan_revision_is_minor(
+    current: m.InvestigationPlan, new_items: list[m.InvestigationPlanItem]
+) -> tuple[bool, str]:
+    """Returns (is_minor, diff_summary). Minor = no items removed and no
+    existing question text edited. Adding new items is fine."""
+    prior_by_id = {it.id: it for it in current.items}
+    new_by_id = {it.id: it for it in new_items}
+    removed = [iid for iid in prior_by_id if iid not in new_by_id]
+    edited_questions: list[str] = []
+    for iid, prior in prior_by_id.items():
+        cur = new_by_id.get(iid)
+        if cur is None:
+            continue
+        if (prior.question or "").strip() != (cur.question or "").strip():
+            edited_questions.append(iid)
+    added = [iid for iid in new_by_id if iid not in prior_by_id]
+    if removed or edited_questions:
+        return False, f"removed={len(removed)} edited_questions={len(edited_questions)} added={len(added)}"
+    return True, f"added={len(added)}"
+
+
 def update_investigation_plan(
     dossier_id: str,
     data: m.InvestigationPlanUpdate,
@@ -1411,7 +1432,16 @@ def update_investigation_plan(
 ) -> Optional[m.Dossier]:
     """Replace items + rationale. Sets revised_at + increments revision_count if
     plan exists; sets drafted_at if new. Sets approved_at to now if approve=True
-    and approved_at is None. Logs ``plan_updated``."""
+    and approved_at is None.
+
+    Minor-revision preservation: if the prior plan was already approved and the
+    revision is minor (no items removed, no existing question text edited —
+    i.e. continuous refinement like adding items or tweaking rationale /
+    expected_sources / as_sub_investigation / status), approved_at is
+    preserved so Ian doesn't have to re-click Approve. A major revision
+    (item removed, or an existing question's text rewritten) unapproves the
+    plan so the next plan_approval DP re-gates. Logs ``plan_updated`` with a
+    diff-aware note."""
     now = m.utc_now()
     with connect() as conn:
         row = conn.execute(
@@ -1420,13 +1450,24 @@ def update_investigation_plan(
         if not row:
             return None
         existing_json = row["investigation_plan"]
+        current: Optional[m.InvestigationPlan] = None
+        minor: bool = False
+        diff: str = ""
         if existing_json:
             current = m.InvestigationPlan.model_validate_json(existing_json)
+            minor, diff = _plan_revision_is_minor(current, data.items)
+            # Pre-approved plan + minor revision → preserve approved_at
+            # (continuous refinement, no re-gate). Pre-approved plan + major
+            # revision → unapprove (pivot re-gates). Unapproved plan stays
+            # unapproved here; data.approve=True below can still stamp it.
+            preserved_approved_at = (
+                current.approved_at if (current.approved_at is None or minor) else None
+            )
             new_plan = m.InvestigationPlan(
                 items=data.items,
                 rationale=data.rationale,
                 drafted_at=current.drafted_at,
-                approved_at=current.approved_at,
+                approved_at=preserved_approved_at,
                 revised_at=now,
                 revision_count=current.revision_count + 1,
             )
@@ -1445,10 +1486,15 @@ def update_investigation_plan(
             "UPDATE dossiers SET investigation_plan = ? WHERE id = ?",
             (new_plan.model_dump_json(), dossier_id),
         )
-        if existing_json:
-            note = f"Plan revised (rev {new_plan.revision_count}, {len(new_plan.items)} items)"
-        else:
+        if current is None:
             note = f"Plan drafted ({len(new_plan.items)} items)"
+        elif current.approved_at is not None:
+            if minor:
+                note = f"Plan revised (minor, approval preserved): {diff}"
+            else:
+                note = f"Plan revised (pivot — re-gated for approval): {diff}"
+        else:
+            note = f"Plan revised (rev {new_plan.revision_count}, {len(new_plan.items)} items)"
         if data.approve:
             note += " — approved"
         _log_change(conn, dossier_id, work_session_id, "plan_updated", note)

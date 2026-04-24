@@ -184,6 +184,13 @@ class DossierAgent:
                 tool_results: list[dict[str, Any]] = []
                 stuck_signal = None
                 delivered = False
+                # Per-turn single-needs_input enforcement. The prompt tells
+                # the agent to batch, but it sometimes fires two in one turn
+                # anyway — each would render as a separate click for the
+                # user. Track the first call; short-circuit any subsequent
+                # ones with a soft-reject tool_result so the agent combines
+                # on the next turn. Resets each iteration of this while-loop.
+                needs_input_in_turn: bool = False
 
                 for tu in tool_uses:
                     tool_name = tu.name
@@ -193,6 +200,32 @@ class DossierAgent:
                     # response.content. Skip client-side dispatch for it.
                     if tool_name == "web_search":
                         continue
+
+                    if tool_name == "flag_needs_input":
+                        if needs_input_in_turn:
+                            # Second+ needs_input in the same turn. Don't
+                            # dispatch — return a soft reject so the agent
+                            # combines the question into the first one.
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": tu.id,
+                                "content": json.dumps({
+                                    "ok": False,
+                                    "reason": "one_needs_input_per_turn",
+                                    "message": (
+                                        "You already called flag_needs_input "
+                                        "this turn. Combine your additional "
+                                        "question into that first needs_input's "
+                                        "`question` field (one batched ask), or "
+                                        "hold it for a later turn. The user sees "
+                                        "each needs_input as a separate click — "
+                                        "batching them is kinder."
+                                    ),
+                                }),
+                                "is_error": True,
+                            })
+                            continue
+                        needs_input_in_turn = True
 
                     result_block = await self._dispatch_client_tool(
                         tool_name, tool_input, tu.id
@@ -528,6 +561,41 @@ class DossierAgent:
                 pass
             return
 
+        if tier == 2:
+            try:
+                trust_mode = bool(storage.get_setting("trust_mode_enabled", False))
+            except Exception:
+                trust_mode = False
+            if trust_mode:
+                # Trust mode is on and this is a tier-2 stall. Pick the
+                # recommended option (or the first one if nothing's explicitly
+                # marked recommended) and continue. Note it on the trail so the
+                # user can audit what we chose for them.
+                options = getattr(signal, "options_for_user", None) or []
+                chosen = next(
+                    (o for o in options if isinstance(o, dict) and o.get("recommended")),
+                    None,
+                )
+                if chosen is None and options:
+                    chosen = options[0]
+                chosen_label = (
+                    chosen.get("label") if isinstance(chosen, dict) else None
+                ) or "(no option)"
+                try:
+                    handlers.HANDLERS["append_reasoning"](
+                        self.dossier_id,
+                        {
+                            "note": (
+                                f"[trust_mode:auto] Tier 2 stuck — took "
+                                f"recommended path: {chosen_label}. Summary: {summary}"
+                            ),
+                            "tags": ["stuck", "stuck_auto_dismissed", "trust_mode"],
+                        },
+                    )
+                except Exception:
+                    pass
+                return
+
         # Tier 2 and 3: surface a decision_point via the existing handler.
         # Tier-3 options already had recommended=True forced by
         # stuck._assign_tier_and_emit.
@@ -624,6 +692,8 @@ def _handler_result_ok(result_block: dict[str, Any]) -> bool:
 if __name__ == "__main__":
     # Structural smoke test: construct the agent and confirm RunResult is
     # importable. Running .run() requires a live API key + real dossier.
+    import inspect as _inspect
+
     from vellum.agent import runtime as _rt
 
     agent = _rt.DossierAgent(dossier_id="fake_id_wont_exist")
@@ -632,4 +702,20 @@ if __name__ == "__main__":
     assert _rt.RunResult is not None
     assert any(t.get("name") == "upsert_section" for t in agent._tools)
     assert any(t.get("name") == "web_search" for t in agent._tools)
+
+    # Per-turn one-needs_input enforcement: the tracker must exist in run()
+    # and the reject payload must carry the documented shape. Running the
+    # full loop requires a live Anthropic call, so we verify structurally.
+    run_src = _inspect.getsource(_rt.DossierAgent.run)
+    assert "needs_input_in_turn" in run_src, (
+        "runtime.run() missing per-turn needs_input tracker"
+    )
+    assert "one_needs_input_per_turn" in run_src, (
+        "runtime.run() missing soft-reject reason code"
+    )
+    # Tracker must be declared inside the turn loop so it resets per-turn,
+    # not at function scope. Simplest check: it appears AFTER the while.
+    assert run_src.index("while state.turns") < run_src.index(
+        "needs_input_in_turn: bool = False"
+    ), "tracker must reset inside the per-turn while loop"
     print("structural OK")

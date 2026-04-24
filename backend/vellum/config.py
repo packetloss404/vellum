@@ -124,4 +124,9 @@ DEFAULT_SETTINGS: dict[str, object] = {
     # has gone this many turns without calling any "progress" tool (list
     # is in stuck._PROGRESS_TOOL_NAMES). 0 disables the check entirely.
     "progress_forcing_turns": 5,
+    # Trust mode: when True, tier-2 stuck decision_points are auto-dismissed
+    # (the agent takes the recommended/first option and continues with a
+    # reasoning_trail note instead of surfacing a DP). Tier 3+ still
+    # surfaces. Plan approval gates are NEVER skipped by trust mode.
+    "trust_mode_enabled": False,
 }

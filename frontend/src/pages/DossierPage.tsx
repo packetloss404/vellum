@@ -5,6 +5,7 @@ import { NeedsInputBlock } from "../components/needs-input/NeedsInputBlock";
 import { DecisionPointBlock } from "../components/decision-points/DecisionPointBlock";
 import { PlanApprovalBlock } from "../components/plan-approval/PlanApprovalBlock";
 import { DossierHero } from "../components/common/DossierHero";
+import { OpenApprovalsStrip } from "../components/dossier/OpenApprovalsStrip";
 import { AgentActivityIndicator } from "../components/dossier/AgentActivityIndicator";
 import { DebriefBlock } from "../components/dossier/DebriefBlock";
 import { PremiseChallengeBlock } from "../components/dossier/PremiseChallengeBlock";
@@ -212,6 +213,13 @@ export default function DossierPage() {
           </div>
         </div>
 
+        <div className="mt-6">
+          <OpenApprovalsStrip
+            needsInput={needs_input ?? []}
+            decisionPoints={decision_points ?? []}
+          />
+        </div>
+
         <div className="mt-8">
           <PremiseChallengeBlock challenge={dossier.premise_challenge} />
         </div>
@@ -233,17 +241,23 @@ export default function DossierPage() {
           {/* Plan — the agent's investigation plan. PlanApprovalBlock
               renders inline directly after, only when there's an
               unapproved plan. */}
-          <PlanBlock plan={dossier.investigation_plan} />
-          <PlanApprovalBlock dossier={data} />
+          <div id="plan" className="scroll-mt-6">
+            <PlanBlock plan={dossier.investigation_plan} />
+            <PlanApprovalBlock dossier={data} />
+          </div>
 
           {/* NEEDS YOU — open needs_input items. */}
-          <NeedsInputBlock items={needs_input ?? []} dossierId={dossierId} />
+          <div id="needs-input" className="scroll-mt-6">
+            <NeedsInputBlock items={needs_input ?? []} dossierId={dossierId} />
+          </div>
 
           {/* DECIDE — decision_points, excluding plan_approval (owned elsewhere). */}
-          <DecisionPointBlock
-            items={visibleDecisionPoints}
-            dossierId={dossierId}
-          />
+          <div id="decisions" className="scroll-mt-6">
+            <DecisionPointBlock
+              items={visibleDecisionPoints}
+              dossierId={dossierId}
+            />
+          </div>
 
           {/* Main document body. */}
           <SectionList sections={sections ?? []} />
