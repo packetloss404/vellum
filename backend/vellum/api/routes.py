@@ -54,6 +54,42 @@ def mark_visited(dossier_id: str) -> m.Dossier:
     return result
 
 
+@router.post("/dossiers/{dossier_id}/replan")
+def replan_dossier(dossier_id: str) -> dict:
+    """Create or reset the plan_approval decision_point for this dossier.
+
+    Three outcomes depending on current state (see
+    ``storage.replan_dossier`` for the full decision table):
+
+    * plan drafted, no open plan_approval DP → **backfill** (new DP created)
+    * plan drafted, plan_approval DP already open → **already_pending**
+      (idempotent — returns the existing DP id, no duplicate created)
+    * plan approved → **replanned** (plan un-approved, new DP created)
+
+    404 if the dossier doesn't exist. 409 if no plan has been drafted yet
+    (the agent drafts a plan on its first turn; call this afterwards if
+    you want a fresh approval gate).
+
+    The endpoint does NOT directly wake the agent. The user resolves the
+    newly-created DP via the standard ``POST .../decision-points/{id}/resolve``,
+    which sets ``wake_pending=1`` through the existing reactive-wake hook.
+    """
+    result = storage.replan_dossier(dossier_id)
+    if not result.get("ok"):
+        reason = result.get("reason")
+        if reason == "not_found":
+            raise HTTPException(404, "dossier not found")
+        if reason == "no_plan":
+            raise HTTPException(
+                409,
+                "no investigation_plan drafted — the agent will produce one "
+                "on its first turn; call replan again after that if you want "
+                "a fresh approval gate",
+            )
+        raise HTTPException(400, f"replan failed: {reason}")
+    return result
+
+
 @router.get("/dossiers/{dossier_id}/change-log", response_model=list[m.ChangeLogEntry])
 def change_log_since_visit(dossier_id: str) -> list[m.ChangeLogEntry]:
     return storage.list_change_log_since_last_visit(dossier_id)

@@ -1274,6 +1274,119 @@ def update_investigation_plan(
     return get_dossier(dossier_id)
 
 
+def replan_dossier(dossier_id: str) -> dict:
+    """Backfill or reset the plan_approval decision_point for a dossier.
+
+    One endpoint, three behaviours depending on current state:
+
+    - **No investigation_plan drafted** → returns
+      ``{"ok": False, "reason": "no_plan"}``. The agent drafts the plan on
+      first turn; nothing to approve-or-redirect yet.
+    - **Plan drafted, no open plan_approval decision_point** (backfill case:
+      legacy dossiers predating the intake-time plan_approval creation, or
+      dossiers whose prior approval was generated but then the DP was
+      resolved with Redirect without generating a new one) → creates a
+      fresh plan_approval DP. Returns ``{"ok": True, "action": "backfilled",
+      ...}``.
+    - **Plan drafted, plan_approval DP already open** → idempotent; returns
+      ``{"ok": True, "action": "already_pending", "decision_point_id": ...}``
+      without creating a duplicate.
+    - **Plan already approved** → un-approves the plan AND creates a fresh
+      plan_approval DP. Returns ``{"ok": True, "action": "replanned",
+      "plan_unapproved": True, ...}``. The next ``resolve_decision_point``
+      on this new DP will re-approve via the existing auto-approve path.
+
+    Does NOT set wake_pending. The existing ``resolve_decision_point`` hook
+    handles waking the agent when the user actually resolves the new DP.
+    """
+    dossier = get_dossier(dossier_id)
+    if dossier is None:
+        return {"ok": False, "reason": "not_found"}
+    plan = dossier.investigation_plan
+    if plan is None:
+        return {"ok": False, "reason": "no_plan"}
+
+    # Short-circuit: already an open plan_approval DP and plan is unapproved.
+    existing_open = [
+        dp for dp in list_decision_points(dossier_id, open_only=True)
+        if dp.kind == "plan_approval"
+    ]
+    plan_unapproved = False
+    if plan.approved_at is not None:
+        # Replan: unapprove the plan so the UI hides the "approved" banner
+        # and the agent sees plan as a gate again on its next turn.
+        now = m.utc_now()
+        unapproved = plan.model_copy(update={
+            "approved_at": None,
+            "revised_at": now,
+            "revision_count": plan.revision_count + 1,
+        })
+        with connect() as conn:
+            conn.execute(
+                "UPDATE dossiers SET investigation_plan = ? WHERE id = ?",
+                (unapproved.model_dump_json(), dossier_id),
+            )
+            _log_change(
+                conn, dossier_id, None, "plan_updated",
+                "Plan un-approved (replan requested); awaiting fresh approval.",
+            )
+            _touch_dossier(conn, dossier_id)
+        plan_unapproved = True
+    elif existing_open:
+        # Idempotent: return the one that's already open.
+        return {
+            "ok": True,
+            "action": "already_pending",
+            "dossier_id": dossier_id,
+            "decision_point_id": existing_open[0].id,
+            "plan_unapproved": False,
+        }
+
+    # Create the fresh plan_approval DP. Shape mirrors the intake-time
+    # creation in vellum.intake.tools.commit_intake so the user sees the
+    # same options regardless of how the DP was generated.
+    action = "replanned" if plan_unapproved else "backfilled"
+    dp = add_decision_point(
+        dossier_id,
+        m.DecisionPointCreate(
+            title="Approve investigation plan, or redirect?",
+            options=[
+                m.DecisionOption(
+                    label="Approve",
+                    implications=(
+                        "Approve the plan as drafted. The agent will start "
+                        "substantive investigation on its next wake."
+                    ),
+                    recommended=True,
+                ),
+                m.DecisionOption(
+                    label="Redirect",
+                    implications=(
+                        "Ask the agent to reframe before starting — useful if "
+                        "the plan is missing a key angle or assumes the wrong "
+                        "framing. The agent will re-draft the plan and surface "
+                        "a fresh approval."
+                    ),
+                    recommended=False,
+                ),
+            ],
+            recommendation=(
+                "Review the plan items above. Approve to unblock substantive "
+                "work, or redirect if the framing is off."
+            ),
+            kind="plan_approval",
+        ),
+        work_session_id=None,
+    )
+    return {
+        "ok": True,
+        "action": action,
+        "dossier_id": dossier_id,
+        "decision_point_id": dp.id,
+        "plan_unapproved": plan_unapproved,
+    }
+
+
 def approve_investigation_plan(
     dossier_id: str,
     work_session_id: Optional[str] = None,
