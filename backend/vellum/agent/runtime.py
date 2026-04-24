@@ -201,12 +201,19 @@ class DossierAgent:
 
                     # Track which section the agent is working on, so
                     # record_input_tokens can attribute budget pressure to it.
-                    # after_section_id is the *preceding* anchor, not the
-                    # section being edited — don't use it as a fallback.
+                    # Use the id storage ACTUALLY returned, not the one the
+                    # agent passed — on create, the agent may pass an
+                    # invented id (like 'sec_reframe') that storage ignores
+                    # in favor of a DB-assigned uuid. Trusting tool_input
+                    # caused all tokens across a session to pile into a
+                    # phantom section id, tripping section_budget stuck
+                    # signals that should have been split across the real
+                    # sections. `after_section_id` is the *preceding* anchor,
+                    # not the section being edited — never use it.
                     if tool_name == "upsert_section":
-                        sid = tool_input.get("section_id")
-                        if sid:
-                            self._last_section_id = sid
+                        real_id = _extract_result_section_id(result_block)
+                        if real_id:
+                            self._last_section_id = real_id
 
                     # Terminal tool: the agent signals the investigation is
                     # handed off to the user. We still let any remaining
@@ -545,6 +552,31 @@ def _coerce_tool_result(result: Any) -> str:
         return json.dumps(result, default=str)
     except (TypeError, ValueError):
         return str(result)
+
+
+def _extract_result_section_id(result_block: dict[str, Any]) -> Optional[str]:
+    """Pull the DB-assigned section_id out of an upsert_section tool_result.
+
+    Returns None when the handler errored, when content isn't parseable
+    JSON, or when the payload doesn't carry a section_id. Callers should
+    only overwrite their cached id on a truthy return value; a miss leaves
+    the previous attribution in place, which is safer than attributing to
+    a phantom.
+    """
+    if result_block.get("is_error"):
+        return None
+    content = result_block.get("content")
+    if not isinstance(content, str) or not content:
+        return None
+    try:
+        parsed = json.loads(content)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(parsed, dict):
+        sid = parsed.get("section_id")
+        if isinstance(sid, str) and sid:
+            return sid
+    return None
 
 
 def _hash_tool_input(tool_input: dict[str, Any]) -> str:
