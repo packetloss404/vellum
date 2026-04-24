@@ -7,6 +7,7 @@ only user-visible surface is what's written into these tables.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime
 from typing import Optional
@@ -20,6 +21,64 @@ from .db import connect
 # TypeAdapters for list[PydanticModel] round-trips.
 _SourceList = TypeAdapter(list[m.Source])
 _OptionList = TypeAdapter(list[m.DecisionOption])
+
+
+# ---------- Tool-markup sanitizer ----------
+#
+# The model occasionally falls back to XML-style tool-call formatting
+# (`<parameter name="...">value</parameter>`, `<invoke name="...">`,
+# `</function_calls>`, or bare `</field_name>` tags) and stuffs that
+# markup *inside a string argument* of a legitimate JSON tool call. We
+# end up with literal XML noise in debrief / working-theory / section
+# bodies. Vellum's content contract is plaintext + markdown only, so
+# stripping these patterns is safe and idempotent — users never write
+# literal `<parameter>` or `</invoke>` in their own paste content.
+#
+# Applied on BOTH read and write: write prevents future pollution, read
+# cleans existing polluted rows without a data migration.
+_TOOL_MARKUP_RE = re.compile(
+    r"""
+    # Explicit tool-call tags, any attributes, any case.
+    <\/?\s*(?:parameter|invoke|function_calls|tool_use|answer|thinking|result)
+      (?:\s[^>]*)?>
+    |
+    # Bare closing tags whose name looks like a tool parameter
+    # (lowercase + underscores). `</what_i_did>`, `</recommendation>`, etc.
+    # We only match closers to avoid eating angle-bracket math / emoticons
+    # like "<3" or comparison operators in markdown.
+    <\/[a-z_][a-z0-9_]*>
+    """,
+    flags=re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _strip_tool_markup(text: Optional[str]) -> Optional[str]:
+    """Remove stray XML-style tool-call markup from a prose field.
+
+    Idempotent. Safe to apply repeatedly. Returns the input unchanged
+    when it's None or contains no markup.
+    """
+    if not text:
+        return text
+    cleaned = _TOOL_MARKUP_RE.sub("", text)
+    # Collapse the whitespace the tag-stripping can leave behind
+    # (`</what_i_did>\n<parameter name="what_i_found">` → `\n`).
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip() if cleaned != text else cleaned
+
+
+def _strip_tool_markup_list(items: Optional[list[str]]) -> list[str]:
+    if not items:
+        return []
+    out: list[str] = []
+    for v in items:
+        if isinstance(v, str):
+            cleaned = _strip_tool_markup(v)
+            if cleaned:
+                out.append(cleaned)
+        else:
+            out.append(v)
+    return out
 
 
 def _dt(s: Optional[str]) -> Optional[datetime]:
@@ -42,6 +101,41 @@ def _row_to_dossier(row: sqlite3.Row) -> m.Dossier:
     plan_json = row["investigation_plan"]
     theory_json = _row_get(row, "working_theory")
     pc_json = _row_get(row, "premise_challenge")
+
+    debrief = m.Debrief.model_validate_json(debrief_json) if debrief_json else None
+    if debrief is not None:
+        # Strip any XML-style tool markup that the model polluted into
+        # debrief fields. Idempotent — harmless to apply repeatedly.
+        debrief = debrief.model_copy(update={
+            "what_i_did": _strip_tool_markup(debrief.what_i_did) or "",
+            "what_i_found": _strip_tool_markup(debrief.what_i_found) or "",
+            "what_you_should_do_next": _strip_tool_markup(debrief.what_you_should_do_next) or "",
+            "what_i_couldnt_figure_out": _strip_tool_markup(debrief.what_i_couldnt_figure_out) or "",
+        })
+
+    working_theory = (
+        m.WorkingTheory.model_validate_json(theory_json) if theory_json else None
+    )
+    if working_theory is not None:
+        working_theory = working_theory.model_copy(update={
+            "recommendation": _strip_tool_markup(working_theory.recommendation) or "",
+            "why": _strip_tool_markup(working_theory.why) or "",
+            "what_would_change_it": _strip_tool_markup(working_theory.what_would_change_it) or "",
+            "unresolved_assumptions": _strip_tool_markup_list(working_theory.unresolved_assumptions),
+        })
+
+    premise_challenge = (
+        m.PremiseChallenge.model_validate_json(pc_json) if pc_json else None
+    )
+    if premise_challenge is not None:
+        premise_challenge = premise_challenge.model_copy(update={
+            "original_question": _strip_tool_markup(premise_challenge.original_question) or "",
+            "hidden_assumptions": _strip_tool_markup_list(premise_challenge.hidden_assumptions),
+            "why_answering_now_is_risky": _strip_tool_markup(premise_challenge.why_answering_now_is_risky) or "",
+            "safer_reframe": _strip_tool_markup(premise_challenge.safer_reframe) or "",
+            "required_evidence_before_answering": _strip_tool_markup_list(premise_challenge.required_evidence_before_answering),
+        })
+
     return m.Dossier(
         id=row["id"],
         title=row["title"],
@@ -50,16 +144,12 @@ def _row_to_dossier(row: sqlite3.Row) -> m.Dossier:
         dossier_type=m.DossierType(row["dossier_type"]),
         status=m.DossierStatus(row["status"]),
         check_in_policy=m.CheckInPolicy.model_validate_json(row["check_in_policy"]),
-        debrief=m.Debrief.model_validate_json(debrief_json) if debrief_json else None,
+        debrief=debrief,
         investigation_plan=(
             m.InvestigationPlan.model_validate_json(plan_json) if plan_json else None
         ),
-        working_theory=(
-            m.WorkingTheory.model_validate_json(theory_json) if theory_json else None
-        ),
-        premise_challenge=(
-            m.PremiseChallenge.model_validate_json(pc_json) if pc_json else None
-        ),
+        working_theory=working_theory,
+        premise_challenge=premise_challenge,
         last_visited_at=_dt(row["last_visited_at"]),
         created_at=_dt(row["created_at"]),
         updated_at=_dt(row["updated_at"]),
@@ -84,11 +174,11 @@ def _row_to_section(row: sqlite3.Row) -> m.Section:
         id=row["id"],
         dossier_id=row["dossier_id"],
         type=m.SectionType(row["type"]),
-        title=row["title"],
-        content=row["content"],
+        title=_strip_tool_markup(row["title"]) or "",
+        content=_strip_tool_markup(row["content"]) or "",
         state=m.SectionState(row["state"]),
         order=row["order"],
-        change_note=row["change_note"],
+        change_note=_strip_tool_markup(row["change_note"]) or "",
         sources=_SourceList.validate_json(row["sources"]),
         depends_on=_json_list(row["depends_on"]),
         last_updated=_dt(row["last_updated"]),
@@ -1116,12 +1206,14 @@ def update_debrief(
             current = m.Debrief.model_validate_json(existing_json)
         else:
             current = m.Debrief(last_updated=m.utc_now())
-        merged = current.model_copy(
-            update={
-                k: v
-                for k, v in patch.model_dump(exclude_none=True).items()
-            }
-        )
+        # Sanitize incoming fields: strip any XML-style tool-call markup
+        # the model fell back to emitting (`<parameter name="...">`,
+        # `</invoke>`, `</what_i_did>`, etc.).
+        sanitized_patch = {
+            k: (_strip_tool_markup(v) if isinstance(v, str) else v)
+            for k, v in patch.model_dump(exclude_none=True).items()
+        }
+        merged = current.model_copy(update=sanitized_patch)
         merged = merged.model_copy(update={"last_updated": m.utc_now()})
         conn.execute(
             "UPDATE dossiers SET debrief = ? WHERE id = ?",
@@ -1167,6 +1259,14 @@ def update_working_theory(
             if existing_raw else None
         )
         patch_data = patch.model_dump(exclude_none=True)
+        # Strip XML-style tool-call markup from prose fields before merge.
+        for _k in ("recommendation", "why", "what_would_change_it"):
+            if _k in patch_data and isinstance(patch_data[_k], str):
+                patch_data[_k] = _strip_tool_markup(patch_data[_k]) or ""
+        if "unresolved_assumptions" in patch_data:
+            patch_data["unresolved_assumptions"] = _strip_tool_markup_list(
+                patch_data["unresolved_assumptions"]
+            )
         if current is None:
             required = {"recommendation", "confidence", "why", "what_would_change_it"}
             missing = sorted(required - set(patch_data.keys()))
@@ -1253,6 +1353,13 @@ def update_premise_challenge(
             if existing_raw else None
         )
         patch_data = patch.model_dump(exclude_none=True)
+        # Strip XML-style tool-call markup the model sometimes emits.
+        for _k in ("original_question", "why_answering_now_is_risky", "safer_reframe"):
+            if _k in patch_data and isinstance(patch_data[_k], str):
+                patch_data[_k] = _strip_tool_markup(patch_data[_k]) or ""
+        for _k in ("hidden_assumptions", "required_evidence_before_answering"):
+            if _k in patch_data:
+                patch_data[_k] = _strip_tool_markup_list(patch_data[_k])
         if current is None:
             required = {
                 "original_question", "hidden_assumptions",
