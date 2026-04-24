@@ -8,9 +8,6 @@ Vellum is for the kind of question that doesn't belong in a chat window — a co
 
 ## For hackathon reviewers
 
-- **[SUMMARY.md](./SUMMARY.md)** — three-paragraph project summary (problem / product / architecture).
-- **[NARRATION.md](./NARRATION.md)** — 3-minute demo video script with timing and shot list.
-- **[HACKATHON_SUBMISSION.md](./HACKATHON_SUBMISSION.md)** — written submission packet with the pitch, architecture, demo path, and limitations.
 - **Fixture demo** — `http://localhost:5173/stress` renders a fully-worked, no-network dossier fixture for screen recording. `http://localhost:5173/demo` is the smaller legacy hero fixture.
 - **Scope freeze** — out of scope for v1: multi-user, auth, notifications, mobile, rich-text editor, LLMs other than Claude, Claude Agent SDK migration, Postgres, Temporal. Everything listed works on localhost against the Anthropic Messages API.
 
