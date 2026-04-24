@@ -157,8 +157,20 @@ class Scheduler:
         try:
             await ORCHESTRATOR.start(dossier_id)
         except AgentAlreadyRunning:
-            # Someone got there first — the user clicked Resume, or a
-            # previous tick's start is still in flight. Wake satisfied.
+            # Someone got there first — the user clicked Resume, or the
+            # prior tick's session is still running. Do NOT treat this as
+            # "wake satisfied": the currently-running session took its
+            # state snapshot at its own start and has no way to see a
+            # needs_input answer / decision resolution that landed after
+            # that. If we clear wake_pending here, the change the user
+            # made dies on the floor.
+            #
+            # Instead: keep wake_pending set, bail out without the clear
+            # below. The next scheduler tick will retry; if the other
+            # session has ended by then, a fresh session picks up the
+            # user's change. If it's still running, we retry again — a
+            # 30s poll is cheap.
+            #
             # Clean up any session we just created so we don't leak.
             if pre_created_session_id is not None:
                 try:
@@ -171,6 +183,12 @@ class Scheduler:
                         "after AgentAlreadyRunning; next reconcile will clean up",
                         pre_created_session_id, exc_info=True,
                     )
+            logger.info(
+                "scheduler: dossier=%s wake deferred — agent already running; "
+                "wake_pending retained for next tick (reason=%s)",
+                dossier_id, reason,
+            )
+            return
         except Exception:
             logger.error(
                 "scheduler: failed to start agent for dossier %s (reason=%s); "
