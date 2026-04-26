@@ -2,14 +2,17 @@
 
 **A durable investigation system where the dossier is the primary surface, not chat.**
 
-The unit isn't a chat session — it's a **dossier**: a structured, typed case file that an agent works on over hours or days, and that you return to on your own schedule. Close the laptop. Come back. The dossier has evolved — new sections, revised conclusions, flagged open questions, surfaced decision points. A plan-diff sidebar shows what changed since you were last here.
+Built solo in 5 days for the Built with Opus 4.7 hackathon, Vellum is a durable investigation system for consequential decisions where the primary surface is a structured dossier, not a chat transcript. It is built for questions that should not be answered immediately because the user's framing may already contain unsafe assumptions. Instead of treating the prompt as the ground truth, Vellum gives an agent time, structure, and tools to challenge the premise, investigate the underlying facts, surface blockers, and deliver a case file the user can return to later.
 
-Vellum is for the kind of question that doesn't belong in a chat window — a consequential decision with several unknowns, where the obvious answer may be dangerous if key facts are wrong.
+The core idea is that many important decisions do not fit well in chat. A user might ask, "What percentage should I offer to settle this credit-card debt?" A normal chatbot may generate a negotiation strategy. Vellum's agent first asks whether that is even the right question: is the debt valid, is it past the statute of limitations, does the collector own the account, and would negotiation accidentally restart liability? In that case, the responsible answer may not be a number at all. It may be to request validation, stop contact, or avoid engaging until facts are established.
+
+Vellum turns that kind of work into a dossier. The dossier contains a premise challenge, working theory, investigation plan, sections, sub-investigations, needs-input blocks, decision points, artifacts, and a final debrief. Each section carries state, such as confident, provisional, or blocked, so the user can distinguish established findings from tentative reasoning. The agent cannot simply ramble into the interface. Meaningful output is written through typed tools, which means the product is structured data first and prose second.
+
+The agent also works over time. A user can leave and return later to see what changed. The right rail shows session summaries, new findings, blocked paths, ruled-out assumptions, and cost. This makes the dossier feel like an evolving case file rather than a disappearing conversation. Vellum is intentionally quiet by default: no constant notifications, no stream of partial thoughts, and no expectation that the user must babysit the agent. The user returns when they are ready and sees the investigation state.
 
 ## For hackathon reviewers
 
-- **Fixture demo** — `http://localhost:5173/stress` renders a fully-worked, no-network dossier fixture for screen recording. `http://localhost:5173/demo` is the smaller legacy hero fixture.
-- **Scope freeze** — out of scope for v1: multi-user, auth, notifications, mobile, rich-text editor, LLMs other than Claude, Claude Agent SDK migration, Postgres, Temporal. Everything listed works on localhost against the Anthropic Messages API.
+- **Scope freeze** — out of scope for v1: multi-user, auth, notifications, mobile, rich-text editor, LLMs other than Claude, Postgres, Temporal. Everything listed works on localhost against the Anthropic Messages API.
 
 ## What makes it different
 
@@ -27,16 +30,6 @@ Vellum is for the kind of question that doesn't belong in a chat window — a co
 - **Frontend:** React + TypeScript + Tailwind (Vite). Serif-forward, warm, document-like. No rich-text editor.
 
 ## Local dev
-
-Fastest reviewer path, no backend or API key required:
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Then open `http://localhost:5173/stress` for the full fixture-driven demo used in the submission video.
 
 Full local stack for real agent runs:
 
@@ -57,7 +50,7 @@ cd ..
 ./dev.sh                          # uvicorn on :8731, vite on :5173
 ```
 
-Visit `http://localhost:5173/stress` for the full fixture-driven demo used in the submission video, `/demo` for the smaller hero fixture, or `/` to start a real dossier.
+Visit `http://localhost:5173/` to start a dossier.
 
 ## Project layout
 
@@ -102,4 +95,4 @@ Most routes follow standard CRUD patterns on `/api/dossiers/{id}/...`; a few hav
 
 ## Status
 
-v1, single-user, localhost. Optional local-token API guard exists for tunneled or shared dev instances. Out of scope: multi-user, notifications, mobile, rich text, LLMs other than Claude.
+v1, single-user, localhost. Optional local-token API guard exists for tunneled or shared dev instances.

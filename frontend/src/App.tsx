@@ -16,6 +16,9 @@ const IntakePage = React.lazy(() => import("./pages/IntakePage"));
 const DossierPage = React.lazy(() => import("./pages/DossierPage"));
 const DemoPage = React.lazy(() => import("./pages/DemoPage"));
 const StressPage = React.lazy(() => import("./pages/StressPage"));
+const Stress2Page = React.lazy(() => import("./pages/Stress2Page"));
+const Stress3Page = React.lazy(() => import("./pages/Stress3Page"));
+const Stress4Page = React.lazy(() => import("./pages/Stress4Page"));
 const SettingsPage = React.lazy(() => import("./pages/SettingsPage"));
 const NotFoundPage = React.lazy(() => import("./pages/NotFoundPage"));
 
@@ -36,6 +39,9 @@ export default function App() {
               <Route path="/dossiers/:id" element={<DossierPage />} />
               <Route path="/demo" element={<DemoPage />} />
               <Route path="/stress" element={<StressPage />} />
+              <Route path="/stress2" element={<Stress2Page />} />
+              <Route path="/stress3" element={<Stress3Page />} />
+              <Route path="/stress4" element={<Stress4Page />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="*" element={<NotFoundPage />} />
             </Routes>
