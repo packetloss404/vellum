@@ -87,7 +87,7 @@ Most routes follow standard CRUD patterns on `/api/dossiers/{id}/...`; a few hav
 
 - **`POST /api/dossiers/{id}/resume`** — explicit agent restart on an existing dossier.
 
-- **Optional API token guard** — set `VELLUM_API_TOKEN` on the backend and `VITE_VELLUM_API_TOKEN` on the frontend to require a bearer token for `/api/*`. `/health` remains public. Empty token keeps localhost dev unchanged unless `VELLUM_API_AUTH_REQUIRED=true`.
+- **Optional API token guard** — set `VELLUM_API_TOKEN` (single env var, server-side only) to require a bearer token for `/api/*`. In dev, the Vite proxy reads `VELLUM_API_TOKEN` at startup and injects the `Authorization: Bearer …` header on every proxied request, so the token never ships in the browser bundle. `/health` remains public. Empty token keeps localhost dev unchanged unless `VELLUM_API_AUTH_REQUIRED=true`.
 
 - **`GET /api/settings`, `PUT /api/settings/{key}`** — DB-backed settings (sleep-mode toggle, budget caps, warn fractions, progress-forcing threshold). Soft signals only; crossing a cap surfaces a decision_point rather than terminating the agent.
 
@@ -96,3 +96,12 @@ Most routes follow standard CRUD patterns on `/api/dossiers/{id}/...`; a few hav
 ## Status
 
 v1, single-user, localhost. Optional local-token API guard exists for tunneled or shared dev instances.
+
+## Regenerating frontend types
+
+When the backend Pydantic schema changes, regenerate the TypeScript types:
+
+1. Start the backend (or export the OpenAPI spec: `cd backend && python -c "from vellum.main import app; import json; f=open('openapi.json','w'); f.write(json.dumps(app.openapi(),indent=2)); f.close()"`)
+2. `cd frontend && npm run types:gen`
+
+This produces `src/api/types.generated.ts`. The hand-maintained `types.ts` re-exports the types the frontend needs and adds frontend-only types.
