@@ -81,8 +81,33 @@ class InvestigationPlanItem(BaseModel):
     status: Literal["planned", "in_progress", "completed", "abandoned"] = "planned"
 
 
+class PlanItemStatus(str, Enum):
+    planned = "planned"
+    in_progress = "in_progress"
+    completed = "completed"
+    abandoned = "abandoned"
+    blocked = "blocked"
+
+
+class PlanItem(BaseModel):
+    """First-class plan item row (plan_items table). Replaces InvestigationPlanItem
+    for storage operations — richer with dossier_id, sub_investigation_id, order_key."""
+    id: str = Field(default_factory=lambda: new_id("pli"))
+    dossier_id: str = ""
+    question: str = ""
+    rationale: str = ""
+    expected_sources: list[str] = Field(default_factory=list)
+    as_sub_investigation: bool = False
+    status: PlanItemStatus = PlanItemStatus.planned
+    order_key: float = 0.0
+    sub_investigation_id: Optional[str] = None
+    blocked_reason: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
 class InvestigationPlan(BaseModel):
-    items: list[InvestigationPlanItem] = Field(default_factory=list)
+    items: list[PlanItem] = Field(default_factory=list)
     rationale: str = ""              # why this plan shape
     drafted_at: datetime
     approved_at: Optional[datetime] = None
@@ -278,6 +303,7 @@ class WorkSession(BaseModel):
     output_tokens: int = 0
     cost_usd: float = 0.0
     end_reason: Optional[WorkSessionEndReason] = None
+    trace_id: str = ""
 
 
 class WakeReason(str, Enum):
@@ -447,7 +473,7 @@ class DebriefUpdate(BaseModel):
 
 
 class InvestigationPlanUpdate(BaseModel):
-    items: list[InvestigationPlanItem]
+    items: list[PlanItem | InvestigationPlanItem]
     rationale: str = ""
     approve: bool = False                 # when True, set approved_at to now
 
@@ -677,6 +703,47 @@ class SummarizeSessionArgs(BaseModel):
     blocked_on: list[str] = Field(default_factory=list)
     questions_advanced: list[str] = Field(default_factory=list)
     recommended_next_action: Optional[str] = None
+
+
+# --- Phase 4A: per-turn telemetry ---
+
+
+class AgentTurn(BaseModel):
+    id: str                               # prefix: "agt"
+    dossier_id: str
+    work_session_id: str
+    sub_investigation_id: Optional[str] = None
+    trace_id: str = ""
+    turn_index: int = 0
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cost_usd: float = 0.0
+    duration_ms: int = 0
+    tool_calls_count: int = 0
+    stop_reason: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: datetime
+
+
+class AgentTurnCreate(BaseModel):
+    dossier_id: str
+    work_session_id: str
+    sub_investigation_id: Optional[str] = None
+    trace_id: str = ""
+    turn_index: int = 0
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cost_usd: float = 0.0
+    duration_ms: int = 0
+    tool_calls_count: int = 0
+    stop_reason: Optional[str] = None
+    notes: Optional[str] = None
 
 
 # Resolve forward references for DossierFull.
