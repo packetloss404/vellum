@@ -32,7 +32,6 @@ import anthropic
 
 from .. import models as m
 from .. import storage
-from .. import config as _config
 from ..config import ANTHROPIC_API_KEY, MODEL, cost_usd_for_turn
 from ..tools import handlers
 from .compactor import _estimate_tokens as _compactor_estimate_tokens, compact_messages, should_compact
@@ -136,7 +135,7 @@ class DossierAgent:
 
         dossier = storage.get_dossier(self.dossier_id)
         if dossier is None:
-            storage.end_work_session(session_id)
+            storage.end_work_session_with_reason(session_id, m.WorkSessionEndReason.error)
             return RunResult(
                 reason="error",
                 turns=0,
@@ -156,6 +155,7 @@ class DossierAgent:
             {"role": "user", "content": self._snapshot_content(prompt_mod)}
         )
 
+        _end_reason: Optional[m.WorkSessionEndReason] = None
         try:
             while state.turns < max_turns:
                 # anthropic SDK requires streaming for operations that may
@@ -243,7 +243,10 @@ class DossierAgent:
                 # message history is approaching the context limit. The compactor
                 # replaces old turns with a single summary breadcrumb, keeping
                 # the most recent keep_recent_turns turns verbatim.
-                _compact_threshold = _config.COMPACT_INPUT_TOKEN_THRESHOLD
+                # Read threshold dynamically so tests can monkeypatch the env var.
+                _compact_threshold = int(
+                    os.getenv("VELLUM_COMPACT_INPUT_TOKEN_THRESHOLD", "80000")
+                )
                 if _compact_threshold > 0:
                     est_tokens = _compactor_estimate_tokens(state.messages)
                     if should_compact(state.messages, est_tokens, _compact_threshold):
@@ -275,6 +278,7 @@ class DossierAgent:
                 if not tool_uses:
                     # Model ended the turn. Any prose is discarded — the agent
                     # speaks only through tool calls into the dossier.
+                    _end_reason = m.WorkSessionEndReason.ended_turn
                     return RunResult(
                         reason="ended_turn",
                         turns=state.turns,
@@ -379,6 +383,7 @@ class DossierAgent:
                 stuck_mod.record_turn_end(session_id, tool_names_this_turn)
 
                 if delivered:
+                    _end_reason = m.WorkSessionEndReason.delivered
                     return RunResult(
                         reason="delivered",
                         turns=state.turns,
@@ -414,11 +419,13 @@ class DossierAgent:
                     {"role": "user", "content": self._snapshot_content(prompt_mod)}
                 )
 
+            _end_reason = m.WorkSessionEndReason.turn_limit
             return RunResult(
                 reason="turn_limit", turns=state.turns, session_id=session_id
             )
 
         except Exception as exc:  # noqa: BLE001 — we promise not to re-raise
+            _end_reason = m.WorkSessionEndReason.error
             return RunResult(
                 reason="error",
                 turns=state.turns,
@@ -446,14 +453,10 @@ class DossierAgent:
             except Exception:
                 # Fallback is best-effort — do not mask end_work_session.
                 pass
-            storage.end_work_session(session_id)
-            # H-23: auto-schedule next wake from check_in_policy.cadence when
-            # the agent did NOT already call schedule_wake (wake_at is still
-            # null after session end).  Only fires if sleep mode is enabled.
-            try:
-                self._auto_schedule_cadence_wake()
-            except Exception:  # noqa: BLE001 — cleanup must not mask result
-                pass
+            if _end_reason is not None:
+                storage.end_work_session_with_reason(session_id, _end_reason)
+            else:
+                storage.end_work_session(session_id)
             try:
                 stuck_mod.reset_session(session_id)
             except Exception:  # noqa: BLE001 — cleanup must not mask result
@@ -617,10 +620,30 @@ class DossierAgent:
             f"{detail} Soft signal only — I'll keep working unless you tell "
             f"me otherwise, but this is worth a check-in."
         )
-        # M-24: budget cap signals (daily_cap, session_budget) always surface
-        # a decision_point, even when trust_mode is enabled. Trust mode only
-        # suppresses tier-2 stuck signals; budget overruns require explicit
-        # user acknowledgement because they have real cost implications.
+        # Trust mode: if the user flipped the setting on, don't surface a
+        # decision_point for budget cap-cross. Append a reasoning_trail note
+        # instead so the agent sees it on the next state snapshot and the
+        # event is auditable, but the user isn't interrupted. Mirrors the
+        # tier-2 stuck behavior in _surface_stuck. The hard guardrail (the
+        # cap itself) is the user's editable knob in /settings — trust mode
+        # just chooses "don't ask me about it, keep going."
+        try:
+            trust_mode = bool(storage.get_setting("trust_mode_enabled", False))
+        except Exception:
+            trust_mode = False
+        if trust_mode:
+            try:
+                handlers.dispatch(
+                    self.dossier_id,
+                    "append_reasoning",
+                    {
+                        "note": f"[trust_mode:auto] Budget {kind} crossed — continuing. {detail}",
+                        "tags": ["budget", "budget_auto_dismissed", "trust_mode"],
+                    },
+                )
+            except Exception:
+                pass
+            return
 
         options = [
             {
@@ -743,38 +766,6 @@ class DossierAgent:
             )
         except Exception:  # noqa: BLE001 — a failed stuck surface must not mask the signal
             pass
-
-
-    def _auto_schedule_cadence_wake(self) -> None:
-        """H-23: schedule next wake from check_in_policy.cadence.
-
-        Only acts when:
-        - sleep_mode_enabled is True
-        - the dossier has a daily or weekly cadence
-        - no wake_at is already set (agent didn't call schedule_wake this run)
-        """
-        from datetime import timedelta
-
-        if not storage.get_setting("sleep_mode_enabled", True):
-            return
-
-        dossier = storage.get_dossier(self.dossier_id)
-        if dossier is None:
-            return
-
-        cadence = dossier.check_in_policy.cadence
-        if cadence not in (m.CheckInCadence.daily, m.CheckInCadence.weekly):
-            return
-
-        wake_state = storage.get_dossier_wake_state(self.dossier_id)
-        if wake_state is not None and wake_state.get("wake_at") is not None:
-            return
-
-        hours = 24.0 if cadence == m.CheckInCadence.daily else 24.0 * 7
-        wake_at = m.utc_now() + timedelta(hours=hours)
-        storage.set_dossier_wake_at(
-            self.dossier_id, wake_at, m.WakeReason.scheduled
-        )
 
 
 def _coerce_tool_result(result: Any) -> str:

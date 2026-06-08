@@ -89,7 +89,10 @@ def list_agent_turns_for_session(
     return [_row_to_agent_turn(r) for r in rows]
 
 
-def list_agent_turns_for_trace(trace_id: str, dossier_id: Optional[str] = None) -> list[m.AgentTurn]:
+def list_agent_turns_for_trace(
+    trace_id: str,
+    dossier_id: Optional[str] = None,
+) -> list[m.AgentTurn]:
     with connect() as conn:
         if dossier_id is not None:
             rows = conn.execute(
