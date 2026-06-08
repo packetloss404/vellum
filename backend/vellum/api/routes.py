@@ -235,6 +235,15 @@ def resolve_decision_point(
     data: m.DecisionPointResolve,
     work_session_id: Optional[str] = None,
 ) -> m.DecisionPoint:
+    dp = storage.get_decision_point(dossier_id, decision_id)
+    if not dp:
+        raise HTTPException(404, "decision_point not found")
+    valid_labels = {opt.label for opt in dp.options}
+    if data.chosen not in valid_labels:
+        raise HTTPException(
+            422,
+            f"chosen value is not one of the predefined options: {sorted(valid_labels)}",
+        )
     result = storage.resolve_decision_point(dossier_id, decision_id, data.chosen, work_session_id)
     if not result:
         raise HTTPException(404, "decision_point not found")
@@ -645,4 +654,4 @@ def get_turn_cost_summary(dossier_id: str) -> list:
 def list_turns_by_trace(dossier_id: str, trace_id: str) -> list[m.AgentTurn]:
     if not storage.get_dossier(dossier_id):
         raise HTTPException(404, "dossier not found")
-    return storage.list_agent_turns_for_trace(trace_id)
+    return storage.list_agent_turns_for_trace(trace_id, dossier_id=dossier_id)

@@ -54,6 +54,10 @@ STUCK_REVISION_STALL_THRESHOLD = int(
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
+# Bind host for the uvicorn server. Used at startup to warn when the API is
+# exposed on a non-loopback interface without an authentication token.
+HOST = os.getenv("VELLUM_HOST", os.getenv("HOST", "127.0.0.1"))
+
 # Optional local API guard. Empty token keeps localhost development unchanged
 # unless VELLUM_API_AUTH_REQUIRED is explicitly enabled.
 API_TOKEN = os.getenv("VELLUM_API_TOKEN", "")

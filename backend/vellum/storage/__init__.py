@@ -52,6 +52,7 @@ from .budget_store import (
 # Decision point operations
 from .decision_point_store import (
     add_decision_point,
+    get_decision_point,
     resolve_decision_point,
     list_decision_points,
 )
@@ -198,6 +199,7 @@ __all__ = [
     "list_budget_range",
     # Decision point
     "add_decision_point",
+    "get_decision_point",
     "resolve_decision_point",
     "list_decision_points",
     # Idempotency
