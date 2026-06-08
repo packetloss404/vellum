@@ -122,10 +122,11 @@ def log_tool_call(
     tool_name: str,
     args: Any,
     result: Any,
+    trace_id: str = "",
 ) -> None:
     """Hook into handlers.dispatch — writes a JSON-line record per call.
 
-    Keys: ts, dossier_id, tool_name, args_preview, result_preview, duration_ms.
+    Keys: ts, dossier_id, tool_name, args_preview, result_preview, duration_ms, trace_id.
     duration_ms is None in v2 (see module docstring). Never raises — a
     failed log line must not take out an agent turn.
     """
@@ -137,6 +138,7 @@ def log_tool_call(
             "args_preview": _preview(args),
             "result_preview": _preview(result),
             "duration_ms": None,
+            "trace_id": trace_id,
         }
         _logger.info(json.dumps(record, default=str))
     except Exception:  # noqa: BLE001 — logging must never explode

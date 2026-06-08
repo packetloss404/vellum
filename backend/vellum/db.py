@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -145,6 +146,67 @@ def _ensure_indices(conn: sqlite3.Connection) -> None:
         conn.execute(sql)
 
 
+def _migrate_plan_items(conn: sqlite3.Connection) -> None:
+    """One-time migration: copy plan items from the JSON blob in
+    dossiers.investigation_plan into the first-class plan_items table.
+
+    Guarded by the 'plan_items_migrated' settings sentinel so the bulk of
+    the work is skipped on subsequent init_db calls.  INSERT OR IGNORE
+    makes every individual row insertion idempotent, so the migration is
+    safe to re-run even if the sentinel is absent (e.g. in tests that
+    manually clear it).
+    """
+    row = conn.execute(
+        "SELECT value_json FROM settings WHERE key = 'plan_items_migrated'",
+    ).fetchone()
+    if row is not None:
+        return
+
+    now_s = datetime.now(timezone.utc).isoformat()
+    dossiers = conn.execute(
+        "SELECT id, investigation_plan FROM dossiers WHERE investigation_plan IS NOT NULL",
+    ).fetchall()
+    for dossier in dossiers:
+        dossier_id = dossier[0]
+        try:
+            plan = json.loads(dossier[1])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        items = plan.get("items") or []
+        for idx, item in enumerate(items):
+            item_id = item.get("id") or f"pli_migrated_{dossier_id}_{idx}"
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO plan_items
+                    (id, dossier_id, plan_item_id, question, rationale,
+                     expected_sources, as_sub_investigation, status,
+                     order_key, sub_investigation_id, blocked_reason,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item_id,
+                    dossier_id,
+                    item_id,
+                    item.get("question") or "",
+                    item.get("rationale") or "",
+                    json.dumps(item.get("expected_sources") or []),
+                    int(bool(item.get("as_sub_investigation"))),
+                    item.get("status") or "planned",
+                    float((idx + 1) * 10),
+                    item.get("sub_investigation_id"),
+                    item.get("blocked_reason"),
+                    now_s,
+                    now_s,
+                ),
+            )
+
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)",
+        ("plan_items_migrated", "true", now_s),
+    )
+
+
 def init_db(db_path: Path | None = None) -> None:
     path = db_path or config.DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -161,6 +223,7 @@ def init_db(db_path: Path | None = None) -> None:
         _close_duplicate_unresolved_plan_approvals(conn)
         _close_duplicate_active_work_sessions(conn)
         _ensure_indices(conn)
+        _migrate_plan_items(conn)
         conn.commit()
     finally:
         conn.close()
