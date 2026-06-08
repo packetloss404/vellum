@@ -342,8 +342,9 @@ def _check_sub_budget_signals(dossier_id: str, session_id: str) -> None:
             today = None
         if today is not None and today.spent_usd >= daily_cap:
             try:
-                handlers.HANDLERS["append_reasoning"](
+                handlers.dispatch(
                     dossier_id,
+                    "append_reasoning",
                     {
                         "note": (
                             f"[sub_budget] Daily spend ${today.spent_usd:.2f} reached "
@@ -362,8 +363,9 @@ def _check_sub_budget_signals(dossier_id: str, session_id: str) -> None:
             ws = None
         if ws is not None and ws.cost_usd >= session_cap:
             try:
-                handlers.HANDLERS["append_reasoning"](
+                handlers.dispatch(
                     dossier_id,
+                    "append_reasoning",
                     {
                         "note": (
                             f"[sub_budget] Session spend ${ws.cost_usd:.2f} reached "
@@ -464,8 +466,9 @@ async def run_sub_investigation(
                 # silently discarding it. Best-effort — a failure here must not
                 # kill the sub loop.
                 try:
-                    handlers.HANDLERS["append_reasoning"](
+                    handlers.dispatch(
                         parent_dossier_id,
+                        "append_reasoning",
                         {
                             "note": (
                                 f"[sub_stuck:{_stuck_signal.kind}] sub {sub_id} "
@@ -511,7 +514,16 @@ async def run_sub_investigation(
                 # H-14: check budget soft-signals after each turn's usage capture.
                 _check_sub_budget_signals(parent_dossier_id, session_id)
 
-            messages.append({"role": "assistant", "content": response.content})
+            # H-01: serialize Anthropic SDK objects (TextBlock, ToolUseBlock,
+            # etc.) to plain dicts before appending to the message list.
+            # Without this, isinstance(block, dict) checks in the compactor
+            # and token estimator silently miss sub-agent blocks, causing
+            # incorrect token counts and incomplete compaction text.
+            serialized_content = [
+                b.model_dump() if hasattr(b, "model_dump") else b
+                for b in response.content
+            ]
+            messages.append({"role": "assistant", "content": serialized_content})
 
             if getattr(response, "stop_reason", None) == "pause_turn":
                 # web_search hit its per-turn iteration cap — resume.

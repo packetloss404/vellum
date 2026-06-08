@@ -48,8 +48,11 @@ def list_dossiers_ready_to_wake(now: Optional[datetime] = None) -> list[dict]:
             """
             SELECT id AS dossier_id, wake_at, wake_pending, wake_reason
               FROM dossiers
-             WHERE wake_pending = 1
-                OR (wake_at IS NOT NULL AND wake_at <= ?)
+             WHERE status != 'delivered'
+               AND (
+                     wake_pending = 1
+                     OR (wake_at IS NOT NULL AND wake_at <= ?)
+                   )
              ORDER BY COALESCE(wake_at, ''), id
             """,
             (now_s,),

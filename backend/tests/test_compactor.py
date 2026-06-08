@@ -116,7 +116,13 @@ class TestCompactMessages:
         return client
 
     def test_compact_preserves_first_and_recent(self):
-        """After compaction: first message + breadcrumb + recent turns."""
+        """After compaction: merged first+breadcrumb message then recent turns.
+
+        The fix for the consecutive-user-message API bug (H-04 critical)
+        merges the initial snapshot and the compaction breadcrumb into a
+        single user message so the resulting list never has two consecutive
+        user-role messages.  The recent turns then follow immediately after.
+        """
         msgs = [
             {"role": "user", "content": "INITIAL SNAPSHOT"},
             {"role": "assistant", "content": "a1"},
@@ -131,18 +137,19 @@ class TestCompactMessages:
         client = self._make_mock_client()
         result = asyncio.run(compact_messages(client, "mock-model", msgs, keep_recent_turns=2))
 
-        # First message preserved
-        assert result[0] == msgs[0]
-        # Breadcrumb message
-        assert result[1]["role"] == "user"
-        assert "Compaction breadcrumb" in result[1]["content"]
-        assert "Summary of past turns" in result[1]["content"]
-        # Last 2 turns preserved verbatim (4 messages)
-        assert len(result) == 6  # initial + breadcrumb + 4 recent
-        assert result[2]["content"] == "a3"
-        assert result[3]["content"] == "r3"
-        assert result[4]["content"] == "a4"
-        assert result[5]["content"] == "r4"
+        # First message is the merged anchor (initial snapshot + breadcrumb).
+        assert result[0]["role"] == "user"
+        assert "INITIAL SNAPSHOT" in result[0]["content"]
+        assert "Compaction breadcrumb" in result[0]["content"]
+        assert "Summary of past turns" in result[0]["content"]
+        # No consecutive user messages — result[1] must be assistant.
+        assert result[1]["role"] == "assistant"
+        # Last 2 turns preserved verbatim (4 messages): a3, r3, a4, r4.
+        assert len(result) == 5  # merged + 4 recent
+        assert result[1]["content"] == "a3"
+        assert result[2]["content"] == "r3"
+        assert result[3]["content"] == "a4"
+        assert result[4]["content"] == "r4"
 
     def test_compact_with_tool_result_pairs(self):
         """Tool_use ↔ tool_result pairs in recent turns are preserved."""
@@ -198,9 +205,12 @@ class TestCompactMessages:
             msgs.append({"role": "user", "content": f"user response {i}"})
 
         result = asyncio.run(compact_messages(client, "mock-model", msgs, keep_recent_turns=2))
-        # Should still produce a breadcrumb (fallback)
-        assert result[1]["role"] == "user"
-        assert "Compaction" in result[1]["content"]
+        # Should still produce a merged anchor with fallback breadcrumb.
+        assert result[0]["role"] == "user"
+        assert "Compaction" in result[0]["content"]
+        # No consecutive user messages after merge.
+        if len(result) > 1:
+            assert result[1]["role"] == "assistant"
 
 
 # --- Integration: runtime compaction trigger ---
@@ -225,8 +235,8 @@ class TestRuntimeCompaction:
         dossier_id = dossier.id
 
         # Set a very low threshold so compaction fires on our small message list.
-        from vellum import config as _config
-        monkeypatch.setattr(_config, "COMPACT_INPUT_TOKEN_THRESHOLD", 1)
+        # runtime.py reads this dynamically via os.getenv so we set the env var.
+        monkeypatch.setenv("VELLUM_COMPACT_INPUT_TOKEN_THRESHOLD", "1")
 
         # Build a scripted client with many turns to create enough messages.
         from tests.test_runtime_v2 import make_mock_client, _message, _text, _tool_use

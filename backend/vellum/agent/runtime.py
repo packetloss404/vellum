@@ -26,6 +26,7 @@ import hashlib
 import json
 import os
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any, Optional
 
 import anthropic
@@ -453,6 +454,42 @@ class DossierAgent:
             except Exception:
                 # Fallback is best-effort — do not mask end_work_session.
                 pass
+            # H-23: server-side cadence enforcement. If the session ended
+            # without delivering and the dossier has a daily/weekly cadence,
+            # auto-set wake_at so the agent resumes at the right interval even
+            # if it forgot to call schedule_wake. Only fires when no wake is
+            # already scheduled (wake_at IS NULL and wake_pending = 0) so we
+            # don't clobber an agent-specified wake time.
+            if _end_reason not in (
+                m.WorkSessionEndReason.delivered,
+                m.WorkSessionEndReason.error,
+            ):
+                try:
+                    dossier = storage.get_dossier(self.dossier_id)
+                    if dossier is not None and dossier.status != m.DossierStatus.delivered:
+                        cadence = getattr(
+                            getattr(dossier, "check_in_policy", None),
+                            "cadence",
+                            None,
+                        )
+                        wake_state = storage.get_dossier_wake_state(self.dossier_id)
+                        no_wake_set = wake_state is None or (
+                            not wake_state.get("wake_pending")
+                            and wake_state.get("wake_at") is None
+                        )
+                        if no_wake_set and cadence in (
+                            m.CheckInCadence.daily,
+                            m.CheckInCadence.weekly,
+                        ):
+                            offset = timedelta(days=1) if cadence == m.CheckInCadence.daily else timedelta(weeks=1)
+                            storage.set_dossier_wake_at(
+                                self.dossier_id,
+                                m.utc_now() + offset,
+                                m.WakeReason.scheduled,
+                            )
+                except Exception:
+                    # Best-effort — must not mask session close.
+                    pass
             if _end_reason is not None:
                 storage.end_work_session_with_reason(session_id, _end_reason)
             else:

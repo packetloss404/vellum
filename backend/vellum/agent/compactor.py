@@ -179,15 +179,34 @@ async def compact_messages(
         summary_text = f"[Compaction fallback: {len(old)} messages compressed. Key details may be lost.]"
 
     # Build the compacted message list.
-    first_msg = messages[0] if messages else {"role": "user", "content": ""}
+    # Critical: do NOT prepend first_msg as a separate message then add a
+    # second user-role breadcrumb — that produces two consecutive user
+    # messages which the Anthropic API rejects with a 400.  Instead, merge
+    # the first message's content with the breadcrumb into a single user
+    # message that opens the compacted list.  This preserves the first-turn
+    # anchor while keeping the alternating-role invariant intact.
+    first_content = ""
+    if messages:
+        raw = messages[0].get("content", "")
+        if isinstance(raw, str):
+            first_content = raw
+        elif isinstance(raw, list):
+            # Flatten block list to plain text for the merged anchor.
+            parts: list[str] = []
+            for blk in raw:
+                if hasattr(blk, "model_dump"):
+                    blk = blk.model_dump()
+                if isinstance(blk, dict) and blk.get("type") == "text":
+                    parts.append(blk.get("text", ""))
+                elif isinstance(blk, str):
+                    parts.append(blk)
+            first_content = "\n".join(parts)
 
     breadcrumb = (
         f"[Compaction breadcrumb: {len(old)} earlier messages summarized]\n\n{summary_text}"
     )
+    merged_content = f"{first_content}\n\n{breadcrumb}" if first_content else breadcrumb
 
-    compacted = [
-        first_msg,
-        {"role": "user", "content": breadcrumb},
-    ]
+    compacted = [{"role": "user", "content": merged_content}]
     compacted.extend(recent)
     return compacted
