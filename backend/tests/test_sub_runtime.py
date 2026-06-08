@@ -169,13 +169,13 @@ def test_tool_filter_excludes_main_only_and_spawn(fresh_db):
         "add_artifact",
         "log_source_consulted",
         "mark_considered_and_rejected",
-        "flag_needs_input",
         "complete_sub_investigation",
         "web_search",
     ):
         assert required in names, f"missing expected tool {required}"
 
-    # Excluded
+    # Excluded — flag_needs_input removed per H-12: subs surface blocks via
+    # return_summary only; allowing it left NeedsInput rows open with no FK.
     for forbidden in (
         "spawn_sub_investigation",
         "update_investigation_plan",
@@ -187,6 +187,7 @@ def test_tool_filter_excludes_main_only_and_spawn(fresh_db):
         "delete_section",
         "reorder_sections",
         "flag_decision_point",
+        "flag_needs_input",
         "append_reasoning",
         "mark_ruled_out",
         "check_stuck",
