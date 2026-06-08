@@ -156,6 +156,20 @@ def resolve_decision_point(
     return _row_to_decision_point(row)
 
 
+def get_decision_point(
+    dossier_id: str,
+    decision_id: str,
+) -> Optional[m.DecisionPoint]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM decision_points WHERE id = ? AND dossier_id = ?",
+            (decision_id, dossier_id),
+        ).fetchone()
+    if not row:
+        return None
+    return _row_to_decision_point(row)
+
+
 def list_decision_points(dossier_id: str, open_only: bool = False) -> list[m.DecisionPoint]:
     q = "SELECT * FROM decision_points WHERE dossier_id = ?"
     if open_only:

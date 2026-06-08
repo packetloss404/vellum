@@ -19,14 +19,23 @@ from .api.auth import require_api_token
 from .api.intake_routes import router as intake_router
 from .api.routes import router as crud_router
 from .api.settings_routes import router as settings_router
-from .config import ANTHROPIC_API_KEY, DEFAULT_SETTINGS
+from .config import ANTHROPIC_API_KEY, API_TOKEN, HOST, DEFAULT_SETTINGS
 from .lifecycle import reconcile_at_startup
 
 logger = logging.getLogger(__name__)
 
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if not API_TOKEN and HOST not in _LOOPBACK_HOSTS:
+        logger.warning(
+            "API running without authentication on a non-loopback address (%s). "
+            "Set VELLUM_API_TOKEN to require a bearer token for all API calls.",
+            HOST,
+        )
     if not ANTHROPIC_API_KEY:
         # Don't block startup — fixture-only use (e.g. /demo) still works
         # without a key — but surface the omission loudly so it isn't
