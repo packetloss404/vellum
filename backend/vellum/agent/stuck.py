@@ -47,6 +47,7 @@ surfaces a decision_point; the agent and user decide whether to continue.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -93,7 +94,10 @@ class _SessionState:
     section_tokens: Counter = field(default_factory=Counter)       # section_id -> input tokens (this session)
     session_tokens: int = 0
     section_budget_reported: set = field(default_factory=set)      # section_ids already reported
-    session_budget_reported: bool = False
+    # H-15: track token level at which last session_budget signal was emitted
+    # (0 = never reported). Fire again every _SESSION_BUDGET_REPEAT_INTERVAL
+    # tokens over the ceiling so sustained over-budget runs still get signals.
+    session_budget_reported_at: int = 0
 
     # revision stall (upsert_section calls per section, reset on needs_input resolution)
     upsert_counts_since_resolve: Counter = field(default_factory=Counter)  # section_id -> count
@@ -123,7 +127,11 @@ class _SessionState:
     # runtime uses tier to decide whether to emit a heads-up-only note
     # (tier 1), a standard decision_point (tier 2), or a forced-recommended
     # decision_point (tier 3+).
+    # H-19: persisted across sessions, keyed by dossier_id. Loaded on first
+    # access; written back after each increment.
     stuck_escalation_count: int = 0
+    # dossier_id for this session (set by init_session; used for H-19 persistence).
+    dossier_id: Optional[str] = None
 
 
 _STATE_LOCK = threading.Lock()
@@ -157,6 +165,10 @@ _SESSION_BUDGET_MULTIPLIER = config.STUCK_SESSION_BUDGET_MULT
 # v2: same_tool_no_progress threshold — same tool name (any args) called
 # this many times in a session without creating any new section fires.
 _SAME_TOOL_NO_PROGRESS_THRESHOLD = 8
+
+# H-15: after the first session_budget signal, fire again every N additional
+# tokens over the ceiling so the user isn't left in the dark on very long runs.
+_SESSION_BUDGET_REPEAT_INTERVAL = 50_000
 
 # Phase 2: progress-forcing. A turn that calls any tool in this set counts
 # as "progress" — the agent moved the investigation state in a way that's
@@ -193,6 +205,53 @@ def _state(session_id: str) -> _SessionState:
         s = _SessionState()
         _SESSION_STATE[session_id] = s
     return s
+
+
+def _load_persisted_escalation_count(dossier_id: str) -> int:
+    """H-19: read stuck_escalation_count from the dossiers table. Returns 0
+    on any error (missing column, no row) so the caller degrades gracefully."""
+    try:
+        from vellum.db import connect as _connect
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT stuck_escalation_count FROM dossiers WHERE id = ?",
+                (dossier_id,),
+            ).fetchone()
+        if row is None:
+            return 0
+        return int(row["stuck_escalation_count"] or 0)
+    except Exception:
+        return 0
+
+
+def _persist_escalation_count(dossier_id: str, count: int) -> None:
+    """H-19: write stuck_escalation_count back to the dossiers table.
+    Best-effort — a write failure must never surface to the caller."""
+    try:
+        from vellum.db import connect as _connect
+        with _connect() as conn:
+            conn.execute(
+                "UPDATE dossiers SET stuck_escalation_count = ? WHERE id = ?",
+                (count, dossier_id),
+            )
+    except Exception:
+        logger.debug(
+            "stuck: failed to persist escalation_count for dossier %s", dossier_id,
+            exc_info=True,
+        )
+
+
+def init_session(session_id: str, dossier_id: str) -> None:
+    """H-19: register a new session with its dossier_id so the escalation
+    counter can be loaded from and persisted to the dossiers table.
+
+    Called by the runtime before any stuck checks for a session.
+    """
+    with _STATE_LOCK:
+        st = _state(session_id)
+        if st.dossier_id is None:
+            st.dossier_id = dossier_id
+            st.stuck_escalation_count = _load_persisted_escalation_count(dossier_id)
 
 
 def _hash_args(args: dict) -> str:
@@ -275,15 +334,40 @@ def _assign_tier_and_emit(session_id: str, signal: StuckSignal) -> StuckSignal:
     previously did ``_emit_investigation_log(...); return signal`` now does
     ``return _assign_tier_and_emit(...)``.
     """
+    # H-08: acquire the lock only for the in-memory counter update; release
+    # it before any I/O. Also capture dossier_id for H-19 persistence.
     with _STATE_LOCK:
         st = _state(session_id)
         st.stuck_escalation_count += 1
         tier = min(st.stuck_escalation_count, 3)
+        new_count = st.stuck_escalation_count
+        dossier_id_for_persist = st.dossier_id
+    # _STATE_LOCK is fully released here — all storage I/O happens below this
+    # line so no coroutine is blocked waiting on the lock while DB writes run.
     signal.tier = tier
     if tier >= 3 and signal.options_for_user:
         for i, opt in enumerate(signal.options_for_user):
             opt["recommended"] = (i == 0)
-    _emit_investigation_log(session_id, signal)
+    # H-19: persist the updated escalation count so tier assignment survives
+    # sleep/wake session boundaries. Best-effort (daemon thread).
+    if dossier_id_for_persist:
+        threading.Thread(
+            target=_persist_escalation_count,
+            args=(dossier_id_for_persist, new_count),
+            daemon=True,
+        ).start()
+    # H-08: _emit_investigation_log performs two synchronous storage writes
+    # (get_work_session + append_investigation_log). Calling it directly on the
+    # event-loop thread would block all coroutines for the duration. When there
+    # is a running event loop (production), schedule the write via the loop's
+    # thread-pool executor so the coroutines stay unblocked. When there is no
+    # running loop (synchronous test code), fall back to a direct call so tests
+    # observe DB state immediately without needing explicit flushes.
+    try:
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(None, _emit_investigation_log, session_id, signal)
+    except RuntimeError:
+        _emit_investigation_log(session_id, signal)
     return signal
 
 
@@ -577,55 +661,71 @@ def check_revision_stall(dossier_id: str, session_id: str) -> Optional[StuckSign
 def check_session_budget(session_id: str) -> Optional[StuckSignal]:
     """Session-wide token ceiling — _SESSION_BUDGET_MULTIPLIER x
     SECTION_TOKEN_BUDGET as a hard-coded sanity bound. Soft signal only.
+
+    H-15: fires on first ceiling crossing, then again every
+    _SESSION_BUDGET_REPEAT_INTERVAL additional tokens, so sustained over-budget
+    runs continue to receive budget signals instead of being silenced forever.
     """
     signal: Optional[StuckSignal] = None
     with _STATE_LOCK:
         st = _state(session_id)
         ceiling = _SESSION_BUDGET_MULTIPLIER * config.SECTION_TOKEN_BUDGET
-        if st.session_tokens > ceiling and not st.session_budget_reported:
-            st.session_budget_reported = True
-            used = st.session_tokens
-            detail = (
-                f"Session `{session_id}` has consumed {used} input tokens, exceeding the "
-                f"sanity ceiling of {ceiling} (10x section budget)."
+        if st.session_tokens > ceiling:
+            # H-15: fire if never reported, OR if we've accumulated another
+            # _SESSION_BUDGET_REPEAT_INTERVAL tokens since the last signal.
+            tokens_over = st.session_tokens - ceiling
+            last_reported_over = (
+                st.session_budget_reported_at - ceiling
+                if st.session_budget_reported_at > ceiling else 0
             )
-            summary = (
-                f"I've used {used} input tokens in this work session (sanity ceiling "
-                f"is {ceiling}). That's a lot for one sitting — worth checking whether "
-                f"I'm still making real progress."
+            should_fire = (
+                st.session_budget_reported_at == 0
+                or (tokens_over - last_reported_over) >= _SESSION_BUDGET_REPEAT_INTERVAL
             )
-            options = [
-                {
-                    "label": "Wrap up — deliver what I have and end the session",
-                    "implications": (
-                        "I'll summarize open items, mark provisional pieces clearly, and end "
-                        "the work session so you can review before spending more."
-                    ),
-                    "recommended": True,
-                },
-                {
-                    "label": "Keep going — the work is clearly progressing",
-                    "implications": (
-                        "I'll continue; the ceiling is advisory. I'll check in again after "
-                        "significant additional progress."
-                    ),
-                    "recommended": False,
-                },
-                {
-                    "label": "Pause and let me take over",
-                    "implications": (
-                        "I'll hand off with a summary of what's done, what's provisional, and "
-                        "the specific next step I'd take."
-                    ),
-                    "recommended": False,
-                },
-            ]
-            signal = StuckSignal(
-                kind="session_budget",
-                detail=detail,
-                summary_of_attempts=summary,
-                options_for_user=options,
-            )
+            if should_fire:
+                st.session_budget_reported_at = st.session_tokens
+                used = st.session_tokens
+                detail = (
+                    f"Session `{session_id}` has consumed {used} input tokens, exceeding the "
+                    f"sanity ceiling of {ceiling} (10x section budget)."
+                )
+                summary = (
+                    f"I've used {used} input tokens in this work session (sanity ceiling "
+                    f"is {ceiling}). That's a lot for one sitting — worth checking whether "
+                    f"I'm still making real progress."
+                )
+                options = [
+                    {
+                        "label": "Wrap up — deliver what I have and end the session",
+                        "implications": (
+                            "I'll summarize open items, mark provisional pieces clearly, and end "
+                            "the work session so you can review before spending more."
+                        ),
+                        "recommended": True,
+                    },
+                    {
+                        "label": "Keep going — the work is clearly progressing",
+                        "implications": (
+                            "I'll continue; the ceiling is advisory. I'll check in again after "
+                            "significant additional progress."
+                        ),
+                        "recommended": False,
+                    },
+                    {
+                        "label": "Pause and let me take over",
+                        "implications": (
+                            "I'll hand off with a summary of what's done, what's provisional, and "
+                            "the specific next step I'd take."
+                        ),
+                        "recommended": False,
+                    },
+                ]
+                signal = StuckSignal(
+                    kind="session_budget",
+                    detail=detail,
+                    summary_of_attempts=summary,
+                    options_for_user=options,
+                )
     if signal is not None:
         return _assign_tier_and_emit(session_id, signal)
     return signal
@@ -674,6 +774,11 @@ def record_turn_end(session_id: str, tool_names_this_turn: list[str]) -> None:
         if tool_set & _PROGRESS_TOOL_NAMES:
             st.turns_since_progress = 0
             st.no_progress_reported = False
+        elif tool_set and tool_set.issubset(_EXEMPT_FROM_NO_PROGRESS):
+            # M-33: a turn consisting entirely of exempt research tools
+            # (web_search, log_source_consulted) is active work — do not
+            # count it against the no-progress heuristic.
+            pass
         else:
             st.turns_since_progress += 1
 

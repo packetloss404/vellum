@@ -129,6 +129,8 @@ class DossierAgent:
         from . import stuck as stuck_mod
 
         session_id = self._resolve_session()
+        # H-19: register the session so stuck can load/persist escalation count.
+        stuck_mod.init_session(session_id, self.dossier_id)
         state = _LoopState()
 
         dossier = storage.get_dossier(self.dossier_id)
