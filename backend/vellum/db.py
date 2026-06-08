@@ -145,10 +145,69 @@ def _ensure_indices(conn: sqlite3.Connection) -> None:
         conn.execute(sql)
 
 
+def _migrate_plan_items_from_json(conn: sqlite3.Connection) -> None:
+    """One-time migration: backfill plan_items table from dossiers.investigation_plan JSON.
+
+    Only runs once — guarded by a 'plan_items_migrated' row in settings.
+    """
+    done = conn.execute(
+        "SELECT 1 FROM settings WHERE key = 'plan_items_migrated'"
+    ).fetchone()
+    if done is not None:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    rows = conn.execute(
+        "SELECT id, investigation_plan FROM dossiers WHERE investigation_plan IS NOT NULL"
+    ).fetchall()
+    import json as _json
+    for row in rows:
+        try:
+            plan = _json.loads(row["investigation_plan"])
+        except Exception:
+            continue
+        items = plan.get("items") or []
+        for idx, item in enumerate(items):
+            item_id = item.get("id") or f"pli_mig_{row['id']}_{idx}"
+            existing = conn.execute(
+                "SELECT 1 FROM plan_items WHERE dossier_id = ? AND plan_item_id = ?",
+                (row["id"], item_id),
+            ).fetchone()
+            if existing:
+                continue
+            conn.execute(
+                """
+                INSERT INTO plan_items (id, dossier_id, plan_item_id, question, rationale,
+                    expected_sources, as_sub_investigation, status, order_key,
+                    sub_investigation_id, blocked_reason, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item_id,
+                    row["id"],
+                    item_id,
+                    item.get("question") or "",
+                    item.get("rationale") or "",
+                    _json.dumps(item.get("expected_sources") or []),
+                    1 if item.get("as_sub_investigation") else 0,
+                    item.get("status") or "planned",
+                    (idx + 1) * 10.0,
+                    None,
+                    None,
+                    now,
+                    now,
+                ),
+            )
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value_json, updated_at) VALUES ('plan_items_migrated', 'true', ?)",
+        (now,),
+    )
+
+
 def init_db(db_path: Path | None = None) -> None:
     path = db_path or config.DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
     try:
         # WAL allows concurrent readers + single writer — needed because
         # the runtime dispatches handlers in asyncio.to_thread across
@@ -161,6 +220,7 @@ def init_db(db_path: Path | None = None) -> None:
         _close_duplicate_unresolved_plan_approvals(conn)
         _close_duplicate_active_work_sessions(conn)
         _ensure_indices(conn)
+        _migrate_plan_items_from_json(conn)
         conn.commit()
     finally:
         conn.close()
