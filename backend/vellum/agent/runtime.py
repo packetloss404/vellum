@@ -135,7 +135,7 @@ class DossierAgent:
 
         dossier = storage.get_dossier(self.dossier_id)
         if dossier is None:
-            storage.end_work_session(session_id)
+            storage.end_work_session_with_reason(session_id, m.WorkSessionEndReason.error)
             return RunResult(
                 reason="error",
                 turns=0,
@@ -155,6 +155,7 @@ class DossierAgent:
             {"role": "user", "content": self._snapshot_content(prompt_mod)}
         )
 
+        _end_reason: Optional[m.WorkSessionEndReason] = None
         try:
             while state.turns < max_turns:
                 # anthropic SDK requires streaming for operations that may
@@ -277,6 +278,7 @@ class DossierAgent:
                 if not tool_uses:
                     # Model ended the turn. Any prose is discarded — the agent
                     # speaks only through tool calls into the dossier.
+                    _end_reason = m.WorkSessionEndReason.ended_turn
                     return RunResult(
                         reason="ended_turn",
                         turns=state.turns,
@@ -381,6 +383,7 @@ class DossierAgent:
                 stuck_mod.record_turn_end(session_id, tool_names_this_turn)
 
                 if delivered:
+                    _end_reason = m.WorkSessionEndReason.delivered
                     return RunResult(
                         reason="delivered",
                         turns=state.turns,
@@ -416,11 +419,13 @@ class DossierAgent:
                     {"role": "user", "content": self._snapshot_content(prompt_mod)}
                 )
 
+            _end_reason = m.WorkSessionEndReason.turn_limit
             return RunResult(
                 reason="turn_limit", turns=state.turns, session_id=session_id
             )
 
         except Exception as exc:  # noqa: BLE001 — we promise not to re-raise
+            _end_reason = m.WorkSessionEndReason.error
             return RunResult(
                 reason="error",
                 turns=state.turns,
@@ -448,7 +453,10 @@ class DossierAgent:
             except Exception:
                 # Fallback is best-effort — do not mask end_work_session.
                 pass
-            storage.end_work_session(session_id)
+            if _end_reason is not None:
+                storage.end_work_session_with_reason(session_id, _end_reason)
+            else:
+                storage.end_work_session(session_id)
             try:
                 stuck_mod.reset_session(session_id)
             except Exception:  # noqa: BLE001 — cleanup must not mask result

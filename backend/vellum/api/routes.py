@@ -645,4 +645,4 @@ def get_turn_cost_summary(dossier_id: str) -> list:
 def list_turns_by_trace(dossier_id: str, trace_id: str) -> list[m.AgentTurn]:
     if not storage.get_dossier(dossier_id):
         raise HTTPException(404, "dossier not found")
-    return storage.list_agent_turns_for_trace(trace_id)
+    return storage.list_agent_turns_for_trace(trace_id, dossier_id=dossier_id)

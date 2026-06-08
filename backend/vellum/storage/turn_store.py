@@ -89,12 +89,21 @@ def list_agent_turns_for_session(
     return [_row_to_agent_turn(r) for r in rows]
 
 
-def list_agent_turns_for_trace(trace_id: str) -> list[m.AgentTurn]:
+def list_agent_turns_for_trace(
+    trace_id: str,
+    dossier_id: Optional[str] = None,
+) -> list[m.AgentTurn]:
     with connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM agent_turns WHERE trace_id = ? ORDER BY created_at",
-            (trace_id,),
-        ).fetchall()
+        if dossier_id is not None:
+            rows = conn.execute(
+                "SELECT * FROM agent_turns WHERE trace_id = ? AND dossier_id = ? ORDER BY created_at",
+                (trace_id, dossier_id),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM agent_turns WHERE trace_id = ? ORDER BY created_at",
+                (trace_id,),
+            ).fetchall()
     return [_row_to_agent_turn(r) for r in rows]
 
 
