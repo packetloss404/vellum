@@ -20,8 +20,12 @@ _REQUIRED_COLUMNS: list[tuple[str, str, str]] = [
     ("dossiers", "wake_reason", "TEXT"),
     ("work_sessions", "input_tokens", "INTEGER NOT NULL DEFAULT 0"),
     ("work_sessions", "output_tokens", "INTEGER NOT NULL DEFAULT 0"),
+    ("work_sessions", "cache_creation_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
+    ("work_sessions", "cache_read_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
     ("work_sessions", "cost_usd", "REAL NOT NULL DEFAULT 0"),
     ("work_sessions", "end_reason", "TEXT"),
+    ("budget_accounting", "cache_creation_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
+    ("budget_accounting", "cache_read_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
     ("decision_points", "kind", "TEXT NOT NULL DEFAULT 'generic'"),
     # Day-4 (phase 1): sub-investigation identity.
     ("sub_investigations", "title", "TEXT"),

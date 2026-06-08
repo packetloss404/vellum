@@ -110,6 +110,8 @@ def record_session_usage(
     input_tokens: int,
     output_tokens: int,
     cost_usd: float,
+    cache_creation_input_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
 ) -> None:
     """Accumulate per-turn usage on a work_session row."""
     with connect() as conn:
@@ -118,6 +120,8 @@ def record_session_usage(
             UPDATE work_sessions
                SET input_tokens = input_tokens + ?,
                    output_tokens = output_tokens + ?,
+                   cache_creation_input_tokens = cache_creation_input_tokens + ?,
+                   cache_read_input_tokens = cache_read_input_tokens + ?,
                    cost_usd = cost_usd + ?,
                    token_budget_used = token_budget_used + ?
              WHERE id = ?
@@ -125,6 +129,8 @@ def record_session_usage(
             (
                 int(input_tokens),
                 int(output_tokens),
+                int(cache_creation_input_tokens),
+                int(cache_read_input_tokens),
                 float(cost_usd),
                 int(input_tokens + output_tokens),
                 session_id,
@@ -137,6 +143,8 @@ def record_turn_usage(
     input_tokens: int,
     output_tokens: int,
     cost_usd: float,
+    cache_creation_input_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
 ) -> None:
     """Accumulate per-turn usage on both the work_session row and the daily
     budget rollup in a single transaction so they never diverge."""
@@ -148,6 +156,8 @@ def record_turn_usage(
             UPDATE work_sessions
                SET input_tokens = input_tokens + ?,
                    output_tokens = output_tokens + ?,
+                   cache_creation_input_tokens = cache_creation_input_tokens + ?,
+                   cache_read_input_tokens = cache_read_input_tokens + ?,
                    cost_usd = cost_usd + ?,
                    token_budget_used = token_budget_used + ?
              WHERE id = ?
@@ -155,6 +165,8 @@ def record_turn_usage(
             (
                 int(input_tokens),
                 int(output_tokens),
+                int(cache_creation_input_tokens),
+                int(cache_read_input_tokens),
                 float(cost_usd),
                 int(input_tokens + output_tokens),
                 session_id,
@@ -162,15 +174,26 @@ def record_turn_usage(
         )
         conn.execute(
             """
-            INSERT INTO budget_accounting (day, spent_usd, input_tokens, output_tokens, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO budget_accounting (day, spent_usd, input_tokens, output_tokens,
+                cache_creation_input_tokens, cache_read_input_tokens, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(day) DO UPDATE SET
                 spent_usd = spent_usd + excluded.spent_usd,
                 input_tokens = input_tokens + excluded.input_tokens,
                 output_tokens = output_tokens + excluded.output_tokens,
+                cache_creation_input_tokens = cache_creation_input_tokens + excluded.cache_creation_input_tokens,
+                cache_read_input_tokens = cache_read_input_tokens + excluded.cache_read_input_tokens,
                 updated_at = excluded.updated_at
             """,
-            (day_key, float(cost_usd), int(input_tokens), int(output_tokens), now_s),
+            (
+                day_key,
+                float(cost_usd),
+                int(input_tokens),
+                int(output_tokens),
+                int(cache_creation_input_tokens),
+                int(cache_read_input_tokens),
+                now_s,
+            ),
         )
 
 

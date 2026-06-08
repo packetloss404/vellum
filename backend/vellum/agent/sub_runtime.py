@@ -474,11 +474,10 @@ async def run_sub_investigation(
                     cache_creation_input_tokens=cache_creation_input_tokens,
                     cache_read_input_tokens=cache_read_input_tokens,
                 )
-                storage.record_session_usage(
-                    session_id, input_tokens, output_tokens, turn_cost
-                )
-                storage.record_budget_usage(
-                    input_tokens, output_tokens, turn_cost
+                storage.record_turn_usage(
+                    session_id, input_tokens, output_tokens, turn_cost,
+                    cache_creation_input_tokens=cache_creation_input_tokens,
+                    cache_read_input_tokens=cache_read_input_tokens,
                 )
                 stuck_mod.record_input_tokens(
                     session_id, last_section_id, input_tokens
