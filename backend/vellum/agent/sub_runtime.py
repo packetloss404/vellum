@@ -75,12 +75,14 @@ def _tools_with_cache_breakpoint(tools: list[dict[str, Any]]) -> list[dict[str, 
 
 # Tools exposed to a sub-agent. Tight by design — no plan/debrief, no
 # further spawning. The exit call is ``complete_sub_investigation``.
+# flag_needs_input is excluded: subs surface blocks through return_summary
+# only; allowing it left NeedsInput rows open with no sub_investigation_id
+# FK, causing mark_investigation_delivered to refuse delivery.
 SUB_TOOL_ALLOWLIST: frozenset[str] = frozenset({
     "upsert_section",
     "add_artifact",
     "log_source_consulted",
     "mark_considered_and_rejected",
-    "flag_needs_input",
     "complete_sub_investigation",
 })
 
@@ -320,6 +322,60 @@ def _build_initial_user_content(
     return [{"type": "text", "text": "\n\n".join(parts)}]
 
 
+def _check_sub_budget_signals(dossier_id: str, session_id: str) -> None:
+    """H-14: Emit budget soft-signals for the sub's session and daily spend.
+
+    Mirrors DossierAgent._check_budget_signals from runtime.py. Called once
+    per turn after usage is recorded. Best-effort — never raises; a budget
+    signal failure must not kill the sub loop.
+    """
+    try:
+        daily_cap = float(storage.get_setting("budget_daily_soft_cap_usd", 0) or 0)
+        session_cap = float(storage.get_setting("budget_per_session_soft_cap_usd", 0) or 0)
+    except Exception:
+        return
+
+    if daily_cap > 0:
+        try:
+            today = storage.get_budget_today()
+        except Exception:
+            today = None
+        if today is not None and today.spent_usd >= daily_cap:
+            try:
+                handlers.HANDLERS["append_reasoning"](
+                    dossier_id,
+                    {
+                        "note": (
+                            f"[sub_budget] Daily spend ${today.spent_usd:.2f} reached "
+                            f"soft cap ${daily_cap:.2f} during sub-investigation."
+                        ),
+                        "tags": ["budget", "sub_budget"],
+                    },
+                )
+            except Exception:
+                pass
+
+    if session_cap > 0:
+        try:
+            ws = storage.get_work_session(session_id)
+        except Exception:
+            ws = None
+        if ws is not None and ws.cost_usd >= session_cap:
+            try:
+                handlers.HANDLERS["append_reasoning"](
+                    dossier_id,
+                    {
+                        "note": (
+                            f"[sub_budget] Session spend ${ws.cost_usd:.2f} reached "
+                            f"per-session soft cap ${session_cap:.2f} during sub-investigation."
+                        ),
+                        "tags": ["budget", "sub_budget"],
+                    },
+                )
+            except Exception:
+                pass
+
+
 async def run_sub_investigation(
     parent_dossier_id: str,
     sub_id: str,
@@ -388,6 +444,16 @@ async def run_sub_investigation(
         while turns < effective_max_turns:
             turns += 1
 
+            # H-13: check stuck state before each API call (mirrors runtime.py).
+            # On the very first turn there is no prior turn state, but the call
+            # is still safe — all checks return None with empty counters.
+            _stuck_signal = stuck_mod.check_stuck_state(parent_dossier_id, session_id)
+            if _stuck_signal is not None:
+                logger.warning(
+                    "sub_runtime: sub %s stuck signal before turn %d: %s",
+                    sub_id, turns, _stuck_signal.kind,
+                )
+
             # Streaming is required for long operations (see runtime.py).
             async with client.messages.stream(
                 model=resolved_model,
@@ -417,6 +483,8 @@ async def run_sub_investigation(
                 stuck_mod.record_input_tokens(
                     session_id, last_section_id, input_tokens
                 )
+                # H-14: check budget soft-signals after each turn's usage capture.
+                _check_sub_budget_signals(parent_dossier_id, session_id)
 
             messages.append({"role": "assistant", "content": response.content})
 
@@ -446,10 +514,8 @@ async def run_sub_investigation(
                                     "You have not yet called "
                                     "complete_sub_investigation. If you "
                                     "have a substantive answer, call it "
-                                    "now. If you need more context, call "
-                                    "flag_needs_input and then "
-                                    "complete_sub_investigation with a "
-                                    "brief explanation."
+                                    "now with a brief explanation in "
+                                    "return_summary."
                                 ),
                             }
                         ],
@@ -458,6 +524,7 @@ async def run_sub_investigation(
                 continue
 
             tool_results: list[dict[str, Any]] = []
+            tool_names_this_turn: list[str] = []
 
             for tu in tool_uses:
                 tool_name = tu.name
@@ -465,6 +532,7 @@ async def run_sub_investigation(
 
                 if tool_name == "web_search":
                     # Server-side; results are inlined in response.content.
+                    tool_names_this_turn.append(tool_name)
                     continue
 
                 block, maybe_completion = await _dispatch_sub_tool(
@@ -476,12 +544,18 @@ async def run_sub_investigation(
                     tu.id,
                 )
                 tool_results.append(block)
+                tool_names_this_turn.append(tool_name)
                 if tool_name == "upsert_section":
                     real_id = _extract_result_section_id(block)
                     if real_id:
                         last_section_id = real_id
                 if maybe_completion is not None and completion_args is None:
                     completion_args = maybe_completion
+                # H-13: record each tool call for stuck-loop detection.
+                stuck_mod.record_tool_call(session_id, tool_name, tool_input)
+
+            # H-13: record end-of-turn progress state for no_progress detection.
+            stuck_mod.record_turn_end(session_id, tool_names_this_turn)
 
             if tool_results:
                 messages.append({"role": "user", "content": tool_results})
