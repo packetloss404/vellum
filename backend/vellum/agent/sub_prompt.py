@@ -13,6 +13,8 @@ Exports:
 """
 from __future__ import annotations
 
+from .prompt import _sanitize_user_field
+
 
 SUB_INVESTIGATION_SYSTEM_PROMPT: str = """You are a Vellum sub-investigator. The main \
 investigator spawned you with a specific, bounded scope and a handful of questions. You answer \
@@ -108,10 +110,11 @@ def render_sub_scope(scope: str, questions: list[str]) -> str:
     questions the sub is expected to answer. Keep compact — this is context,
     not a brief.
     """
-    scope_text = (scope or "").strip() or "(no scope provided — ask parent via flag_needs_input)"
+    raw_scope = (scope or "").strip() or "(no scope provided — ask parent via flag_needs_input)"
+    scope_text = _sanitize_user_field(raw_scope)
     q_list = [str(q).strip() for q in (questions or []) if str(q).strip()]
     if q_list:
-        q_block = "\n".join(f"- {q}" for q in q_list)
+        q_block = "\n".join(f"- {_sanitize_user_field(q)}" for q in q_list)
     else:
         q_block = "(no specific questions provided — clarify via flag_needs_input if needed)"
 

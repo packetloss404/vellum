@@ -32,6 +32,7 @@ import anthropic
 
 from .. import models as m
 from .. import storage
+from .. import config as _config
 from ..config import ANTHROPIC_API_KEY, MODEL, cost_usd_for_turn
 from ..tools import handlers
 from .compactor import _estimate_tokens as _compactor_estimate_tokens, compact_messages, should_compact
@@ -242,10 +243,7 @@ class DossierAgent:
                 # message history is approaching the context limit. The compactor
                 # replaces old turns with a single summary breadcrumb, keeping
                 # the most recent keep_recent_turns turns verbatim.
-                # Read threshold dynamically so tests can monkeypatch the env var.
-                _compact_threshold = int(
-                    os.getenv("VELLUM_COMPACT_INPUT_TOKEN_THRESHOLD", "80000")
-                )
+                _compact_threshold = _config.COMPACT_INPUT_TOKEN_THRESHOLD
                 if _compact_threshold > 0:
                     est_tokens = _compactor_estimate_tokens(state.messages)
                     if should_compact(state.messages, est_tokens, _compact_threshold):

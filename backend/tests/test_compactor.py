@@ -225,7 +225,8 @@ class TestRuntimeCompaction:
         dossier_id = dossier.id
 
         # Set a very low threshold so compaction fires on our small message list.
-        monkeypatch.setenv("VELLUM_COMPACT_INPUT_TOKEN_THRESHOLD", "1")
+        from vellum import config as _config
+        monkeypatch.setattr(_config, "COMPACT_INPUT_TOKEN_THRESHOLD", 1)
 
         # Build a scripted client with many turns to create enough messages.
         from tests.test_runtime_v2 import make_mock_client, _message, _text, _tool_use
