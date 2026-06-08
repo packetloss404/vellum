@@ -44,6 +44,38 @@ _WEB_SEARCH_TOOL: dict[str, Any] = {
     "name": "web_search",
 }
 
+# Prompt caching: wrap the system prompt so Anthropic caches it across turns.
+def _cached_system_prompt(text: str) -> list[dict[str, Any]]:
+    return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+
+
+# Add a cache breakpoint on the last tool so the tool definitions are cached.
+# Returns a new list — the original is never mutated.
+def _tools_with_cache_breakpoint(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not tools:
+        return tools
+    result = [dict(t) for t in tools]
+    result[-1] = dict(result[-1])
+    result[-1]["cache_control"] = {"type": "ephemeral"}
+    return result
+
+
+# Context management: clear tool_use blocks when input tokens exceed this
+# threshold. Set to 0 to disable.  Monkeypatched in tests.
+CONTEXT_MANAGEMENT_THRESHOLD: int = int(os.getenv("VELLUM_CONTEXT_MANAGEMENT_THRESHOLD", "180000"))
+
+# Tools that write dossier state — these are preserved from context clearing
+# so the model keeps its place even after a big prune.
+_DOSSIER_WRITE_TOOLS: list[str] = [
+    "upsert_section", "update_section_state", "delete_section", "reorder_sections",
+    "flag_needs_input", "flag_decision_point", "append_reasoning", "mark_ruled_out",
+    "update_investigation_plan", "update_debrief", "update_working_theory",
+    "record_premise_challenge", "add_artifact", "update_artifact",
+    "spawn_sub_investigation", "complete_sub_investigation", "update_sub_investigation",
+    "log_source_consulted", "mark_considered_and_rejected", "set_next_action",
+    "declare_stuck", "schedule_wake", "mark_investigation_delivered", "summarize_session",
+]
+
 
 @dataclass
 class RunResult:
@@ -110,6 +142,10 @@ class DossierAgent:
             )
 
         system_prompt = prompt_mod.build_system_prompt(dossier)
+        # Wrap in a list with cache_control so Anthropic caches the static
+        # system text across turns (prompt caching, Change A).
+        cached_system = _cached_system_prompt(system_prompt)
+        cached_tools = _tools_with_cache_breakpoint(self._tools)
 
         # Kick off with a state snapshot as the first user message. The model
         # has no other user input on a resume — the dossier is the prompt.
@@ -123,22 +159,42 @@ class DossierAgent:
                 # exceed 10 minutes. With max_tokens=32000 + web_search the
                 # SDK guards against the non-streaming path. Use the stream
                 # context manager and aggregate via `get_final_message`.
-                async with self._client.messages.stream(
+                stream_kwargs: dict[str, Any] = dict(
                     model=self.model,
                     max_tokens=32000,
-                    system=system_prompt,
-                    tools=self._tools,
+                    system=cached_system,
+                    tools=cached_tools,
                     messages=state.messages,
-                ) as stream:
+                )
+                if CONTEXT_MANAGEMENT_THRESHOLD > 0:
+                    stream_kwargs["extra_body"] = {
+                        "context_management": {
+                            "edits": [
+                                {
+                                    "type": "clear_tool_uses_20250919",
+                                    "exclude_tools": _DOSSIER_WRITE_TOOLS,
+                                    "trigger": {
+                                        "type": "input_tokens",
+                                        "value": CONTEXT_MANAGEMENT_THRESHOLD,
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                async with self._client.messages.stream(**stream_kwargs) as stream:
                     response = await stream.get_final_message()
 
                 if response.usage is not None:
                     input_tokens = response.usage.input_tokens or 0
                     output_tokens = response.usage.output_tokens or 0
+                    cache_creation_input_tokens = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+                    cache_read_input_tokens = getattr(response.usage, "cache_read_input_tokens", 0) or 0
                     # Compute cost in dollars using the MODEL_PRICING table.
                     # Unknown models return 0.0; we log but don't crash.
                     turn_cost = cost_usd_for_turn(
-                        self.model, input_tokens, output_tokens
+                        self.model, input_tokens, output_tokens,
+                        cache_creation_input_tokens=cache_creation_input_tokens,
+                        cache_read_input_tokens=cache_read_input_tokens,
                     )
                     # Per-session and global daily rollups — power the budget
                     # soft-signal surface and the per-session UI header.
@@ -171,18 +227,14 @@ class DossierAgent:
                     {"role": "assistant", "content": serialized_content}
                 )
 
+                # Count every stream call (including pause_turn continuations)
+                # so RunResult.turns matches client.messages.stream.call_count.
+                state.turns += 1
+
                 # Server-side tool (web_search) hit its per-turn iteration
                 # cap; re-send to let Anthropic resume where it paused.
-                # H pause_turn: do NOT count this as a consumed agent turn —
-                # it's Anthropic's internal iteration cap, not a logical turn.
-                # Incrementing here would burn the max_turns budget on a single
-                # heavy-search logical turn.
                 if response.stop_reason == "pause_turn":
                     continue
-
-                # Count logical agent turns here, after the pause_turn guard,
-                # so pause_turn continuations don't consume turn budget.
-                state.turns += 1
 
                 # Compaction: check after every logical turn and compact if the
                 # message history is approaching the context limit. The compactor

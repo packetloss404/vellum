@@ -23,6 +23,13 @@ under-specified, consequential problem. Run a real investigation and leave a dur
 plan, evidence, sub-investigations, artifacts, rejected paths, debrief, and next action. The user
 does not see chat prose; they see only dossier tool writes. No status theater.
 
+# State snapshot as index
+
+The state snapshot you receive each turn is an index, not a full dump. Confident sections show only
+a short preview to save context tokens — call get_section to load the full body when you need to
+verify, cite, or revise one. Artifacts are index-only; call get_artifact for the full text.
+The reasoning trail shows the last 5 entries; call get_reasoning_window to load earlier context.
+
 # Push back on the premise
 
 Do not answer a bad question. First run smell tests for what the question assumes:
@@ -363,13 +370,14 @@ def build_state_snapshot(dossier_full: "m.DossierFull") -> str:
         lines.append("last user visit: never (fresh dossier)")
     lines.append("")
 
-    # Sections
+    # Sections — confident sections show a 80-char preview only (call get_section
+    # for the full body). Non-confident (provisional/blocked) show full content
+    # so the agent can see why they're uncertain.
     lines.append(f"## Sections ({len(dossier_full.sections)})")
     if not dossier_full.sections:
         lines.append("(none yet — the dossier is empty)")
     else:
         for s in dossier_full.sections:
-            preview = _trunc(s.content, 150) if s.content else "(empty)"
             src_count = len(s.sources)
             src_tag = f"{src_count} src" if src_count else "no src"
             line1 = (
@@ -377,10 +385,25 @@ def build_state_snapshot(dossier_full: "m.DossierFull") -> str:
                 f"  ({src_tag})"
             )
             lines.append(line1)
-            lines.append(f"    content: {preview}")
+            if s.state.value == "confident":
+                preview = _trunc(s.content, 80) if s.content else "(empty)"
+                lines.append(f"    preview: {preview}  [call get_section for full body]")
+            else:
+                full = s.content if s.content else "(empty)"
+                lines.append(f"    content: {full}")
             if s.change_note:
                 lines.append(f"    change_note: {_trunc(s.change_note, 120)}")
     lines.append("")
+
+    # Artifacts — index only; call get_artifact for the full body.
+    if dossier_full.artifacts:
+        lines.append(f"## Artifacts ({len(dossier_full.artifacts)})")
+        for art in dossier_full.artifacts:
+            lines.append(
+                f"- [{art.id}] {art.kind.value}/{art.state.value}  \"{_trunc(art.title, 80)}\""
+                f"  [call get_artifact for full body]"
+            )
+        lines.append("")
 
     # Open needs_input
     open_ni = [n for n in dossier_full.needs_input if n.answered_at is None]
@@ -416,14 +439,21 @@ def build_state_snapshot(dossier_full: "m.DossierFull") -> str:
             )
     lines.append("")
 
-    # Recent reasoning trail (last 10)
-    trail = dossier_full.reasoning_trail[-10:]
+    # Recent reasoning trail (last 5). Call get_reasoning_window for earlier entries.
+    _TRAIL_CAP = 5
+    trail = dossier_full.reasoning_trail[-_TRAIL_CAP:]
+    total_trail = len(dossier_full.reasoning_trail)
+    earlier = total_trail - len(trail)
     lines.append(
-        f"## Recent reasoning_trail (last {len(trail)} of {len(dossier_full.reasoning_trail)})"
+        f"## Recent reasoning_trail (last {len(trail)} of {total_trail})"
     )
     if not trail:
         lines.append("(empty — no notes yet)")
     else:
+        if earlier > 0:
+            lines.append(
+                f"  [{earlier} earlier reasoning entries — call get_reasoning_window to load them]"
+            )
         for r in trail:
             tag_str = f"[{','.join(r.tags)}] " if r.tags else ""
             lines.append(

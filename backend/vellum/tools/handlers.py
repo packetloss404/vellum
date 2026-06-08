@@ -567,6 +567,109 @@ def mark_investigation_delivered(dossier_id: str, args: dict[str, Any]) -> dict[
 
 
 # ===================================================================
+# JIT read-only handlers — load full content on demand
+# ===================================================================
+
+
+def get_section(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Return the full content of a single section by id."""
+    section_id = args.get("section_id", "")
+    sec = storage.get_section(section_id)
+    if sec is None:
+        return {"ok": False, "reason": "not_found"}
+    if sec.dossier_id != dossier_id:
+        return {"ok": False, "reason": "wrong_dossier"}
+    return {
+        "ok": True,
+        "section_id": sec.id,
+        "title": sec.title,
+        "type": sec.type.value,
+        "state": sec.state.value,
+        "content": sec.content,
+        "sources": [s.model_dump() for s in sec.sources],
+    }
+
+
+def list_sections_jit(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Return a preview index of sections, optionally filtered."""
+    state_filter = args.get("state_filter")
+    kind_filter = args.get("kind_filter")
+    sections = storage.list_sections(dossier_id)
+    if state_filter:
+        sections = [s for s in sections if s.state.value == state_filter]
+    if kind_filter:
+        sections = [s for s in sections if s.type.value == kind_filter]
+    preview_len = 80
+    result = []
+    for s in sections:
+        preview = s.content[:preview_len]
+        if len(s.content) > preview_len:
+            preview += "…"
+        result.append({
+            "id": s.id,
+            "title": s.title,
+            "type": s.type.value,
+            "state": s.state.value,
+            "preview": preview,
+        })
+    return {"ok": True, "count": len(result), "sections": result}
+
+
+def get_artifact_handler(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Return the full content of a single artifact by id."""
+    artifact_id = args.get("artifact_id", "")
+    art = storage.get_artifact(artifact_id)
+    if art is None:
+        return {"ok": False, "reason": "not_found"}
+    if art.dossier_id != dossier_id:
+        return {"ok": False, "reason": "wrong_dossier"}
+    return {
+        "ok": True,
+        "artifact_id": art.id,
+        "title": art.title,
+        "kind": art.kind.value,
+        "state": art.state.value,
+        "content": art.content,
+        "intended_use": art.intended_use,
+    }
+
+
+def get_reasoning_window(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Return a window of recent reasoning trail entries."""
+    limit = int(args.get("limit", 20))
+    tag_filter = args.get("tag_filter")
+    since_iso = args.get("since_iso")
+
+    from datetime import datetime, timezone
+    since_dt = None
+    if since_iso:
+        try:
+            since_dt = datetime.fromisoformat(since_iso.replace("Z", "+00:00"))
+        except ValueError:
+            return {"ok": False, "reason": "invalid_since_iso"}
+
+    entries = storage.list_reasoning_trail(dossier_id)
+    if since_dt:
+        entries = [e for e in entries if e.created_at >= since_dt]
+    if tag_filter:
+        entries = [e for e in entries if tag_filter in e.tags]
+    entries = entries[-limit:]
+    return {
+        "ok": True,
+        "count": len(entries),
+        "entries": [
+            {
+                "id": e.id,
+                "note": e.note,
+                "tags": e.tags,
+                "created_at": e.created_at.isoformat(),
+            }
+            for e in entries
+        ],
+    }
+
+
+# ===================================================================
 # Registry + schemas for Agent SDK wiring
 # ===================================================================
 
@@ -600,6 +703,11 @@ HANDLERS = {
     "schedule_wake": schedule_wake,
     "mark_investigation_delivered": mark_investigation_delivered,
     "summarize_session": summarize_session,
+    # JIT read-only
+    "get_section": get_section,
+    "list_sections": list_sections_jit,
+    "get_artifact": get_artifact_handler,
+    "get_reasoning_window": get_reasoning_window,
 }
 
 
@@ -810,6 +918,24 @@ TOOL_DESCRIPTIONS = {
         "use flag_needs_input or flag_decision_point and end the turn. "
         "reason is a short string logged in the reasoning trail so you (on resume) and the "
         "user can see why you stepped back. hours_from_now accepts fractions; schedule_wake_max_hours caps it."
+    ),
+    # JIT read-only
+    "get_section": (
+        "Fetch the full content of a section by section_id. The state snapshot shows only a "
+        "preview for confident sections to save context — call get_section when you need the "
+        "complete body to verify, cite, or revise it."
+    ),
+    "list_sections": (
+        "List sections with optional state_filter or kind_filter. Returns previews; call "
+        "get_section for full content. Use to discover section IDs before loading a specific one."
+    ),
+    "get_artifact": (
+        "Fetch the full content of an artifact by artifact_id. Artifacts are index-only in the "
+        "state snapshot — call this to read the full body before revising or referencing it."
+    ),
+    "get_reasoning_window": (
+        "Load a window of reasoning trail entries. The snapshot caps at 5 recent entries; call "
+        "this with a limit or since_iso to read earlier context across sessions."
     ),
 }
 
@@ -1152,6 +1278,49 @@ def tool_schemas() -> list[dict[str, Any]]:
                 "recommendation": {"type": "string"},
             },
             "required": ["summary_of_attempts", "options_for_user", "recommendation"],
+        },
+    })
+
+    # --- JIT read-only schemas ---
+    schemas.append({
+        "name": "get_section",
+        "description": TOOL_DESCRIPTIONS["get_section"],
+        "input_schema": {
+            "type": "object",
+            "properties": {"section_id": {"type": "string"}},
+            "required": ["section_id"],
+        },
+    })
+    schemas.append({
+        "name": "list_sections",
+        "description": TOOL_DESCRIPTIONS["list_sections"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "state_filter": {"type": "string"},
+                "kind_filter": {"type": "string"},
+            },
+        },
+    })
+    schemas.append({
+        "name": "get_artifact",
+        "description": TOOL_DESCRIPTIONS["get_artifact"],
+        "input_schema": {
+            "type": "object",
+            "properties": {"artifact_id": {"type": "string"}},
+            "required": ["artifact_id"],
+        },
+    })
+    schemas.append({
+        "name": "get_reasoning_window",
+        "description": TOOL_DESCRIPTIONS["get_reasoning_window"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 20},
+                "tag_filter": {"type": "string"},
+                "since_iso": {"type": "string"},
+            },
         },
     })
 

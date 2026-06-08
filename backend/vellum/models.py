@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 def new_id(prefix: str) -> str:
@@ -90,10 +90,10 @@ class PlanItemStatus(str, Enum):
 
 
 class PlanItem(BaseModel):
-    """First-class plan item row (plan_items table). Replaces InvestigationPlanItem
-    for storage operations — richer with dossier_id, sub_investigation_id, order_key."""
+    """First-class plan item row (plan_items table).  Replaces the embedded
+    InvestigationPlanItem inside the dossiers.investigation_plan JSON blob."""
     id: str = Field(default_factory=lambda: new_id("pli"))
-    dossier_id: str = ""
+    dossier_id: Optional[str] = None
     question: str = ""
     rationale: str = ""
     expected_sources: list[str] = Field(default_factory=list)
@@ -339,6 +339,45 @@ class BudgetRollup(BaseModel):
     updated_at: datetime
 
 
+class AgentTurn(BaseModel):
+    """One Anthropic API round-trip recorded for cost/debugging purposes."""
+    id: str                               # prefix: "agt"
+    dossier_id: str
+    work_session_id: Optional[str] = None
+    sub_investigation_id: Optional[str] = None
+    trace_id: str = ""
+    turn_index: int = 0
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cost_usd: float = 0.0
+    duration_ms: int = 0
+    tool_calls_count: int = 0
+    stop_reason: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: datetime
+
+
+class AgentTurnCreate(BaseModel):
+    dossier_id: str
+    work_session_id: Optional[str] = None
+    sub_investigation_id: Optional[str] = None
+    trace_id: str = ""
+    turn_index: int = 0
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cost_usd: float = 0.0
+    duration_ms: int = 0
+    tool_calls_count: int = 0
+    stop_reason: Optional[str] = None
+    notes: Optional[str] = None
+
+
 ChangeKind = Literal[
     "section_created",
     "section_updated",
@@ -473,9 +512,33 @@ class DebriefUpdate(BaseModel):
 
 
 class InvestigationPlanUpdate(BaseModel):
-    items: list[PlanItem | InvestigationPlanItem]
+    items: list[PlanItem]
     rationale: str = ""
     approve: bool = False                 # when True, set approved_at to now
+
+    @field_validator("items", mode="before")
+    @classmethod
+    def _coerce_legacy_items(cls, v: object) -> object:
+        """Accept InvestigationPlanItem instances by converting them to PlanItem-
+        compatible dicts so callers using the old model continue to work."""
+        if not isinstance(v, list):
+            return v
+        coerced = []
+        for item in v:
+            if isinstance(item, InvestigationPlanItem):
+                coerced.append(
+                    PlanItem(
+                        id=item.id,
+                        question=item.question,
+                        rationale=item.rationale,
+                        expected_sources=item.expected_sources,
+                        as_sub_investigation=item.as_sub_investigation,
+                        status=PlanItemStatus(item.status),
+                    )
+                )
+            else:
+                coerced.append(item)
+        return coerced
 
 
 class NextActionCreate(BaseModel):

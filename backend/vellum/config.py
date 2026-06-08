@@ -102,24 +102,52 @@ COMPACT_INPUT_TOKEN_THRESHOLD = int(
 MODEL_PRICING_USD_PER_MTOK: dict[str, dict[str, float]] = {
     # Verified from platform.claude.com/docs/en/about-claude/pricing 2026-04-23.
     # Opus 4.7 pricing unchanged from 4.6.
-    "claude-opus-4-7": {"input": 5.0, "output": 25.0},
-    "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
-    "claude-haiku-4-5": {"input": 1.0, "output": 5.0},
+    # cache_creation_input = 1.25x base input; cache_read_input = 0.1x base input.
+    "claude-opus-4-7": {
+        "input": 5.0,
+        "output": 25.0,
+        "cache_creation_input": 5.0 * 1.25,
+        "cache_read_input": 5.0 * 0.1,
+    },
+    "claude-sonnet-4-6": {
+        "input": 3.0,
+        "output": 15.0,
+        "cache_creation_input": 3.0 * 1.25,
+        "cache_read_input": 3.0 * 0.1,
+    },
+    "claude-haiku-4-5": {
+        "input": 1.0,
+        "output": 5.0,
+        "cache_creation_input": 1.0 * 1.25,
+        "cache_read_input": 1.0 * 0.1,
+    },
 }
 
 
-def cost_usd_for_turn(model: str, input_tokens: int, output_tokens: int) -> float:
+def cost_usd_for_turn(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_creation_input_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
+) -> float:
     """Translate a turn's usage into a dollar figure using MODEL_PRICING.
 
     Unknown models fall back to zero cost — caller logs/reports, doesn't
     crash. That keeps a model-name-typo from taking down the runtime loop.
     """
+    import logging
     rates = MODEL_PRICING_USD_PER_MTOK.get(model)
     if rates is None:
+        logging.getLogger("vellum.config").warning(
+            "cost_usd_for_turn: unknown model %r — returning 0.0", model
+        )
         return 0.0
     return (
         (input_tokens / 1_000_000) * rates["input"]
         + (output_tokens / 1_000_000) * rates["output"]
+        + (cache_creation_input_tokens / 1_000_000) * rates["cache_creation_input"]
+        + (cache_read_input_tokens / 1_000_000) * rates["cache_read_input"]
     )
 
 

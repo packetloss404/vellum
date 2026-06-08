@@ -276,14 +276,14 @@ CREATE TABLE IF NOT EXISTS session_summaries (
 );
 CREATE INDEX IF NOT EXISTS idx_session_summaries_dossier ON session_summaries(dossier_id, created_at);
 
--- Phase 4B: plan items — first-class table replacing the JSON blob's items list.
--- One row per plan item. authoritative source; investigation_plan JSON stores only
--- metadata (rationale, drafted_at, etc.) with an empty items list.
+-- Phase 4B: first-class plan items table. Replaces the JSON blob in
+-- dossiers.investigation_plan. Ordered by order_key (float) so the UI
+-- can cheaply sort without re-parsing JSON.
 CREATE TABLE IF NOT EXISTS plan_items (
     id TEXT PRIMARY KEY,
     dossier_id TEXT NOT NULL,
     plan_item_id TEXT NOT NULL,
-    question TEXT NOT NULL DEFAULT '',
+    question TEXT NOT NULL,
     rationale TEXT NOT NULL DEFAULT '',
     expected_sources TEXT NOT NULL DEFAULT '[]',
     as_sub_investigation INTEGER NOT NULL DEFAULT 0,
@@ -293,16 +293,16 @@ CREATE TABLE IF NOT EXISTS plan_items (
     blocked_reason TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    UNIQUE(dossier_id, plan_item_id),
-    FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE
+    FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE,
+    UNIQUE(dossier_id, plan_item_id)
 );
 CREATE INDEX IF NOT EXISTS idx_plan_items_dossier ON plan_items(dossier_id, order_key);
 
--- Phase 4A: per-turn telemetry. One row per Anthropic API call.
+-- Phase 4A: per-turn cost/token telemetry. One row per Anthropic API call.
 CREATE TABLE IF NOT EXISTS agent_turns (
     id TEXT PRIMARY KEY,
     dossier_id TEXT NOT NULL,
-    work_session_id TEXT NOT NULL,
+    work_session_id TEXT,
     sub_investigation_id TEXT,
     trace_id TEXT NOT NULL DEFAULT '',
     turn_index INTEGER NOT NULL DEFAULT 0,
@@ -321,3 +321,4 @@ CREATE TABLE IF NOT EXISTS agent_turns (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_turns_dossier ON agent_turns(dossier_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_turns_session ON agent_turns(work_session_id, turn_index);
+CREATE INDEX IF NOT EXISTS idx_agent_turns_trace ON agent_turns(trace_id, created_at);

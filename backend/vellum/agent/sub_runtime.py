@@ -56,6 +56,23 @@ _WEB_SEARCH_TOOL: dict[str, Any] = {
 }
 
 
+# Prompt caching helpers — mirror the main runtime's implementation so both
+# agent loops benefit from the same cache strategy.
+def _cached_system_prompt(text: str) -> list[dict[str, Any]]:
+    """Wrap a system prompt string in the Anthropic cache_control list form."""
+    return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+
+
+def _tools_with_cache_breakpoint(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return a copy of tools with cache_control on the last entry."""
+    if not tools:
+        return tools
+    result = [dict(t) for t in tools]
+    result[-1] = dict(result[-1])
+    result[-1]["cache_control"] = {"type": "ephemeral"}
+    return result
+
+
 # Tools exposed to a sub-agent. Tight by design — no plan/debrief, no
 # further spawning. The exit call is ``complete_sub_investigation``.
 SUB_TOOL_ALLOWLIST: frozenset[str] = frozenset({
@@ -346,8 +363,8 @@ async def run_sub_investigation(
             session = exc.session
     session_id = session.id
 
-    tools = _build_sub_tool_definitions()
-    system_prompt = sub_prompt.SUB_INVESTIGATION_SYSTEM_PROMPT
+    tools = _tools_with_cache_breakpoint(_build_sub_tool_definitions())
+    system_prompt = _cached_system_prompt(sub_prompt.SUB_INVESTIGATION_SYSTEM_PROMPT)
 
     messages: list[dict[str, Any]] = [
         {
@@ -384,8 +401,12 @@ async def run_sub_investigation(
             if response.usage is not None:
                 input_tokens = getattr(response.usage, "input_tokens", 0) or 0
                 output_tokens = getattr(response.usage, "output_tokens", 0) or 0
+                cache_creation_input_tokens = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+                cache_read_input_tokens = getattr(response.usage, "cache_read_input_tokens", 0) or 0
                 turn_cost = cost_usd_for_turn(
-                    resolved_model, input_tokens, output_tokens
+                    resolved_model, input_tokens, output_tokens,
+                    cache_creation_input_tokens=cache_creation_input_tokens,
+                    cache_read_input_tokens=cache_read_input_tokens,
                 )
                 storage.record_session_usage(
                     session_id, input_tokens, output_tokens, turn_cost

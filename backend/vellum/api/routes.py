@@ -622,3 +622,27 @@ def work_session_stats(session_id: str) -> dict:
     if stats is None:
         raise HTTPException(404, "work_session not found")
     return stats
+
+
+# ---------- agent_turns ----------
+
+
+@router.get("/dossiers/{dossier_id}/turns", response_model=list[m.AgentTurn])
+def list_agent_turns(dossier_id: str, limit: int = 100) -> list[m.AgentTurn]:
+    if not storage.get_dossier(dossier_id):
+        raise HTTPException(404, "dossier not found")
+    return storage.list_agent_turns_for_dossier(dossier_id, limit=limit)
+
+
+@router.get("/dossiers/{dossier_id}/turns/summary")
+def get_turn_cost_summary(dossier_id: str) -> list:
+    if not storage.get_dossier(dossier_id):
+        raise HTTPException(404, "dossier not found")
+    return storage.get_turn_cost_summary_for_dossier(dossier_id)
+
+
+@router.get("/dossiers/{dossier_id}/turns/by-trace/{trace_id}", response_model=list[m.AgentTurn])
+def list_turns_by_trace(dossier_id: str, trace_id: str) -> list[m.AgentTurn]:
+    if not storage.get_dossier(dossier_id):
+        raise HTTPException(404, "dossier not found")
+    return storage.list_agent_turns_for_trace(trace_id)
