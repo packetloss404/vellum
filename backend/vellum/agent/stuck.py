@@ -224,15 +224,20 @@ def _load_persisted_escalation_count(dossier_id: str) -> int:
         return 0
 
 
-def _persist_escalation_count(dossier_id: str, count: int) -> None:
-    """H-19: write stuck_escalation_count back to the dossiers table.
-    Best-effort — a write failure must never surface to the caller."""
+def _persist_escalation_count(dossier_id: str) -> None:
+    """H-19: atomically increment stuck_escalation_count in the dossiers table.
+
+    Uses ``stuck_escalation_count + 1`` in SQL so concurrent daemon-thread
+    writes from different coroutines/sessions on the same dossier commute
+    correctly — no snapshot value can be lost by whichever write lands last.
+    Best-effort — a write failure must never surface to the caller.
+    """
     try:
         from vellum.db import connect as _connect
         with _connect() as conn:
             conn.execute(
-                "UPDATE dossiers SET stuck_escalation_count = ? WHERE id = ?",
-                (count, dossier_id),
+                "UPDATE dossiers SET stuck_escalation_count = stuck_escalation_count + 1 WHERE id = ?",
+                (dossier_id,),
             )
     except Exception:
         logger.debug(
@@ -246,12 +251,29 @@ def init_session(session_id: str, dossier_id: str) -> None:
     counter can be loaded from and persisted to the dossiers table.
 
     Called by the runtime before any stuck checks for a session.
+
+    H-08 fix: the DB load happens OUTSIDE the lock so blocking I/O never
+    serialises other threads that need _STATE_LOCK (record_tool_call,
+    record_input_tokens, check_session_budget, etc.).  We re-acquire only
+    to write the result into _SessionState, guarded by a double-checked
+    "still None" test so a concurrent init_session on the same session_id
+    never double-loads.
     """
+    # Fast path: if the session is already initialised don't even touch the DB.
+    with _STATE_LOCK:
+        st = _state(session_id)
+        if st.dossier_id is not None:
+            return
+
+    # Slow path: load the persisted count WITHOUT holding the lock.
+    count = _load_persisted_escalation_count(dossier_id)
+
+    # Re-acquire and write — double-check in case a concurrent caller raced us.
     with _STATE_LOCK:
         st = _state(session_id)
         if st.dossier_id is None:
             st.dossier_id = dossier_id
-            st.stuck_escalation_count = _load_persisted_escalation_count(dossier_id)
+            st.stuck_escalation_count = count
 
 
 def _hash_args(args: dict) -> str:
@@ -340,7 +362,6 @@ def _assign_tier_and_emit(session_id: str, signal: StuckSignal) -> StuckSignal:
         st = _state(session_id)
         st.stuck_escalation_count += 1
         tier = min(st.stuck_escalation_count, 3)
-        new_count = st.stuck_escalation_count
         dossier_id_for_persist = st.dossier_id
     # _STATE_LOCK is fully released here — all storage I/O happens below this
     # line so no coroutine is blocked waiting on the lock while DB writes run.
@@ -348,12 +369,14 @@ def _assign_tier_and_emit(session_id: str, signal: StuckSignal) -> StuckSignal:
     if tier >= 3 and signal.options_for_user:
         for i, opt in enumerate(signal.options_for_user):
             opt["recommended"] = (i == 0)
-    # H-19: persist the updated escalation count so tier assignment survives
-    # sleep/wake session boundaries. Best-effort (daemon thread).
+    # H-19: atomically increment the escalation count in the DB so tier
+    # assignment survives sleep/wake session boundaries. The SQL-level
+    # increment (stuck_escalation_count + 1) means concurrent daemon writes
+    # for the same dossier commute — no count is silently lost. Best-effort.
     if dossier_id_for_persist:
         threading.Thread(
             target=_persist_escalation_count,
-            args=(dossier_id_for_persist, new_count),
+            args=(dossier_id_for_persist,),
             daemon=True,
         ).start()
     # H-08: _emit_investigation_log performs two synchronous storage writes

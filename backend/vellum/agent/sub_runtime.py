@@ -440,6 +440,12 @@ async def run_sub_investigation(
     last_section_id: Optional[str] = None
     from . import stuck as stuck_mod
 
+    # H-19: register this sub's session with its dossier so stuck-escalation
+    # counters are loaded from and persisted to the DB, and tier escalation
+    # across wake/sleep boundaries works correctly for subs (mirrors
+    # DossierAgent.run() in runtime.py).
+    stuck_mod.init_session(session_id, parent_dossier_id)
+
     try:
         while turns < effective_max_turns:
             turns += 1
@@ -453,6 +459,26 @@ async def run_sub_investigation(
                     "sub_runtime: sub %s stuck signal before turn %d: %s",
                     sub_id, turns, _stuck_signal.kind,
                 )
+                # Surface the stuck signal as a reasoning note on the parent
+                # dossier so it is visible in the investigation log, rather than
+                # silently discarding it. Best-effort — a failure here must not
+                # kill the sub loop.
+                try:
+                    handlers.HANDLERS["append_reasoning"](
+                        parent_dossier_id,
+                        {
+                            "note": (
+                                f"[sub_stuck:{_stuck_signal.kind}] sub {sub_id} "
+                                f"turn {turns}: {_stuck_signal.detail}"
+                            ),
+                            "tags": ["stuck", "sub_stuck"],
+                        },
+                    )
+                except Exception:
+                    logger.debug(
+                        "sub_runtime: failed to append stuck reasoning note for sub %s",
+                        sub_id, exc_info=True,
+                    )
 
             # Streaming is required for long operations (see runtime.py).
             async with client.messages.stream(
