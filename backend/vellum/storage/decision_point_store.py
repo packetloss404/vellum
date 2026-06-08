@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from typing import Optional
 
@@ -17,7 +18,7 @@ from ._helpers import (
 )
 
 
-_APPROVE_LABEL = "approve"
+_APPROVE_PATTERN = re.compile(r"approve|approved|yes", re.IGNORECASE)
 
 
 def _get_open_plan_approval_row(
@@ -130,7 +131,7 @@ def resolve_decision_point(
             )
         if (
             row["kind"] == "plan_approval"
-            and (chosen or "").strip().lower() == _APPROVE_LABEL
+            and _APPROVE_PATTERN.search(chosen or "")
         ):
             plan_row = conn.execute(
                 "SELECT investigation_plan FROM dossiers WHERE id = ?", (dossier_id,)
