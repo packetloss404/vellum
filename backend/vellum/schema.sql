@@ -107,7 +107,7 @@ CREATE INDEX IF NOT EXISTS idx_work_sessions_dossier ON work_sessions(dossier_id
 CREATE TABLE IF NOT EXISTS change_log (
     id TEXT PRIMARY KEY,
     dossier_id TEXT NOT NULL,
-    work_session_id TEXT NOT NULL,
+    work_session_id TEXT,
     section_id TEXT,
     kind TEXT NOT NULL,
     change_note TEXT NOT NULL,

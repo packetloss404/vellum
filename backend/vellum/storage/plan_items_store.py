@@ -189,20 +189,35 @@ def bulk_replace_plan_items(dossier_id: str, items: list[m.PlanItem]) -> list[m.
                 ),
             )
         _touch_dossier(conn, dossier_id)
-    return list_plan_items(dossier_id)
+        return list_plan_items_with_conn(conn, dossier_id)
 
 
 def bulk_replace_plan_items_with_conn(
     conn, dossier_id: str, items: list[m.PlanItem]
 ) -> list[m.PlanItem]:
+    # Preserve any sub_investigation_id values already set in the DB so that
+    # callers that supply a freshly-constructed plan do not silently wipe links
+    # to spawned sub-investigations.
+    existing_sub_ids: dict[str, Optional[str]] = {
+        row["plan_item_id"]: row["sub_investigation_id"]
+        for row in conn.execute(
+            "SELECT plan_item_id, sub_investigation_id FROM plan_items WHERE dossier_id = ?",
+            (dossier_id,),
+        ).fetchall()
+    }
     conn.execute(
         "DELETE FROM plan_items WHERE dossier_id = ?", (dossier_id,)
     )
     for idx, item in enumerate(items):
         now_s = _dt_str(m.utc_now())
+        # Prefer the item's own sub_investigation_id; fall back to the DB value
+        # that was recorded before the DELETE so that plan rewrites by the agent
+        # do not silently sever links to already-spawned sub-investigations.
+        preserved_sub_id = item.sub_investigation_id or existing_sub_ids.get(item.id)
         item_with_order = item.model_copy(update={
             "order_key": item.order_key if item.order_key != 0.0 else (idx + 1) * 10.0,
             "dossier_id": dossier_id,
+            "sub_investigation_id": preserved_sub_id,
         })
         conn.execute(
             """

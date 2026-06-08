@@ -144,9 +144,12 @@ def resolve_decision_point(
                         "UPDATE dossiers SET investigation_plan = ? WHERE id = ?",
                         (approved_plan.model_dump_json(), dossier_id),
                     )
+                    item_count = conn.execute(
+                        "SELECT COUNT(*) FROM plan_items WHERE dossier_id = ?", (dossier_id,)
+                    ).fetchone()[0]
                     _log_change(
                         conn, dossier_id, work_session_id, "plan_updated",
-                        f"Plan approved ({len(approved_plan.items)} items)",
+                        f"Plan approved ({item_count} items)",
                     )
                     _touch_dossier(conn, dossier_id)
         row = conn.execute("SELECT * FROM decision_points WHERE id = ?", (decision_id,)).fetchone()

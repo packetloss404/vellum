@@ -660,7 +660,9 @@ def approve_investigation_plan(
         current = m.InvestigationPlan.model_validate_json(plan_json)
         if current.approved_at is not None:
             return get_dossier(dossier_id)
-        item_count = len(current.items)
+        item_count = conn.execute(
+            "SELECT COUNT(*) FROM plan_items WHERE dossier_id = ?", (dossier_id,)
+        ).fetchone()[0]
         approved = current.model_copy(update={"approved_at": now})
         conn.execute(
             "UPDATE dossiers SET investigation_plan = ? WHERE id = ?",

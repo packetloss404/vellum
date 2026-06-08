@@ -769,46 +769,5 @@ class SummarizeSessionArgs(BaseModel):
     recommended_next_action: Optional[str] = None
 
 
-# --- Phase 4A: per-turn telemetry ---
-
-
-class AgentTurn(BaseModel):
-    id: str                               # prefix: "agt"
-    dossier_id: str
-    work_session_id: str
-    sub_investigation_id: Optional[str] = None
-    trace_id: str = ""
-    turn_index: int = 0
-    model: str = ""
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_creation_input_tokens: int = 0
-    cache_read_input_tokens: int = 0
-    cost_usd: float = 0.0
-    duration_ms: int = 0
-    tool_calls_count: int = 0
-    stop_reason: Optional[str] = None
-    notes: Optional[str] = None
-    created_at: datetime
-
-
-class AgentTurnCreate(BaseModel):
-    dossier_id: str
-    work_session_id: str
-    sub_investigation_id: Optional[str] = None
-    trace_id: str = ""
-    turn_index: int = 0
-    model: str = ""
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_creation_input_tokens: int = 0
-    cache_read_input_tokens: int = 0
-    cost_usd: float = 0.0
-    duration_ms: int = 0
-    tool_calls_count: int = 0
-    stop_reason: Optional[str] = None
-    notes: Optional[str] = None
-
-
 # Resolve forward references for DossierFull.
 DossierFull.model_rebuild()

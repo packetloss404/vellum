@@ -370,7 +370,6 @@ def _log_change(
     change_note: str,
     section_id: Optional[str] = None,
 ) -> None:
-    effective_session_id = work_session_id if work_session_id else "system"
     conn.execute(
         """
         INSERT INTO change_log (id, dossier_id, work_session_id, section_id, kind, change_note, created_at)
@@ -379,7 +378,7 @@ def _log_change(
         (
             m.new_id("chg"),
             dossier_id,
-            effective_session_id,
+            work_session_id or None,
             section_id,
             kind,
             change_note,
