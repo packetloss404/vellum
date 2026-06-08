@@ -43,6 +43,9 @@ _REQUIRED_COLUMNS: list[tuple[str, str, str]] = [
     # a sub flips the source plan item from `planned` to `in_progress`,
     # completing flips to `completed`, and abandoning flips to `abandoned`.
     ("sub_investigations", "plan_item_id", "TEXT"),
+    # H-19: per-dossier stuck-escalation counter so tier assignment persists
+    # across session boundaries (sleep → wake cycles).
+    ("dossiers", "stuck_escalation_count", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
