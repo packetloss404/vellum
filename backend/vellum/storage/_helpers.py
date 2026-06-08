@@ -378,7 +378,7 @@ def _log_change(
         (
             m.new_id("chg"),
             dossier_id,
-            work_session_id or None,
+            work_session_id or "system",
             section_id,
             kind,
             change_note,
