@@ -496,15 +496,15 @@ def test_work_session_opened_and_closed_exactly_once(fresh_db):
 def test_record_session_usage_called_with_input_and_output_tokens(fresh_db, monkeypatch):
     """Runtime must credit model usage to the active session."""
     did = _seed_dossier()
-    calls: list[tuple[str, int, int, float]] = []
-    real_record = storage.record_session_usage
+    calls: list[tuple] = []
+    real_record = storage.record_turn_usage
 
-    def _spy(session_id: str, input_tokens: int, output_tokens: int, cost_usd: float) -> None:
+    def _spy(session_id: str, input_tokens: int, output_tokens: int, cost_usd: float, **kwargs) -> None:
         calls.append((session_id, input_tokens, output_tokens, cost_usd))
-        real_record(session_id, input_tokens, output_tokens, cost_usd)
+        real_record(session_id, input_tokens, output_tokens, cost_usd, **kwargs)
 
-    monkeypatch.setattr(storage, "record_session_usage", _spy)
-    monkeypatch.setattr(rt.storage, "record_session_usage", _spy)
+    monkeypatch.setattr(storage, "record_turn_usage", _spy)
+    monkeypatch.setattr(rt.storage, "record_turn_usage", _spy)
 
     end_turn = _message(
         [_text("done")], stop_reason="end_turn", input_tokens=123, output_tokens=45

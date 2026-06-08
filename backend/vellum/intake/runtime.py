@@ -25,7 +25,8 @@ from typing import Any, Optional
 
 import anthropic
 
-from ..config import ANTHROPIC_API_KEY, INTAKE_MODEL
+from .. import storage as main_storage
+from ..config import ANTHROPIC_API_KEY, INTAKE_MODEL, cost_usd_for_turn
 from . import storage
 from .models import IntakeState, IntakeStatus, IntakeTurnResult
 
@@ -135,6 +136,28 @@ class IntakeAgent:
                 # next create() sees a well-formed tool_use/tool_result
                 # alternation.
                 messages.append({"role": "assistant", "content": response.content})
+
+                # Track intake spend in the daily budget rollup so it's
+                # visible alongside dossier-agent spend. Best-effort: a
+                # failure must never kill the intake loop.
+                if response.usage is not None:
+                    _in = getattr(response.usage, "input_tokens", 0) or 0
+                    _out = getattr(response.usage, "output_tokens", 0) or 0
+                    _cc = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+                    _cr = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+                    _cost = cost_usd_for_turn(
+                        self.model, _in, _out,
+                        cache_creation_input_tokens=_cc,
+                        cache_read_input_tokens=_cr,
+                    )
+                    try:
+                        main_storage.record_budget_usage(
+                            _in, _out, _cost,
+                            cache_creation_input_tokens=_cc,
+                            cache_read_input_tokens=_cr,
+                        )
+                    except Exception:  # noqa: BLE001 — budget tracking must not kill intake
+                        pass
 
                 # Collect any text blocks this turn produced — they're
                 # the user-facing reply regardless of whether the model

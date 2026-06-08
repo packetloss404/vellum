@@ -198,11 +198,11 @@ class DossierAgent:
                     )
                     # Per-session and global daily rollups — power the budget
                     # soft-signal surface and the per-session UI header.
-                    storage.record_session_usage(
-                        session_id, input_tokens, output_tokens, turn_cost
-                    )
-                    storage.record_budget_usage(
-                        input_tokens, output_tokens, turn_cost
+                    # Single transaction keeps session + daily counters consistent.
+                    storage.record_turn_usage(
+                        session_id, input_tokens, output_tokens, turn_cost,
+                        cache_creation_input_tokens=cache_creation_input_tokens,
+                        cache_read_input_tokens=cache_read_input_tokens,
                     )
                     # stuck-detection needs per-turn input tokens for session-
                     # and section-budget signals. Attribute to the section most

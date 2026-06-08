@@ -6,7 +6,7 @@ from typing import Optional
 
 from .. import models as m
 from ..db import connect
-from ._helpers import _dt, _dt_str
+from ._helpers import _dt, _dt_str, _row_get
 
 
 def _utc_day_str(dt: Optional[datetime] = None) -> str:
@@ -19,6 +19,8 @@ def record_budget_usage(
     output_tokens: int,
     cost_usd: float,
     day: Optional[str] = None,
+    cache_creation_input_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
 ) -> None:
     """Roll per-turn usage into the day's global budget row. UPSERT."""
     day_key = day or _utc_day_str()
@@ -26,15 +28,26 @@ def record_budget_usage(
     with connect() as conn:
         conn.execute(
             """
-            INSERT INTO budget_accounting (day, spent_usd, input_tokens, output_tokens, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO budget_accounting (day, spent_usd, input_tokens, output_tokens,
+                cache_creation_input_tokens, cache_read_input_tokens, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(day) DO UPDATE SET
                 spent_usd = spent_usd + excluded.spent_usd,
                 input_tokens = input_tokens + excluded.input_tokens,
                 output_tokens = output_tokens + excluded.output_tokens,
+                cache_creation_input_tokens = cache_creation_input_tokens + excluded.cache_creation_input_tokens,
+                cache_read_input_tokens = cache_read_input_tokens + excluded.cache_read_input_tokens,
                 updated_at = excluded.updated_at
             """,
-            (day_key, float(cost_usd), int(input_tokens), int(output_tokens), now_s),
+            (
+                day_key,
+                float(cost_usd),
+                int(input_tokens),
+                int(output_tokens),
+                int(cache_creation_input_tokens),
+                int(cache_read_input_tokens),
+                now_s,
+            ),
         )
 
 
@@ -52,6 +65,8 @@ def get_budget_today() -> m.BudgetRollup:
         spent_usd=float(row["spent_usd"]),
         input_tokens=int(row["input_tokens"]),
         output_tokens=int(row["output_tokens"]),
+        cache_creation_input_tokens=int(_row_get(row, "cache_creation_input_tokens") or 0),
+        cache_read_input_tokens=int(_row_get(row, "cache_read_input_tokens") or 0),
         updated_at=_dt(row["updated_at"]),
     )
 
@@ -69,6 +84,8 @@ def list_budget_range(start_day: str, end_day: str) -> list[m.BudgetRollup]:
             spent_usd=float(r["spent_usd"]),
             input_tokens=int(r["input_tokens"]),
             output_tokens=int(r["output_tokens"]),
+            cache_creation_input_tokens=int(_row_get(r, "cache_creation_input_tokens") or 0),
+            cache_read_input_tokens=int(_row_get(r, "cache_read_input_tokens") or 0),
             updated_at=_dt(r["updated_at"]),
         )
         for r in rows

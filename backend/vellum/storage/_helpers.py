@@ -229,6 +229,8 @@ def _row_to_work_session(row: sqlite3.Row) -> m.WorkSession:
         token_budget_used=row["token_budget_used"],
         input_tokens=_row_get(row, "input_tokens") or 0,
         output_tokens=_row_get(row, "output_tokens") or 0,
+        cache_creation_input_tokens=_row_get(row, "cache_creation_input_tokens") or 0,
+        cache_read_input_tokens=_row_get(row, "cache_read_input_tokens") or 0,
         cost_usd=_row_get(row, "cost_usd") or 0.0,
         end_reason=end_reason,
         trace_id=_row_get(row, "trace_id") or "",
