@@ -16,7 +16,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .. import models as m
 from .. import storage
@@ -26,7 +26,7 @@ from ..agent.orchestrator import (
     AgentCapacityExceeded,
     AgentNotRunning,
 )
-from ..config import AGENT_MAX_TURNS
+from ..config import AGENT_MAX_TURNS, MODEL_PRICING_USD_PER_MTOK
 
 
 logger = logging.getLogger(__name__)
@@ -34,10 +34,21 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
+_VALID_MODELS: frozenset[str] = frozenset(MODEL_PRICING_USD_PER_MTOK.keys())
+
 
 class StartAgentRequest(BaseModel):
     max_turns: int = Field(default=AGENT_MAX_TURNS, ge=1, le=AGENT_MAX_TURNS)
     model: Optional[str] = None
+
+    @field_validator("model")
+    @classmethod
+    def model_must_be_known(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in _VALID_MODELS:
+            raise ValueError(
+                f"unknown model {v!r}; valid models: {sorted(_VALID_MODELS)}"
+            )
+        return v
 
 
 def _require_dossier(dossier_id: str) -> None:
