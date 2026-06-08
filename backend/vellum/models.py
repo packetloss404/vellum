@@ -325,6 +325,7 @@ ChangeKind = Literal[
     "ruled_out_added",
     "sections_reordered",
     "debrief_updated",
+    "premise_challenge_updated",
     "plan_updated",
     "next_action_added",
     "next_action_completed",

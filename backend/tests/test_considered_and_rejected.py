@@ -150,7 +150,7 @@ def test_change_log_written_when_work_session_supplied(fresh_db):
     assert "considered_and_rejected_added" in kinds
 
 
-def test_change_log_skipped_without_work_session(fresh_db):
+def test_change_log_uses_system_sentinel_without_work_session(fresh_db):
     from vellum import models as m, storage
 
     dossier = _mk_dossier()
@@ -160,15 +160,15 @@ def test_change_log_skipped_without_work_session(fresh_db):
             path="p", why_compelling="c", why_rejected="r"
         ),
     )
-    # No session → no change_log entry. (This mirrors v1 behavior in
-    # storage._log_change — without a session, nothing is written.)
+    # No session → change_log entry written with work_session_id='system'.
     from vellum.db import connect
     with connect() as conn:
-        n = conn.execute(
-            "SELECT COUNT(*) AS n FROM change_log WHERE dossier_id = ?",
+        rows = conn.execute(
+            "SELECT work_session_id FROM change_log WHERE dossier_id = ?",
             (dossier.id,),
-        ).fetchone()["n"]
-    assert n == 0
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["work_session_id"] == "system"
 
 
 def test_dossier_full_includes_considered_and_rejected(fresh_db):

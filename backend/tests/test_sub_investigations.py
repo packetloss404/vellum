@@ -282,21 +282,22 @@ def test_list_ordered_by_started_at():
     assert [s.id for s in ordered] == [s1.id, s2.id, s3.id]
 
 
-def test_spawn_without_work_session_does_not_log():
-    """Matches v1 convention: no work_session_id => no change_log row."""
+def test_spawn_without_work_session_uses_system_sentinel():
+    """No work_session_id => change_log row written with work_session_id='system'."""
     dossier = _make_dossier()
     sub = storage.spawn_sub_investigation(
         dossier.id, m.SubInvestigationSpawn(scope="sessionless")
     )
     assert sub.state == m.SubInvestigationState.running
 
-    # No session => no change_log entry for this spawn.
+    # No session => change_log entry written with work_session_id='system'.
     with db.connect() as conn:
-        row_count = conn.execute(
-            "SELECT COUNT(*) AS c FROM change_log WHERE dossier_id = ?",
+        rows = conn.execute(
+            "SELECT work_session_id FROM change_log WHERE dossier_id = ?",
             (dossier.id,),
-        ).fetchone()["c"]
-    assert row_count == 0
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["work_session_id"] == "system"
 
 
 def test_operations_on_wrong_dossier_return_none():
