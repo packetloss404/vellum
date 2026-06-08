@@ -306,8 +306,7 @@ def _log_change(
     change_note: str,
     section_id: Optional[str] = None,
 ) -> None:
-    if not work_session_id:
-        return
+    effective_session_id = work_session_id if work_session_id else "system"
     conn.execute(
         """
         INSERT INTO change_log (id, dossier_id, work_session_id, section_id, kind, change_note, created_at)
@@ -316,7 +315,7 @@ def _log_change(
         (
             m.new_id("chg"),
             dossier_id,
-            work_session_id,
+            effective_session_id,
             section_id,
             kind,
             change_note,
@@ -713,6 +712,19 @@ def delete_section(
             conn, dossier_id, work_session_id, "section_deleted",
             f"Deleted '{existing['title']}': {reason}", section_id,
         )
+        # Clean up references to the deleted section in other sections' depends_on lists.
+        other_rows = conn.execute(
+            "SELECT id, depends_on FROM sections WHERE dossier_id = ?",
+            (dossier_id,),
+        ).fetchall()
+        for row in other_rows:
+            deps = _json_list(row["depends_on"])
+            if section_id in deps:
+                updated_deps = [d for d in deps if d != section_id]
+                conn.execute(
+                    "UPDATE sections SET depends_on = ? WHERE id = ?",
+                    (json.dumps(updated_deps), row["id"]),
+                )
         _touch_dossier(conn, dossier_id)
     return True
 
@@ -1385,11 +1397,7 @@ def update_premise_challenge(
 ) -> Optional[m.Dossier]:
     """Partial-merge update. First write requires all five content fields.
 
-    Emits a `debrief_updated` change_log entry (re-using the existing Plan
-    & debrief category in the plan-diff) with a terse note. We deliberately
-    do NOT add a new ChangeKind for premise-challenge updates — the
-    frontend already categorizes `debrief_updated` under plan & debrief,
-    which is the right bucket for this surface.
+    Emits a `premise_challenge_updated` change_log entry with a terse note.
     """
     now = m.utc_now()
     with connect() as conn:
@@ -1446,7 +1454,7 @@ def update_premise_challenge(
             else f"Premise challenge updated: {note_body}"
         )
         _log_change(
-            conn, dossier_id, work_session_id, "debrief_updated", note,
+            conn, dossier_id, work_session_id, "premise_challenge_updated", note,
         )
         _touch_dossier(conn, dossier_id)
     return get_dossier(dossier_id)
@@ -1685,6 +1693,7 @@ def approve_investigation_plan(
         current = m.InvestigationPlan.model_validate_json(plan_json)
         if current.approved_at is not None:
             return get_dossier(dossier_id)
+        item_count = len(current.items)
         approved = current.model_copy(update={"approved_at": now})
         conn.execute(
             "UPDATE dossiers SET investigation_plan = ? WHERE id = ?",
@@ -1692,7 +1701,7 @@ def approve_investigation_plan(
         )
         _log_change(
             conn, dossier_id, work_session_id, "plan_updated",
-            f"Plan approved ({len(approved.items)} items)",
+            f"Plan approved ({item_count} items)",
         )
         _touch_dossier(conn, dossier_id)
     return get_dossier(dossier_id)
