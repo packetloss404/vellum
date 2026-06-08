@@ -239,6 +239,8 @@ def update_artifact(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
     art = storage.update_artifact(
         dossier_id, artifact_id, m.ArtifactUpdate(**args), session_id
     )
+    if art is None:
+        return {"ok": False, "reason": "artifact_not_found", "artifact_id": artifact_id}
     return {
         "artifact_id": art.id,
         "state": art.state.value if hasattr(art.state, "value") else art.state,
@@ -261,9 +263,11 @@ def complete_sub_investigation(dossier_id: str, args: dict[str, Any]) -> dict[st
     sub = storage.complete_sub_investigation(
         dossier_id, sub_investigation_id, m.SubInvestigationComplete(**args), session_id
     )
+    if sub is None:
+        return {"ok": False, "reason": "sub_investigation_not_found"}
     return {
-        "sub_investigation_id": getattr(sub, "id", sub_investigation_id),
-        "state": getattr(getattr(sub, "state", None), "value", "completed"),
+        "sub_investigation_id": sub.id,
+        "state": sub.state.value if hasattr(sub.state, "value") else sub.state,
     }
 
 

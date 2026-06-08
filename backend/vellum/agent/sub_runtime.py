@@ -509,8 +509,9 @@ async def run_sub_investigation(
             )
             fallback_summary = "[incomplete — max_turns reached]"
             try:
-                handlers.HANDLERS["complete_sub_investigation"](
+                handlers.dispatch(
                     parent_dossier_id,
+                    "complete_sub_investigation",
                     {
                         "sub_investigation_id": sub_id,
                         "return_summary": fallback_summary,

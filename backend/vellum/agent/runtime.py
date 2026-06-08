@@ -623,8 +623,9 @@ class DossierAgent:
             trust_mode = False
         if trust_mode:
             try:
-                handlers.HANDLERS["append_reasoning"](
+                handlers.dispatch(
                     self.dossier_id,
+                    "append_reasoning",
                     {
                         "note": f"[trust_mode:auto] Budget {kind} crossed — continuing. {detail}",
                         "tags": ["budget", "budget_auto_dismissed", "trust_mode"],
@@ -658,8 +659,9 @@ class DossierAgent:
             },
         ]
         try:
-            handlers.HANDLERS["check_stuck"](
+            handlers.dispatch(
                 self.dossier_id,
+                "check_stuck",
                 {"summary_of_attempts": summary, "options_for_user": options},
             )
         except Exception:
@@ -691,8 +693,9 @@ class DossierAgent:
             # Heads-up only — no decision_point. Agent reads the note on the
             # next turn's state snapshot and is expected to narrow + continue.
             try:
-                handlers.HANDLERS["append_reasoning"](
+                handlers.dispatch(
                     self.dossier_id,
+                    "append_reasoning",
                     {
                         "note": f"[stuck_L1] {summary}",
                         "tags": ["stuck", "stuck_L1"],
@@ -723,8 +726,9 @@ class DossierAgent:
                     chosen.get("label") if isinstance(chosen, dict) else None
                 ) or "(no option)"
                 try:
-                    handlers.HANDLERS["append_reasoning"](
+                    handlers.dispatch(
                         self.dossier_id,
+                        "append_reasoning",
                         {
                             "note": (
                                 f"[trust_mode:auto] Tier 2 stuck — took "
@@ -745,8 +749,9 @@ class DossierAgent:
             {"label": "Pause for your direction", "implications": "", "recommended": True},
         ]
         try:
-            handlers.HANDLERS["check_stuck"](
+            handlers.dispatch(
                 self.dossier_id,
+                "check_stuck",
                 {"summary_of_attempts": summary, "options_for_user": options},
             )
         except Exception:  # noqa: BLE001 — a failed stuck surface must not mask the signal
