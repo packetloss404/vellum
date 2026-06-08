@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -33,6 +34,7 @@ from .. import models as m
 from .. import storage
 from ..config import ANTHROPIC_API_KEY, MODEL, cost_usd_for_turn
 from ..tools import handlers
+from .compactor import _estimate_tokens as _compactor_estimate_tokens, compact_messages, should_compact
 
 
 # Anthropic's built-in server-side web search tool. Versioned type string —
@@ -117,8 +119,6 @@ class DossierAgent:
 
         try:
             while state.turns < max_turns:
-                state.turns += 1
-
                 # anthropic SDK requires streaming for operations that may
                 # exceed 10 minutes. With max_tokens=32000 + web_search the
                 # SDK guards against the non-streaming path. Use the stream
@@ -159,14 +159,62 @@ class DossierAgent:
                     # or daily threshold is crossed (and not yet reported).
                     self._check_budget_signals(session_id)
 
+                # H-01: serialize Anthropic SDK objects to plain dicts before
+                # storing in state.messages. The compactor's isinstance(block,
+                # dict) guards must see plain dicts, not SDK TextBlock /
+                # ToolUseBlock objects.
+                serialized_content = [
+                    b.model_dump() if hasattr(b, "model_dump") else b
+                    for b in response.content
+                ]
                 state.messages.append(
-                    {"role": "assistant", "content": response.content}
+                    {"role": "assistant", "content": serialized_content}
                 )
 
                 # Server-side tool (web_search) hit its per-turn iteration
                 # cap; re-send to let Anthropic resume where it paused.
+                # H pause_turn: do NOT count this as a consumed agent turn —
+                # it's Anthropic's internal iteration cap, not a logical turn.
+                # Incrementing here would burn the max_turns budget on a single
+                # heavy-search logical turn.
                 if response.stop_reason == "pause_turn":
                     continue
+
+                # Count logical agent turns here, after the pause_turn guard,
+                # so pause_turn continuations don't consume turn budget.
+                state.turns += 1
+
+                # Compaction: check after every logical turn and compact if the
+                # message history is approaching the context limit. The compactor
+                # replaces old turns with a single summary breadcrumb, keeping
+                # the most recent keep_recent_turns turns verbatim.
+                # Read threshold dynamically so tests can monkeypatch the env var.
+                _compact_threshold = int(
+                    os.getenv("VELLUM_COMPACT_INPUT_TOKEN_THRESHOLD", "80000")
+                )
+                if _compact_threshold > 0:
+                    est_tokens = _compactor_estimate_tokens(state.messages)
+                    if should_compact(state.messages, est_tokens, _compact_threshold):
+                        try:
+                            state.messages = await compact_messages(
+                                self._client, self.model, state.messages
+                            )
+                            storage.append_reasoning(
+                                self.dossier_id,
+                                m.ReasoningAppend(
+                                    note=(
+                                        "[compaction] Message history was compacted "
+                                        f"(est. {est_tokens} tokens exceeded threshold "
+                                        f"{_compact_threshold}). "
+                                        "Earlier turns summarized into a breadcrumb."
+                                    ),
+                                    tags=["compaction"],
+                                ),
+                                work_session_id=session_id,
+                            )
+                        except Exception:
+                            # Compaction failure must never terminate the agent.
+                            pass
 
                 tool_uses = [
                     b for b in response.content if getattr(b, "type", None) == "tool_use"

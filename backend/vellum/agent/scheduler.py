@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from .. import models as m
@@ -127,6 +128,35 @@ class Scheduler:
     async def _wake_one(self, entry: dict) -> None:
         dossier_id = entry["dossier_id"]
         reason = entry.get("wake_reason")
+
+        # H-28: skip dossiers that self-scheduled a future wake_at but have
+        # wake_pending=1 set from a previous crash or reconcile. The
+        # list_dossiers_ready_to_wake query may return both wake_at rows AND
+        # wake_pending rows — a row can have both set if the agent set
+        # schedule_wake and then the process crashed before the next tick.
+        # If wake_at is still in the future, don't wake yet; the next tick
+        # after wake_at elapses will pick it up naturally.
+        wake_at_str = entry.get("wake_at")
+        if wake_at_str and entry.get("wake_pending"):
+            try:
+                wake_at_dt = datetime.fromisoformat(wake_at_str.replace("Z", "+00:00"))
+                if wake_at_dt.tzinfo is None:
+                    wake_at_dt = wake_at_dt.replace(tzinfo=timezone.utc)
+                utc_now = datetime.now(timezone.utc)
+                if wake_at_dt > utc_now:
+                    logger.debug(
+                        "scheduler: dossier=%s has wake_pending=1 but wake_at=%s "
+                        "is still in the future; skipping until then",
+                        dossier_id, wake_at_str,
+                    )
+                    return
+            except (ValueError, TypeError):
+                # Unparseable wake_at — let normal flow proceed rather than
+                # silently dropping the wake.
+                logger.warning(
+                    "scheduler: dossier=%s has unparseable wake_at=%r; proceeding",
+                    dossier_id, wake_at_str,
+                )
 
         # Pre-create a session with trigger=scheduled. If a DB session exists
         # but no orchestrator task owns it, treat it as stale crash debris and

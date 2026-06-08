@@ -69,6 +69,22 @@ def _recover_one_work_session(session_id: str, dossier_id: str) -> bool:
         )
         return False
 
+    # H-05: mark_wake_pending immediately after the session is closed, BEFORE
+    # the append_reasoning attempt. Previously this block was after
+    # append_reasoning, so a trail-write failure would return False without
+    # ever setting wake_pending — leaving the dossier permanently dark. The
+    # trail note is best-effort; the scheduler re-queue is not.
+    try:
+        if storage.get_setting("sleep_mode_enabled", True):
+            storage.mark_wake_pending(dossier_id, m.WakeReason.crash_resume)
+    except Exception:
+        logger.warning(
+            "lifecycle: failed to mark dossier %s wake_pending after crash "
+            "recovery; resumes will be driven by the user manually this boot",
+            dossier_id,
+            exc_info=True,
+        )
+
     try:
         storage.append_reasoning(
             dossier_id,
@@ -84,28 +100,14 @@ def _recover_one_work_session(session_id: str, dossier_id: str) -> bool:
             work_session_id=None,
         )
     except Exception:
-        # The session is already closed; the trail note is best-effort. A
-        # missing dossier (FK gone) or a transient DB error here shouldn't
-        # undo the recovery — log and move on.
+        # The session is already closed and wake_pending is already set; the
+        # trail note is best-effort. A missing dossier (FK gone) or a
+        # transient DB error here shouldn't undo the recovery — log and
+        # return True (session end + wake scheduling both succeeded).
         logger.error(
             "lifecycle: ended orphan work_session %s but failed to append "
             "reasoning_trail on dossier %s",
             session_id,
-            dossier_id,
-            exc_info=True,
-        )
-        return False
-
-    # Sleep-mode: ask the scheduler to resume this dossier. Best-effort —
-    # if the settings table is missing (very early boot) or the column set
-    # is stale, the helper calls below will no-op safely.
-    try:
-        if storage.get_setting("sleep_mode_enabled", True):
-            storage.mark_wake_pending(dossier_id, m.WakeReason.crash_resume)
-    except Exception:
-        logger.warning(
-            "lifecycle: failed to mark dossier %s wake_pending after crash "
-            "recovery; resumes will be driven by the user manually this boot",
             dossier_id,
             exc_info=True,
         )

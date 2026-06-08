@@ -81,6 +81,14 @@ AGENT_MAX_CONCURRENT_RUNS = int(os.getenv("VELLUM_AGENT_MAX_CONCURRENT_RUNS", "2
 # walking across the room doesn't feel broken. Overridable via env.
 SCHEDULER_POLL_SECONDS = int(os.getenv("VELLUM_SCHEDULER_POLL_SECONDS", "30"))
 
+# Input-token threshold for message-history compaction. When the estimated
+# input token count for a turn exceeds this value, the compactor fires before
+# the next API call. Default 80000 (~80% of the 100k practical input limit)
+# gives a comfortable margin. Set to 0 to disable compaction entirely.
+COMPACT_INPUT_TOKEN_THRESHOLD = int(
+    os.getenv("VELLUM_COMPACT_INPUT_TOKEN_THRESHOLD", "80000")
+)
+
 
 # ---------------------------------------------------------------------------
 # Budget / pricing

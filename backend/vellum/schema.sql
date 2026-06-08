@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS work_sessions (
     output_tokens INTEGER NOT NULL DEFAULT 0,
     cost_usd REAL NOT NULL DEFAULT 0,
     end_reason TEXT,
+    trace_id TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_work_sessions_dossier ON work_sessions(dossier_id, started_at);
