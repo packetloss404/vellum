@@ -1,6 +1,6 @@
 # Vellum
 
-**A durable investigation system where the dossier is the primary surface, not chat.**
+**A durable, multi-agent investigation engine where the dossier is the primary surface, not chat.**
 
 Built solo in 5 days for the Built with Opus 4.7 hackathon, Vellum is a durable investigation system for consequential decisions where the primary surface is a structured dossier, not a chat transcript. It is built for questions that should not be answered immediately because the user's framing may already contain unsafe assumptions. Instead of treating the prompt as the ground truth, Vellum gives an agent time, structure, and tools to challenge the premise, investigate the underlying facts, surface blockers, and deliver a case file the user can return to later.
 
@@ -10,9 +10,25 @@ Vellum turns that kind of work into a dossier. The dossier contains a premise ch
 
 The agent also works over time. A user can leave and return later to see what changed. The right rail shows session summaries, new findings, blocked paths, ruled-out assumptions, and cost. This makes the dossier feel like an evolving case file rather than a disappearing conversation. Vellum is intentionally quiet by default: no constant notifications, no stream of partial thoughts, and no expectation that the user must babysit the agent. The user returns when they are ready and sees the investigation state.
 
+## Under the hood: it is a real durable agent runtime
+
+Vellum is not a "single agent writes to a structured doc" demo. The investigation surface sits on top of several hand-built subsystems that handle concurrency, durability, recursion, and runaway-cost protection:
+
+- **Manual agentic loop over the Anthropic Messages API** (`agent/runtime.py`, `DossierAgent.run`). It streams `client.messages.stream(max_tokens=32000)`, prepends a fresh dossier-state snapshot to every turn, dispatches tool calls off-thread with `dossier_id` injected server-side, records token cost per turn, handles Anthropic's `pause_turn` for server-side `web_search`, and discards any prose not attached to a tool call. The user never sees raw model prose — all visible output flows through a closed set of ~27 typed, Pydantic-backed tools (`upsert_section`, `flag_needs_input`, `flag_decision_point`, `mark_ruled_out`, `spawn_sub_investigation`, `append_reasoning`, …).
+- **Idempotent, replay-safe tool dispatch.** Every tool call is keyed on its `tool_use_id` in a `tool_invocations` table and short-circuits on replay, so the agent loop is crash- and retry-safe: a re-run never double-applies a section edit or a spawn.
+- **Multi-dossier orchestrator** (`agent/orchestrator.py`). One `asyncio.Task` per dossier with bounded concurrency, `AgentAlreadyRunning` / `AgentCapacityExceeded` guards, lock-protected start/stop, graceful 30s shutdown, and done-callback pruning.
+- **Sleep-mode scheduler** (`agent/scheduler.py`). Polls for dossiers ready to wake every 30s, pre-creates `trigger=scheduled` work sessions, and retries on capacity/contention without dropping the user's change — a late answer keeps `wake_pending` set rather than being lost.
+- **Recursive sub-investigations** (`agent/sub_runtime.py`). `spawn_sub_investigation` launches a real second agent runtime with its own work sessions, its own narrowed (allowlisted) tool surface, its own token accounting, a depth cap, force-completion nudge logic, and `sub_investigation_id` threaded through a `ContextVar`. It returns a `return_summary` back up to the parent's tool call.
+- **Tiered stuck detection** (`agent/stuck.py`, ~870 LOC). Far more than "token budgets." It tracks per-session state with exact-args loop hashing, same-tool-no-progress heuristics, per-section revision counters reset by real progress, section/session token budgets, and a three-tier escalation ladder that decides between a silent reasoning-trail note, a `decision_point`, and a forced-recommended `decision_point` — so the agent never burns cycles blindly.
+- **Crash recovery at startup** (`lifecycle.py`). Reconciles orphaned work sessions and stale intakes on boot.
+- **Separate intake agent** (`intake/runtime.py`). A different, prose-speaking model interviews the user and constructs the dossier before the investigation agent ever runs.
+- **Soft-budget economics.** Per-turn USD cost accounting with a per-model pricing table drives live daily/session rollups (`budget_accounting`); crossing a cap surfaces a `decision_point` rather than killing the run.
+- **Trust-mode auto-pilot.** Optionally converts tier-2 stuck/budget interrupts into audited auto-decisions, with notes written to the reasoning trail.
+
 ## For hackathon reviewers
 
 - **Scope freeze** — out of scope for v1: multi-user, auth, notifications, mobile, rich-text editor, LLMs other than Claude, Postgres, Temporal. Everything listed works on localhost against the Anthropic Messages API.
+- **Models** — three-model split: `claude-opus-4-7` for the dossier agent, `claude-sonnet-4-6` for intake, `claude-haiku-4-5` reserved for summarization.
 
 ## What makes it different
 
@@ -24,13 +40,15 @@ The agent also works over time. A user can leave and return later to see what ch
 - **Context compaction.** Long sessions automatically compact their message history via a summarizer call (default `claude-haiku-4-5`) so they never hit the context ceiling.
 - **Quiet by default.** No pings, no notifications, no status updates. The dossier is a destination, not a stream.
 - **Stuck detection with escalation.** Repeated-tool-call detection, revision stalls, and token-budget signals surface clean decision_points — escalating across tiers until the user or agent resolves the loop. Escalation state persists across sleep/wake cycles.
+- **It survives crashes and runs unattended.** Idempotent tool dispatch, startup reconciliation, the orchestrator/scheduler pair, and tiered stuck detection mean a dossier can be paused, resumed, woken on a schedule, or recovered after a restart without losing or duplicating work.
 
 ## Stack
 
-- **Backend:** Python + FastAPI + Pydantic (single source of truth for the dossier schema across API, DB, agent tool schemas)
-- **Agent:** Direct Anthropic Messages API with a manual agentic loop. Default model: `claude-opus-4-7`. Intake and compaction use `claude-sonnet-4-6` and `claude-haiku-4-5` respectively.
-- **DB:** SQLite (v1)
-- **Frontend:** React + TypeScript + Tailwind (Vite). Serif-forward, warm, document-like. No rich-text editor.
+- **Backend:** Python + FastAPI + Pydantic (single source of truth for the dossier schema across API, DB, and agent tool schemas), SQLite + WAL, asyncio. Largest modules: `tools/handlers.py`, `agent/stuck.py`, `agent/runtime.py`, `agent/sub_runtime.py`.
+- **Agent:** Direct Anthropic Messages API with a manual agentic loop (no agent SDK). Default model: `claude-opus-4-7`. Intake uses `claude-sonnet-4-6`; compaction summarisation uses `claude-haiku-4-5`.
+- **DB:** SQLite (v1) — 17-table relational schema with runtime column/index migration.
+- **Frontend:** React 18 + TypeScript + Tailwind (Vite) + react-router + @tanstack/react-query + react-markdown. ~60 components, polling for live dossier state. Serif-forward, warm, document-like. No rich-text editor.
+- **Tests:** 230+ test functions across 31 files — lifecycle, orchestrator, stuck-detection, sub-investigation, resume, and end-to-end roundtrip.
 
 ## Local dev
 
@@ -61,7 +79,7 @@ Visit `http://localhost:5173/` to start a dossier.
 backend/vellum/
   agent/
     runtime.py        # main agentic turn loop
-    sub_runtime.py    # sub-investigation turn loop
+    sub_runtime.py    # sub-investigation turn loop (recursive sub-agents)
     orchestrator.py   # concurrency cap, session lifecycle
     scheduler.py      # sleep-mode: polls wake_store, fires sessions on schedule
     compactor.py      # context compaction (summariser call when token budget is low)
@@ -70,15 +88,15 @@ backend/vellum/
     sub_prompt.py     # system prompt assembly (sub-investigations)
     telemetry.py      # per-turn token/cost logging
   api/                # FastAPI routes (dossier CRUD, agent control, intake, settings)
-  intake/             # intake conversation agent (creates dossiers from conversation)
-  tools/              # agent tool handlers (upsert_section, flag_needs_input, …)
+  intake/             # intake conversation agent (creates dossiers)
+  tools/              # ~27 typed tool handlers (upsert_section, flag_needs_input, …)
   storage/            # per-entity DB stores (one file per entity type)
     dossier_store.py, session_store.py, plan_items_store.py,
     decision_point_store.py, needs_input_store.py, wake_store.py,
     sub_investigation_store.py, artifact_store.py, section_store.py,
     budget_store.py, turn_store.py, log_store.py, …
   models.py           # Pydantic source of truth for the entire schema
-  schema.sql          # SQLite schema + migrations
+  schema.sql          # SQLite schema (17 tables) + migrations
   db.py               # connection management + init_db + migration runner
   lifecycle.py        # reconcile orphaned work_sessions at startup
 
@@ -126,7 +144,7 @@ Most routes follow standard CRUD patterns on `/api/dossiers/{id}/...`; a few hav
 
 ## Status
 
-v1, single-user, localhost. A startup warning is emitted (and the server can be configured to refuse to start) if `VELLUM_API_TOKEN` is unset and the bind address is not loopback.
+v1, single-user, localhost. Runs against a live `ANTHROPIC_API_KEY`. A startup warning is emitted if `VELLUM_API_TOKEN` is unset and the bind address is not loopback — the server can be configured to refuse to start in that case.
 
 ## Regenerating frontend types
 
