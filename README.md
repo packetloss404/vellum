@@ -18,14 +18,17 @@ The agent also works over time. A user can leave and return later to see what ch
 
 - **The agent challenges the framing before answering.** On a new dossier, the first move is almost never to answer the stated question — it's to audit the frame. If a user asks "what percentage should I open credit-card-debt negotiations at?", the agent refuses to propose a number until it has confirmed the debt is actually owed (statute of limitations, FDCPA validation, estate liability). Pushback on premises is the thesis, not a feature.
 - **The dossier is structured data, not prose.** The agent writes only through tool calls — `upsert_section`, `flag_needs_input`, `flag_decision_point`, `mark_ruled_out`, `append_reasoning`. There's no chat surface to the user; prose that isn't attached to a tool call evaporates.
-- **First-class states.** Sections carry `confident | provisional | blocked`; dossiers carry `active | paused | delivered`; needs-input and decision-point blocks are top-level surfaces, not afterthoughts.
+- **First-class states.** Sections carry `confident | provisional | blocked`; dossiers carry `active | delivered`; needs-input and decision-point blocks are top-level surfaces, not afterthoughts.
+- **Sleep-mode async runtime.** The agent can sleep and wake on a schedule. `schedule_wake(hours_from_now=N)` parks the session; the scheduler resumes it within one tick. Check-in cadence (daily / weekly / material-changes-only) is configurable at intake and auto-enforced.
+- **Sub-investigations.** The agent can spawn parallel child investigations (`spawn_sub_investigation`), each running their own turn loop, and fold results back into the parent dossier's plan items.
+- **Context compaction.** Long sessions automatically compact their message history via a summarizer call (default `claude-haiku-4-5`) so they never hit the context ceiling.
 - **Quiet by default.** No pings, no notifications, no status updates. The dossier is a destination, not a stream.
-- **Stuck detection.** Token budgets and repeated-tool-call detection surface a clean decision_point to the user — never burn cycles blindly.
+- **Stuck detection with escalation.** Repeated-tool-call detection, revision stalls, and token-budget signals surface clean decision_points — escalating across tiers until the user or agent resolves the loop. Escalation state persists across sleep/wake cycles.
 
 ## Stack
 
 - **Backend:** Python + FastAPI + Pydantic (single source of truth for the dossier schema across API, DB, agent tool schemas)
-- **Agent:** Direct Anthropic Messages API with a manual agentic loop. Default model: `claude-opus-4-7`.
+- **Agent:** Direct Anthropic Messages API with a manual agentic loop. Default model: `claude-opus-4-7`. Intake and compaction use `claude-sonnet-4-6` and `claude-haiku-4-5` respectively.
 - **DB:** SQLite (v1)
 - **Frontend:** React + TypeScript + Tailwind (Vite). Serif-forward, warm, document-like. No rich-text editor.
 
@@ -56,19 +59,33 @@ Visit `http://localhost:5173/` to start a dossier.
 
 ```
 backend/vellum/
-  agent/        # dossier agent: runtime, orchestrator, system prompt, stuck detection
-  api/          # FastAPI routes (dossier CRUD, agent control, intake)
-  intake/       # intake conversation agent (creates dossiers)
-  tools/        # agent tool handlers (upsert_section, flag_needs_input, …)
-  models.py     # Pydantic source of truth for the entire schema
-  schema.sql    # SQLite schema
-  storage.py    # DB reads and writes
-  lifecycle.py  # reconcile orphaned work_sessions at startup
+  agent/
+    runtime.py        # main agentic turn loop
+    sub_runtime.py    # sub-investigation turn loop
+    orchestrator.py   # concurrency cap, session lifecycle
+    scheduler.py      # sleep-mode: polls wake_store, fires sessions on schedule
+    compactor.py      # context compaction (summariser call when token budget is low)
+    stuck.py          # stuck detection: loop/stall/budget signals, escalation tiers
+    prompt.py         # system prompt assembly (main agent)
+    sub_prompt.py     # system prompt assembly (sub-investigations)
+    telemetry.py      # per-turn token/cost logging
+  api/                # FastAPI routes (dossier CRUD, agent control, intake, settings)
+  intake/             # intake conversation agent (creates dossiers from conversation)
+  tools/              # agent tool handlers (upsert_section, flag_needs_input, …)
+  storage/            # per-entity DB stores (one file per entity type)
+    dossier_store.py, session_store.py, plan_items_store.py,
+    decision_point_store.py, needs_input_store.py, wake_store.py,
+    sub_investigation_store.py, artifact_store.py, section_store.py,
+    budget_store.py, turn_store.py, log_store.py, …
+  models.py           # Pydantic source of truth for the entire schema
+  schema.sql          # SQLite schema + migrations
+  db.py               # connection management + init_db + migration runner
+  lifecycle.py        # reconcile orphaned work_sessions at startup
 
 frontend/src/
   pages/        # DossierListPage, IntakePage, DossierPage, StressPage, DemoPage, SettingsPage
-  components/   # sections, needs-input, decision-points, plan-diff, intake, common
-  api/          # hooks, client, types (hand-mirrored from backend/vellum/models.py)
+  components/   # dossier, needs-input, decision-points, plan-diff, intake, common
+  api/          # hooks, client, types.ts (hand-maintained), types.generated.ts (generated)
   mocks/        # demo fixture data
 ```
 
@@ -93,9 +110,23 @@ Most routes follow standard CRUD patterns on `/api/dossiers/{id}/...`; a few hav
 
 - **`GET /api/budget/today`, `GET /api/budget/range?days=N`** — daily USD + token rollups. `today` includes a `state` field (`ok` | `warn` | `soft_cap_crossed`) derived from the current cap + warn-fraction settings.
 
+## Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | — | Required. Anthropic API key. |
+| `VELLUM_MODEL` | `claude-opus-4-7` | Main dossier agent model. |
+| `VELLUM_INTAKE_MODEL` | `claude-sonnet-4-6` | Intake conversation model. |
+| `VELLUM_SUMMARY_MODEL` | `claude-haiku-4-5` | Compaction summariser model. |
+| `VELLUM_API_TOKEN` | unset | Bearer token for `/api/*`. Required when binding to a non-loopback address. |
+| `VELLUM_DB_PATH` | `vellum.db` | SQLite database file path. |
+| `VELLUM_HOST` | `127.0.0.1` | Bind address for uvicorn. |
+| `VELLUM_PORT` | `8731` | Port for uvicorn. |
+| `COMPACT_INPUT_TOKEN_THRESHOLD` | `100000` | Input token count above which context compaction fires. |
+
 ## Status
 
-v1, single-user, localhost. Optional local-token API guard exists for tunneled or shared dev instances.
+v1, single-user, localhost. A startup warning is emitted (and the server can be configured to refuse to start) if `VELLUM_API_TOKEN` is unset and the bind address is not loopback.
 
 ## Regenerating frontend types
 
