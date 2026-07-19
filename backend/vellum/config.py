@@ -85,6 +85,16 @@ AGENT_MAX_CONCURRENT_RUNS = int(os.getenv("VELLUM_AGENT_MAX_CONCURRENT_RUNS", "2
 # walking across the room doesn't feel broken. Overridable via env.
 SCHEDULER_POLL_SECONDS = int(os.getenv("VELLUM_SCHEDULER_POLL_SECONDS", "30"))
 
+# Self-healing for errored/crashed sessions. A session that ends with
+# end_reason=error (or is reconciled as crashed at boot) schedules its own
+# retry wake with exponential backoff: BASE * 2^(count-1), capped at CAP.
+# After MAX consecutive failures the dossier is quarantined — no further
+# auto-wakes until the user explicitly resumes it. Successful sessions reset
+# the counter.
+ERROR_RETRY_BASE_SECONDS = int(os.getenv("VELLUM_ERROR_RETRY_BASE_SECONDS", "300"))
+ERROR_RETRY_MAX = int(os.getenv("VELLUM_ERROR_RETRY_MAX", "5"))
+ERROR_RETRY_CAP_SECONDS = int(os.getenv("VELLUM_ERROR_RETRY_CAP_SECONDS", "21600"))
+
 # Input-token threshold for message-history compaction. When the estimated
 # input token count for a turn exceeds this value, the compactor fires before
 # the next API call. Default 80000 (~80% of the 100k practical input limit)

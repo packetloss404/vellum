@@ -208,6 +208,23 @@ def resolve_needs_input(
     return result
 
 
+# ---------- user notes ("tell the agent something") ----------
+
+
+@router.post("/dossiers/{dossier_id}/notes", response_model=m.UserNote, status_code=201)
+def add_user_note(dossier_id: str, data: m.UserNoteCreate) -> m.UserNote:
+    if storage.get_dossier(dossier_id) is None:
+        raise HTTPException(404, "dossier not found")
+    return storage.create_user_note(dossier_id, data)
+
+
+@router.get("/dossiers/{dossier_id}/notes", response_model=list[m.UserNote])
+def list_user_notes(dossier_id: str) -> list[m.UserNote]:
+    if storage.get_dossier(dossier_id) is None:
+        raise HTTPException(404, "dossier not found")
+    return storage.list_user_notes(dossier_id)
+
+
 # ---------- decision_point ----------
 
 

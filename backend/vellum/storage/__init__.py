@@ -138,6 +138,18 @@ from .wake_store import (
     clear_dossier_wake,
     list_dossiers_ready_to_wake,
     get_dossier_wake_state,
+    increment_consecutive_error_count,
+    reset_consecutive_error_count,
+    set_dossier_quarantined,
+    clear_dossier_quarantine,
+    get_dossier_error_state,
+)
+
+# User notes ("tell the agent something")
+from .user_note_store import (
+    create_user_note,
+    list_user_notes,
+    mark_user_notes_seen,
 )
 
 # Plan items operations (Phase 4B)
@@ -261,6 +273,14 @@ __all__ = [
     "clear_dossier_wake",
     "list_dossiers_ready_to_wake",
     "get_dossier_wake_state",
+    "increment_consecutive_error_count",
+    "reset_consecutive_error_count",
+    "set_dossier_quarantined",
+    "clear_dossier_quarantine",
+    "get_dossier_error_state",
+    "create_user_note",
+    "list_user_notes",
+    "mark_user_notes_seen",
     # Plan items (Phase 4B)
     "list_plan_items",
     "get_plan_item",

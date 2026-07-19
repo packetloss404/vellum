@@ -116,6 +116,9 @@ class DossierAgent:
         # Budget soft-signal dedup — each cap emits at most once per run.
         self._budget_daily_reported: bool = False
         self._budget_session_reported: bool = False
+        # User notes surfaced in this run's state snapshots. Marked seen only
+        # if the session ends healthy, so an errored run re-surfaces them.
+        self._surfaced_note_ids: set[str] = set()
 
     @staticmethod
     def _build_tool_definitions() -> list[dict[str, Any]]:
@@ -494,6 +497,25 @@ class DossierAgent:
                 storage.end_work_session_with_reason(session_id, _end_reason)
             else:
                 storage.end_work_session(session_id)
+            # Self-heal: an error end schedules its own backoff retry (or
+            # quarantines after repeated failures); any healthy end resets
+            # the failure streak. Both are best-effort and never raise.
+            try:
+                from . import self_heal as self_heal_mod
+
+                if _end_reason == m.WorkSessionEndReason.error:
+                    self_heal_mod.on_session_failure(self.dossier_id, kind="error")
+                elif _end_reason is not None:
+                    self_heal_mod.on_session_success(self.dossier_id)
+                    # Healthy end: the agent actually processed the snapshots
+                    # that carried these notes. An errored end skips this so
+                    # the self-heal retry re-surfaces them.
+                    if self._surfaced_note_ids:
+                        storage.mark_user_notes_seen(
+                            sorted(self._surfaced_note_ids)
+                        )
+            except Exception:  # noqa: BLE001 — cleanup must not mask result
+                pass
             try:
                 stuck_mod.reset_session(session_id)
             except Exception:  # noqa: BLE001 — cleanup must not mask result
@@ -527,6 +549,9 @@ class DossierAgent:
     def _snapshot_content(self, prompt_mod: Any) -> list[dict[str, Any]]:
         dossier_full = storage.get_dossier_full(self.dossier_id)
         snapshot_text = prompt_mod.build_state_snapshot(dossier_full)
+        self._surfaced_note_ids.update(
+            n.id for n in dossier_full.user_notes if n.seen_at is None
+        )
         return [{"type": "text", "text": snapshot_text}]
 
     async def _dispatch_client_tool(

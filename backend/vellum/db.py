@@ -50,6 +50,11 @@ _REQUIRED_COLUMNS: list[tuple[str, str, str]] = [
     # H-19: per-dossier stuck-escalation counter so tier assignment persists
     # across session boundaries (sleep → wake cycles).
     ("dossiers", "stuck_escalation_count", "INTEGER NOT NULL DEFAULT 0"),
+    # Self-heal: consecutive error/crash counter + quarantine gate. See
+    # agent/self_heal.py for the backoff/quarantine policy.
+    ("dossiers", "consecutive_error_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("dossiers", "quarantined_at", "TEXT"),
+    ("dossiers", "quarantine_reason", "TEXT"),
 ]
 
 

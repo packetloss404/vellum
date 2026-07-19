@@ -206,6 +206,11 @@ class Dossier(BaseModel):
     working_theory: Optional[WorkingTheory] = None
     premise_challenge: Optional[PremiseChallenge] = None
     last_visited_at: Optional[datetime] = None
+    # Self-heal state: consecutive failed sessions (error/crashed) and the
+    # quarantine gate that stops auto-retry after too many of them.
+    consecutive_error_count: int = 0
+    quarantined_at: Optional[datetime] = None
+    quarantine_reason: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -233,6 +238,20 @@ class NeedsInput(BaseModel):
     created_at: datetime
     answered_at: Optional[datetime] = None
     answer: Optional[str] = None
+
+
+class UserNote(BaseModel):
+    """A free-form note the user volunteers to the agent mid-investigation.
+
+    ``seen_at`` is set once a session that surfaced the note in its state
+    snapshot ends healthy; an errored session leaves it unset so the retry
+    re-surfaces the note.
+    """
+    id: str
+    dossier_id: str
+    content: str
+    created_at: datetime
+    seen_at: Optional[datetime] = None
 
 
 class DecisionOption(BaseModel):
@@ -311,6 +330,8 @@ class WakeReason(str, Enum):
     crash_resume = "crash_resume"
     needs_input_resolved = "needs_input_resolved"
     decision_resolved = "decision_resolved"
+    error_retry = "error_retry"
+    user_note = "user_note"
 
 
 class ScheduleWakeArgs(BaseModel):
@@ -423,6 +444,7 @@ class DossierFull(BaseModel):
     dossier: Dossier
     sections: list[Section] = Field(default_factory=list)
     needs_input: list[NeedsInput] = Field(default_factory=list)
+    user_notes: list[UserNote] = Field(default_factory=list)
     decision_points: list[DecisionPoint] = Field(default_factory=list)
     reasoning_trail: list[ReasoningTrailEntry] = Field(default_factory=list)
     ruled_out: list[RuledOut] = Field(default_factory=list)
@@ -469,6 +491,10 @@ class SectionUpsert(BaseModel):
 class SectionStateUpdate(BaseModel):
     new_state: SectionState
     reason: str
+
+
+class UserNoteCreate(BaseModel):
+    content: str = Field(..., min_length=1, max_length=10000)
 
 
 class NeedsInputCreate(BaseModel):

@@ -73,6 +73,15 @@ async def start(
 ) -> dict:
     _require_dossier(dossier_id)
     params = body or StartAgentRequest()
+    # An explicit user start overrides self-heal quarantine and resets the
+    # failure streak — the user is saying "try again".
+    try:
+        storage.clear_dossier_quarantine(dossier_id)
+    except Exception:
+        logger.warning(
+            "agent/start: failed to clear quarantine for dossier %s",
+            dossier_id, exc_info=True,
+        )
     active = storage.get_active_work_session(dossier_id)
     if active is not None:
         if _orchestrator_running(dossier_id):
@@ -174,6 +183,16 @@ async def resume(dossier_id: str) -> dict:
     """
     if storage.get_dossier(dossier_id) is None:
         raise HTTPException(404, "dossier not found")
+
+    # An explicit user resume overrides self-heal quarantine and resets the
+    # failure streak — the user is saying "try again".
+    try:
+        storage.clear_dossier_quarantine(dossier_id)
+    except Exception:
+        logger.warning(
+            "resume: failed to clear quarantine for dossier %s",
+            dossier_id, exc_info=True,
+        )
 
     active = storage.get_active_work_session(dossier_id)
     if active is not None:

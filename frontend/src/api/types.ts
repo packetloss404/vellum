@@ -122,6 +122,11 @@ export interface Dossier {
   working_theory?: WorkingTheory | null;
   // Phase 4 — premise challenge surface (SA1/SA6).
   premise_challenge?: PremiseChallenge | null;
+  // Self-heal — failed-session streak + quarantine gate. Quarantined
+  // dossiers stop auto-retrying until the user presses Resume.
+  consecutive_error_count?: number;
+  quarantined_at?: string | null;
+  quarantine_reason?: string | null;
 }
 
 export type WorkingTheoryConfidence = "high" | "medium" | "low";
@@ -169,6 +174,17 @@ export interface NeedsInput {
   created_at: string;
   answered_at?: string | null;
   answer?: string | null;
+}
+
+// "Tell the agent something" — a free-form note the user volunteers
+// mid-investigation. seen_at is stamped once a healthy agent session has
+// surfaced the note.
+export interface UserNote {
+  id: string;
+  dossier_id: string;
+  content: string;
+  created_at: string;
+  seen_at?: string | null;
 }
 
 export interface DecisionOption {
@@ -271,6 +287,8 @@ export interface DossierFull {
   next_actions?: NextAction[];
   // Phase 3 — per-session summaries written at end-of-turn.
   session_summaries?: SessionSummary[];
+  // "Tell the agent something" notes.
+  user_notes?: UserNote[];
 }
 
 // ---------- API request shapes (Pydantic *Create / *Update / etc.) ----------

@@ -58,6 +58,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dossiers/seed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Seed Dossier
+         * @description Create a generic high-stakes dossier with neutral seed copy.
+         *
+         *     Does NOT start the agent — the user clicks Resume to begin. This
+         *     keeps seeding reversible (no spend) and lets the user rename / edit
+         *     the problem statement before the first turn if they want.
+         */
+        post: operations["seed_dossier_api_dossiers_seed_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dossiers/{dossier_id}/replan": {
         parameters: {
             query?: never;
@@ -207,6 +231,24 @@ export interface paths {
         put?: never;
         /** Resolve Needs Input */
         post: operations["resolve_needs_input_api_dossiers__dossier_id__needs_input__needs_input_id__resolve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dossiers/{dossier_id}/notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List User Notes */
+        get: operations["list_user_notes_api_dossiers__dossier_id__notes_get"];
+        put?: never;
+        /** Add User Note */
+        post: operations["add_user_note_api_dossiers__dossier_id__notes_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -634,8 +676,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Turns For Dossier */
-        get: operations["list_turns_for_dossier_api_dossiers__dossier_id__turns_get"];
+        /** List Agent Turns */
+        get: operations["list_agent_turns_api_dossiers__dossier_id__turns_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -651,8 +693,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Turn Cost Summary */
-        get: operations["turn_cost_summary_api_dossiers__dossier_id__turns_summary_get"];
+        /** Get Turn Cost Summary */
+        get: operations["get_turn_cost_summary_api_dossiers__dossier_id__turns_summary_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1038,11 +1080,7 @@ export interface components {
     schemas: {
         /**
          * AgentTurn
-         * @description One row per model stream call (parent runtime or sub-runtime).
-         *
-         *     Created post-stream after usage/cost are known, so the row exists
-         *     even when the model immediately ended the turn. trace_id matches
-         *     the work_session.trace_id so a whole run filters as one.
+         * @description One Anthropic API round-trip recorded for cost/debugging purposes.
          */
         AgentTurn: {
             /** Id */
@@ -1050,14 +1088,23 @@ export interface components {
             /** Dossier Id */
             dossier_id: string;
             /** Work Session Id */
-            work_session_id: string;
+            work_session_id?: string | null;
             /** Sub Investigation Id */
             sub_investigation_id?: string | null;
-            /** Trace Id */
+            /**
+             * Trace Id
+             * @default
+             */
             trace_id: string;
-            /** Turn Index */
+            /**
+             * Turn Index
+             * @default 0
+             */
             turn_index: number;
-            /** Model */
+            /**
+             * Model
+             * @default
+             */
             model: string;
             /**
              * Input Tokens
@@ -1199,7 +1246,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "section_created" | "section_updated" | "section_deleted" | "state_changed" | "needs_input_added" | "needs_input_resolved" | "decision_point_added" | "decision_point_resolved" | "ruled_out_added" | "sections_reordered" | "debrief_updated" | "plan_updated" | "next_action_added" | "next_action_completed" | "next_action_removed" | "artifact_added" | "artifact_updated" | "artifact_deleted" | "sub_investigation_spawned" | "sub_investigation_completed" | "sub_investigation_abandoned" | "investigation_log_appended" | "considered_and_rejected_added" | "working_theory_updated";
+            kind: "section_created" | "section_updated" | "section_deleted" | "state_changed" | "needs_input_added" | "needs_input_resolved" | "decision_point_added" | "decision_point_resolved" | "ruled_out_added" | "sections_reordered" | "debrief_updated" | "premise_challenge_updated" | "plan_updated" | "next_action_added" | "next_action_completed" | "next_action_removed" | "artifact_added" | "artifact_updated" | "sub_investigation_spawned" | "sub_investigation_completed" | "sub_investigation_abandoned" | "investigation_log_appended" | "considered_and_rejected_added" | "working_theory_updated";
             /** Change Note */
             change_note: string;
             /**
@@ -1395,6 +1442,15 @@ export interface components {
             /** Last Visited At */
             last_visited_at?: string | null;
             /**
+             * Consecutive Error Count
+             * @default 0
+             */
+            consecutive_error_count: number;
+            /** Quarantined At */
+            quarantined_at?: string | null;
+            /** Quarantine Reason */
+            quarantine_reason?: string | null;
+            /**
              * Created At
              * Format: date-time
              */
@@ -1427,6 +1483,8 @@ export interface components {
             sections?: components["schemas"]["Section"][];
             /** Needs Input */
             needs_input?: components["schemas"]["NeedsInput"][];
+            /** User Notes */
+            user_notes?: components["schemas"]["UserNote"][];
             /** Decision Points */
             decision_points?: components["schemas"]["DecisionPoint"][];
             /** Reasoning Trail */
@@ -1452,7 +1510,7 @@ export interface components {
          * DossierStatus
          * @enum {string}
          */
-        DossierStatus: "active" | "delivered";
+        DossierStatus: "active" | "paused" | "delivered";
         /**
          * DossierType
          * @enum {string}
@@ -1551,9 +1609,7 @@ export interface components {
         InvestigationLogAppend: {
             entry_type: components["schemas"]["InvestigationLogEntryType"];
             /** Payload */
-            payload?: {
-                [key: string]: unknown;
-            };
+            payload?: Record<string, never>;
             /** Summary */
             summary: string;
             /** Sub Investigation Id */
@@ -1571,9 +1627,7 @@ export interface components {
             sub_investigation_id?: string | null;
             entry_type: components["schemas"]["InvestigationLogEntryType"];
             /** Payload */
-            payload: {
-                [key: string]: unknown;
-            };
+            payload: Record<string, never>;
             /** Summary */
             summary: string;
             /**
@@ -1701,16 +1755,20 @@ export interface components {
             /** After Action Id */
             after_action_id?: string | null;
         };
-        /** PlanItem */
+        /**
+         * PlanItem
+         * @description First-class plan item row (plan_items table).  Replaces the embedded
+         *     InvestigationPlanItem inside the dossiers.investigation_plan JSON blob.
+         */
         PlanItem: {
             /** Id */
             id?: string;
+            /** Dossier Id */
+            dossier_id?: string | null;
             /**
-             * Dossier Id
+             * Question
              * @default
              */
-            dossier_id: string;
-            /** Question */
             question: string;
             /**
              * Rationale
@@ -1735,16 +1793,10 @@ export interface components {
             sub_investigation_id?: string | null;
             /** Blocked Reason */
             blocked_reason?: string | null;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at?: string;
-            /**
-             * Updated At
-             * Format: date-time
-             */
-            updated_at?: string;
+            /** Created At */
+            created_at?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
         };
         /**
          * PlanItemStatus
@@ -2067,6 +2119,34 @@ export interface components {
             /** Reason */
             reason: string;
         };
+        /**
+         * UserNote
+         * @description A free-form note the user volunteers to the agent mid-investigation.
+         *
+         *     ``seen_at`` is set once a session that surfaced the note in its state
+         *     snapshot ends healthy; an errored session leaves it unset so the retry
+         *     re-surfaces the note.
+         */
+        UserNote: {
+            /** Id */
+            id: string;
+            /** Dossier Id */
+            dossier_id: string;
+            /** Content */
+            content: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Seen At */
+            seen_at?: string | null;
+        };
+        /** UserNoteCreate */
+        UserNoteCreate: {
+            /** Content */
+            content: string;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -2075,10 +2155,6 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
-            /** Input */
-            input?: unknown;
-            /** Context */
-            ctx?: Record<string, never>;
         };
         /** WorkSession */
         WorkSession: {
@@ -2297,9 +2373,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */
@@ -2385,6 +2459,38 @@ export interface operations {
             };
         };
     };
+    seed_dossier_api_dossiers_seed_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-vellum-api-token"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Dossier"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     replan_dossier_api_dossiers__dossier_id__replan_post: {
         parameters: {
             query?: never;
@@ -2405,9 +2511,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */
@@ -2560,9 +2664,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */
@@ -2684,6 +2786,78 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["NeedsInput"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_user_notes_api_dossiers__dossier_id__notes_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-vellum-api-token"?: string | null;
+            };
+            path: {
+                dossier_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserNote"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_user_note_api_dossiers__dossier_id__notes_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-vellum-api-token"?: string | null;
+            };
+            path: {
+                dossier_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserNoteCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserNote"];
                 };
             };
             /** @description Validation Error */
@@ -3146,9 +3320,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */
@@ -3333,9 +3505,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */
@@ -3830,9 +4000,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */
@@ -3846,7 +4014,7 @@ export interface operations {
             };
         };
     };
-    list_turns_for_dossier_api_dossiers__dossier_id__turns_get: {
+    list_agent_turns_api_dossiers__dossier_id__turns_get: {
         parameters: {
             query?: {
                 limit?: number;
@@ -3882,7 +4050,7 @@ export interface operations {
             };
         };
     };
-    turn_cost_summary_api_dossiers__dossier_id__turns_summary_get: {
+    get_turn_cost_summary_api_dossiers__dossier_id__turns_summary_get: {
         parameters: {
             query?: never;
             header?: {
@@ -3902,9 +4070,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    }[];
+                    "application/json": unknown[];
                 };
             };
             /** @description Validation Error */
@@ -3977,9 +4143,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */
@@ -4013,9 +4177,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */
@@ -4049,9 +4211,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */
@@ -4083,9 +4243,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    }[];
+                    "application/json": Record<string, never>[];
                 };
             };
             /** @description Validation Error */
@@ -4119,9 +4277,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */
@@ -4155,9 +4311,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */
@@ -4191,9 +4345,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */
@@ -4229,9 +4381,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */
@@ -4269,9 +4419,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */
@@ -4339,9 +4487,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */
@@ -4375,9 +4521,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */
@@ -4547,9 +4691,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */
@@ -4583,9 +4725,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    }[];
+                    "application/json": Record<string, never>[];
                 };
             };
             /** @description Validation Error */
@@ -4614,9 +4754,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": Record<string, never>;
                 };
             };
         };

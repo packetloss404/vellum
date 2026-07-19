@@ -69,17 +69,20 @@ def _recover_one_work_session(session_id: str, dossier_id: str) -> bool:
         )
         return False
 
-    # H-05: mark_wake_pending immediately after the session is closed, BEFORE
-    # the append_reasoning attempt. Previously this block was after
-    # append_reasoning, so a trail-write failure would return False without
-    # ever setting wake_pending — leaving the dossier permanently dark. The
-    # trail note is best-effort; the scheduler re-queue is not.
+    # H-05: schedule the re-wake immediately after the session is closed,
+    # BEFORE the append_reasoning attempt — the trail note is best-effort;
+    # the scheduler re-queue is not. Routed through the self-heal policy so
+    # a crash-looping process backs off exponentially and quarantines after
+    # repeated failures instead of re-waking (and re-spending) every boot.
+    # The first crash still wakes on the next tick; sleep-mode gating lives
+    # inside on_session_failure.
     try:
-        if storage.get_setting("sleep_mode_enabled", True):
-            storage.mark_wake_pending(dossier_id, m.WakeReason.crash_resume)
+        from .agent import self_heal
+
+        self_heal.on_session_failure(dossier_id, kind="crash")
     except Exception:
         logger.warning(
-            "lifecycle: failed to mark dossier %s wake_pending after crash "
+            "lifecycle: failed to schedule re-wake for dossier %s after crash "
             "recovery; resumes will be driven by the user manually this boot",
             dossier_id,
             exc_info=True,

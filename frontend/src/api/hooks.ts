@@ -190,6 +190,23 @@ export function useSeedDossier() {
   });
 }
 
+export function useAddUserNote() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { dossierId: string; content: string }) =>
+      api.addUserNote(vars.dossierId, vars.content),
+    onSuccess: (_data, vars) => {
+      // A note flips wake_pending, so the agent-liveness surfaces need a
+      // refetch too — same set as resolving a needs_input.
+      qc.invalidateQueries({ queryKey: qk.dossier(vars.dossierId) });
+      qc.invalidateQueries({ queryKey: qk.changeLog(vars.dossierId) });
+      qc.invalidateQueries({ queryKey: qk.resumeState(vars.dossierId) });
+      qc.invalidateQueries({ queryKey: qk.agentStatus(vars.dossierId) });
+      qc.invalidateQueries({ queryKey: qk.runningAgents() });
+    },
+  });
+}
+
 export function useResolveNeedsInput() {
   const qc = useQueryClient();
   return useMutation({

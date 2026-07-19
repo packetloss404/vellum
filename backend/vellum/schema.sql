@@ -14,6 +14,9 @@ CREATE TABLE IF NOT EXISTS dossiers (
     wake_at TEXT,
     wake_pending INTEGER NOT NULL DEFAULT 0,
     wake_reason TEXT,
+    consecutive_error_count INTEGER NOT NULL DEFAULT 0,
+    quarantined_at TEXT,
+    quarantine_reason TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -50,6 +53,19 @@ CREATE TABLE IF NOT EXISTS needs_input (
     FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_needs_input_dossier ON needs_input(dossier_id, answered_at);
+
+-- "Tell the agent something": free-form user notes volunteered after intake.
+-- seen_at is stamped when a session that surfaced the note ends healthy;
+-- errored sessions leave it NULL so the self-heal retry re-surfaces it.
+CREATE TABLE IF NOT EXISTS user_notes (
+    id TEXT PRIMARY KEY,
+    dossier_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    seen_at TEXT,
+    FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_user_notes_dossier ON user_notes(dossier_id, created_at);
 
 CREATE TABLE IF NOT EXISTS decision_points (
     id TEXT PRIMARY KEY,

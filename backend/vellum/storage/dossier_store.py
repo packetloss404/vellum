@@ -219,6 +219,7 @@ def get_dossier_full(dossier_id: str) -> Optional[m.DossierFull]:
         from ._helpers import (
             _row_to_section,
             _row_to_needs_input,
+            _row_to_user_note,
             _row_to_decision_point,
             _row_to_reasoning,
             _row_to_ruled_out,
@@ -260,6 +261,12 @@ def get_dossier_full(dossier_id: str) -> Optional[m.DossierFull]:
         decision_points = [
             _row_to_decision_point(r) for r in conn.execute(
                 "SELECT * FROM decision_points WHERE dossier_id = ? ORDER BY created_at",
+                (dossier_id,),
+            ).fetchall()
+        ]
+        user_notes = [
+            _row_to_user_note(r) for r in conn.execute(
+                "SELECT * FROM user_notes WHERE dossier_id = ? ORDER BY created_at",
                 (dossier_id,),
             ).fetchall()
         ]
@@ -324,6 +331,7 @@ def get_dossier_full(dossier_id: str) -> Optional[m.DossierFull]:
         dossier=dossier,
         sections=sections,
         needs_input=needs_input,
+        user_notes=user_notes,
         decision_points=decision_points,
         reasoning_trail=reasoning_trail,
         ruled_out=ruled_out,

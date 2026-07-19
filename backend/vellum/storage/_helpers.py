@@ -132,8 +132,21 @@ def _row_to_dossier(row: sqlite3.Row) -> m.Dossier:
         working_theory=working_theory,
         premise_challenge=premise_challenge,
         last_visited_at=_dt(row["last_visited_at"]),
+        consecutive_error_count=int(_row_get(row, "consecutive_error_count") or 0),
+        quarantined_at=_dt(_row_get(row, "quarantined_at")),
+        quarantine_reason=_row_get(row, "quarantine_reason"),
         created_at=_dt(row["created_at"]),
         updated_at=_dt(row["updated_at"]),
+    )
+
+
+def _row_to_user_note(row: sqlite3.Row) -> m.UserNote:
+    return m.UserNote(
+        id=row["id"],
+        dossier_id=row["dossier_id"],
+        content=row["content"],
+        created_at=_dt(row["created_at"]),
+        seen_at=_dt(row["seen_at"]),
     )
 
 

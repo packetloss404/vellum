@@ -17,6 +17,8 @@ import { ArtifactList } from "../components/dossier/ArtifactList";
 import { ConsideredRejectedList } from "../components/dossier/ConsideredRejectedList";
 import { NextActionsList } from "../components/dossier/NextActionsList";
 import { InvestigationLogSidebar } from "../components/dossier/InvestigationLogSidebar";
+import { QuarantineBanner } from "../components/dossier/QuarantineBanner";
+import { UserNoteComposer } from "../components/dossier/UserNoteComposer";
 import { PlanDiffSidebar } from "../components/plan-diff/PlanDiffSidebar";
 import {
   useChangeLog,
@@ -159,6 +161,7 @@ export default function DossierPage({
     sub_investigations,
     considered_and_rejected,
     next_actions,
+    user_notes,
   } = data;
 
   // Filter out plan_approval decision points — those are owned by
@@ -225,6 +228,12 @@ export default function DossierPage({
             ) : null}
           </div>
         </div>
+
+        {dossier.quarantined_at ? (
+          <div className="mt-6">
+            <QuarantineBanner dossier={dossier} />
+          </div>
+        ) : null}
 
         <div className="mt-6">
           <OpenApprovalsStrip
@@ -293,6 +302,12 @@ export default function DossierPage({
             the log + diff overflow. On narrow it collapses below main. */}
         <aside className="min-w-0 lg:sticky lg:top-6 lg:self-start lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto">
           <div className="space-y-10">
+            {!isDelivered ? (
+              <UserNoteComposer
+                dossierId={dossierId}
+                notes={user_notes ?? []}
+              />
+            ) : null}
             <PlanDiffSidebar dossierId={dossierId} />
             <InvestigationLogSidebar
               dossierId={dossierId}

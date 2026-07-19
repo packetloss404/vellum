@@ -14,6 +14,7 @@ import type {
   IntakeTurnResult,
   NeedsInput,
   SettingEntry,
+  UserNote,
   // v2
   Artifact,
   ArtifactCreate,
@@ -101,6 +102,12 @@ export const api = {
 
   getChangeLog: (id: string) =>
     request<ChangeLogEntry[]>("GET", `/api/dossiers/${id}/change-log`),
+
+  addUserNote: (dossierId: string, content: string) =>
+    request<UserNote>("POST", `/api/dossiers/${dossierId}/notes`, { content }),
+
+  listUserNotes: (dossierId: string) =>
+    request<UserNote[]>("GET", `/api/dossiers/${dossierId}/notes`),
 
   resolveNeedsInput: (dossierId: string, niId: string, answer: string) =>
     request<NeedsInput>(

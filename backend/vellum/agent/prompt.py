@@ -487,6 +487,24 @@ def build_state_snapshot(dossier_full: "m.DossierFull") -> str:
             )
     lines.append("")
 
+    # Unseen user notes — the user tapped the agent on the shoulder while it
+    # was away. Rendered above decision_points because a note can invalidate
+    # the question a pending decision is asking.
+    unseen_notes = [n for n in dossier_full.user_notes if n.seen_at is None]
+    if unseen_notes:
+        lines.append(f"## New notes from the user ({len(unseen_notes)})")
+        lines.append(
+            "The user volunteered these mid-investigation. Weigh them before "
+            "anything else this turn — a note may correct a fact you rely on, "
+            "add evidence, or redirect scope. Acknowledge via append_reasoning "
+            "how each note changed (or didn't change) your direction."
+        )
+        for n in unseen_notes:
+            lines.append(
+                f"- [{n.id}] ({_age(n.created_at, now)} old) {_trunc(n.content, 500)}"
+            )
+        lines.append("")
+
     # Open decision_points
     open_dp = [dp for dp in dossier_full.decision_points if dp.resolved_at is None]
     lines.append(f"## Open decision_points ({len(open_dp)})")
