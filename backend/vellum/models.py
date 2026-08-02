@@ -128,7 +128,9 @@ class NextAction(BaseModel):
     dossier_id: str
     action: str                           # short imperative
     rationale: str = ""
-    priority: int = 0                     # lower = higher priority; use spaced ints
+    priority: float = 0.0                 # lower = higher priority. REAL in SQL
+                                          # so midpoint reorders between two existing
+                                          # actions can store (a.priority + b.priority) / 2
     completed: bool = False
     completed_at: Optional[datetime] = None
     created_at: datetime
