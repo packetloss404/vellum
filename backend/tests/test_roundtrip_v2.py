@@ -7,7 +7,7 @@ exist, so many steps will fail. That is expected and informative: each failure
 is a concrete merge-readiness item.
 
 Run from backend/:
-    .venv/Scripts/python.exe -m pytest tests/test_day1_roundtrip.py -v
+    .venv/Scripts/python.exe -m pytest tests/test_roundtrip_v2.py -v
 """
 from __future__ import annotations
 

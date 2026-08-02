@@ -19,14 +19,14 @@ Two tests live here:
 Run the structural tests::
 
     cd backend && ./.venv/Scripts/python.exe -m pytest \\
-        tests/test_day2_autonomous.py -v
+        tests/test_autonomous_live.py -v
 
 The gated test should SKIP in that run.
 
 To actually run the live test (makes real API calls; not for CI)::
 
     VELLUM_RUN_AUTONOMOUS_TESTS=1 ANTHROPIC_API_KEY=replace-me \\
-        ./.venv/Scripts/python.exe -m pytest tests/test_day2_autonomous.py -v
+        ./.venv/Scripts/python.exe -m pytest tests/test_autonomous_live.py -v
 """
 from __future__ import annotations
 
