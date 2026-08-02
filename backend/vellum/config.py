@@ -68,8 +68,13 @@ API_AUTH_REQUIRED = os.getenv("VELLUM_API_AUTH_REQUIRED", "").lower() in {
     "on",
 }
 
-# Hard run limits. Budget signals are still soft, but these caps prevent a
-# direct API/scheduler path from starting unbounded agent work.
+# Hard run limits. Budget signals are still soft (the agent never gets
+# killed mid-thought on cost), but these caps prevent the API or
+# scheduler from starting unbounded work. Calibration: at 32k max_tokens
+# and a prompt-cache-friendly loop, 200 main-agent turns is roughly a
+# $30 ceiling on opus-4-7 — high enough to absorb a real investigation,
+# low enough that a runaway loop is bounded. Override with
+# VELLUM_AGENT_MAX_TURNS if you need more headroom.
 AGENT_MAX_TURNS = int(os.getenv("VELLUM_AGENT_MAX_TURNS", "200"))
 SUB_AGENT_MAX_TURNS = int(os.getenv("VELLUM_SUB_AGENT_MAX_TURNS", "60"))
 AGENT_MAX_CONCURRENT_RUNS = int(os.getenv("VELLUM_AGENT_MAX_CONCURRENT_RUNS", "2"))

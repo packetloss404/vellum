@@ -33,10 +33,12 @@ goal: don't trip on healthy iteration, but still catch genuine spins fast.
   still catches true repeats.)
 * ``_REVISION_STALL_THRESHOLD`` was 3, raised to 5 (config-driven). A
   finding section revised 4-5 times as evidence accumulates is good, not
-  stall. Any storage mutation that indicates progress — a needs_input
-  resolve, a new artifact, or a spawned sub-investigation — resets the
-  per-section revision counter, via ``mark_progress`` (called from the
-  relevant storage-mutating handlers).
+  stall. The actual reset path lives in ``record_tool_call`` itself: any
+  storage mutation that indicates progress — a new artifact or a
+  spawned sub-investigation (the ``_PROGRESS_MUTATION_TOOL_NAMES`` set)
+  — clears the per-section counters wholesale. A separate
+  ``mark_progress`` hook was planned but never wired up; the inline
+  clear is the load-bearing behavior.
 * ``_SESSION_BUDGET_MULTIPLIER`` was 10, raised to 15 (config-driven). A
   40-turn session with cached prompts + ~30k input avg could legitimately
   brush 300k; 450k gives day-5 comfort without giving up the sanity bound.
@@ -773,17 +775,6 @@ def check_stuck_state(dossier_id: str, session_id: str) -> Optional[StuckSignal]
     return check_session_budget(session_id)
 
 
-def mark_needs_input_resolved(session_id: str) -> None:
-    """Called when the user answers a needs_input. Resets the
-    'section-being-revised-without-progress' counter for revision_stall,
-    because the block has been unblocked.
-    """
-    with _STATE_LOCK:
-        st = _state(session_id)
-        st.upsert_counts_since_resolve.clear()
-        st.revision_stall_reported.clear()
-
-
 def record_turn_end(session_id: str, tool_names_this_turn: list[str]) -> None:
     """Increment turns_since_progress, or reset if a progress tool fired.
 
@@ -934,13 +925,14 @@ def _run_self_test() -> None:
     sig = check_revision_stall(did, sid)
     assert sig is not None and sig.kind == "revision_stall", "revision_stall should fire"
 
-    # 6. After mark_needs_input_resolved, the stall counter resets — more
-    # upserts within the reset window (up to threshold) should NOT fire again.
-    mark_needs_input_resolved(sid)
+    # 6. After a progress-mutating tool fires (add_artifact or
+    # spawn_sub_investigation), the revision-stall counter resets — more
+    # upserts within the reset window (up to threshold) should NOT fire.
+    record_tool_call(sid, "add_artifact", {"artifact_id": "art_xyz"})
     for i in range(_REVISION_STALL_THRESHOLD):  # at threshold, not past it
         record_tool_call(sid, "upsert_section", {"section_id": "sec_open", "j": i})
     assert check_revision_stall(did, sid) is None, (
-        "revision_stall must not fire immediately after needs_input resolution"
+        "revision_stall must not fire immediately after a progress mutation"
     )
 
     # 7. reset_session clears state — next identical batch does not trip loop.
