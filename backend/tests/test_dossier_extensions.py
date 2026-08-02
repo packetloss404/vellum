@@ -278,3 +278,57 @@ def test_get_dossier_full_includes_all_extensions(dossier_id, work_session_id):
     assert len(full.dossier.investigation_plan.items) == 1
     assert len(full.next_actions) == 1
     assert full.next_actions[0].action == "Do thing"
+
+
+# ---------- field-level size caps on unbounded JSON columns ----------
+
+
+def test_debrief_string_fields_capped_at_max_dossier_blob_string():
+    """A 50KB cap is generous for any realistic field. A single 1MB string
+    should be rejected at Pydantic validation, not at storage write."""
+    import pytest
+    from pydantic import ValidationError
+    from vellum import models as m
+
+    too_long = "x" * (m.MAX_DOSSIER_BLOB_STRING + 1)
+    with pytest.raises(ValidationError):
+        m.Debrief(
+            what_i_did=too_long,
+            last_updated=m.utc_now(),
+        )
+    # At the limit, accepted.
+    just_right = "x" * m.MAX_DOSSIER_BLOB_STRING
+    d = m.Debrief(what_i_did=just_right, last_updated=m.utc_now())
+    assert len(d.what_i_did) == m.MAX_DOSSIER_BLOB_STRING
+
+
+def test_working_theory_fields_capped():
+    from pydantic import ValidationError
+    from vellum import models as m
+
+    too_long = "x" * (m.MAX_DOSSIER_BLOB_STRING + 1)
+    with pytest.raises(ValidationError):
+        m.WorkingTheory(
+            recommendation="ok",
+            confidence=m.WorkingTheoryConfidence.medium,
+            why=too_long,
+            what_would_change_it="ok",
+            updated_at=m.utc_now(),
+        )
+
+
+def test_out_of_scope_list_capped():
+    from pydantic import ValidationError
+    from vellum import models as m
+
+    too_many = [f"item {i}" for i in range(m.MAX_DOSSIER_BLOB_LIST + 1)]
+    with pytest.raises(ValidationError):
+        m.Dossier(
+            id=m.new_id("dos"),
+            title="t",
+            problem_statement="p",
+            out_of_scope=too_many,
+            dossier_type=m.DossierType.investigation,
+            created_at=m.utc_now(),
+            updated_at=m.utc_now(),
+        )

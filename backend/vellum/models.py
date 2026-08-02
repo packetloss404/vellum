@@ -16,6 +16,17 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# Field size caps for free-form JSON blob columns on `dossiers`. These are
+# sanity bounds, not optimization bounds — they prevent a single tool call
+# from writing a multi-megabyte string into working_theory.why or 10k
+# items into out_of_scope. The numbers are generous for any realistic
+# dossier (a 50 KB working-theory "why" is already novel-length) but small
+# enough that one runaway call doesn't blow up the DB row.
+MAX_DOSSIER_BLOB_STRING = 50_000        # per string field on a dossier JSON column
+MAX_DOSSIER_BLOB_ITEM = 2_000           # per item in a list field (e.g. out_of_scope entry)
+MAX_DOSSIER_BLOB_LIST = 200             # max items in a list field (e.g. out_of_scope)
+
+
 class DossierType(str, Enum):
     decision_memo = "decision_memo"
     investigation = "investigation"
@@ -116,10 +127,10 @@ class InvestigationPlan(BaseModel):
 
 
 class Debrief(BaseModel):
-    what_i_did: str = ""
-    what_i_found: str = ""
-    what_you_should_do_next: str = ""
-    what_i_couldnt_figure_out: str = ""
+    what_i_did: str = Field(default="", max_length=MAX_DOSSIER_BLOB_STRING)
+    what_i_found: str = Field(default="", max_length=MAX_DOSSIER_BLOB_STRING)
+    what_you_should_do_next: str = Field(default="", max_length=MAX_DOSSIER_BLOB_STRING)
+    what_i_couldnt_figure_out: str = Field(default="", max_length=MAX_DOSSIER_BLOB_STRING)
     last_updated: datetime
 
 
@@ -150,11 +161,11 @@ class WorkingTheory(BaseModel):
     to decide right now, here's what I think" surface the user reads first
     on return.
     """
-    recommendation: str                   # concise belief or recommended next move
+    recommendation: str = Field(max_length=MAX_DOSSIER_BLOB_STRING)
     confidence: WorkingTheoryConfidence
-    why: str                              # why this is the current theory
-    what_would_change_it: str             # what evidence or event would shift it
-    unresolved_assumptions: list[str] = Field(default_factory=list)
+    why: str = Field(max_length=MAX_DOSSIER_BLOB_STRING)
+    what_would_change_it: str = Field(max_length=MAX_DOSSIER_BLOB_STRING)
+    unresolved_assumptions: list[str] = Field(default_factory=list, max_length=MAX_DOSSIER_BLOB_LIST)
     updated_at: datetime
 
 
@@ -164,11 +175,11 @@ class WorkingTheoryUpdate(BaseModel):
     If any field is supplied on a dossier with no existing WorkingTheory,
     all REQUIRED fields must be present — storage enforces this.
     """
-    recommendation: Optional[str] = None
+    recommendation: Optional[str] = Field(default=None, max_length=MAX_DOSSIER_BLOB_STRING)
     confidence: Optional[WorkingTheoryConfidence] = None
-    why: Optional[str] = None
-    what_would_change_it: Optional[str] = None
-    unresolved_assumptions: Optional[list[str]] = None
+    why: Optional[str] = Field(default=None, max_length=MAX_DOSSIER_BLOB_STRING)
+    what_would_change_it: Optional[str] = Field(default=None, max_length=MAX_DOSSIER_BLOB_STRING)
+    unresolved_assumptions: Optional[list[str]] = Field(default=None, max_length=MAX_DOSSIER_BLOB_LIST)
 
 
 class PremiseChallenge(BaseModel):
@@ -178,28 +189,28 @@ class PremiseChallenge(BaseModel):
     this is the 'what is this question smuggling in?' artifact the user
     sees near the top of the dossier.
     """
-    original_question: str
-    hidden_assumptions: list[str] = Field(default_factory=list)
-    why_answering_now_is_risky: str
-    safer_reframe: str
+    original_question: str = Field(max_length=MAX_DOSSIER_BLOB_STRING)
+    hidden_assumptions: list[str] = Field(default_factory=list, max_length=MAX_DOSSIER_BLOB_LIST)
+    why_answering_now_is_risky: str = Field(max_length=MAX_DOSSIER_BLOB_STRING)
+    safer_reframe: str = Field(max_length=MAX_DOSSIER_BLOB_STRING)
     required_evidence_before_answering: list[str] = Field(default_factory=list)
     updated_at: datetime
 
 
 class PremiseChallengeUpdate(BaseModel):
     """Partial-merge update. First write requires all five content fields."""
-    original_question: Optional[str] = None
-    hidden_assumptions: Optional[list[str]] = None
-    why_answering_now_is_risky: Optional[str] = None
-    safer_reframe: Optional[str] = None
-    required_evidence_before_answering: Optional[list[str]] = None
+    original_question: Optional[str] = Field(default=None, max_length=MAX_DOSSIER_BLOB_STRING)
+    hidden_assumptions: Optional[list[str]] = Field(default=None, max_length=MAX_DOSSIER_BLOB_LIST)
+    why_answering_now_is_risky: Optional[str] = Field(default=None, max_length=MAX_DOSSIER_BLOB_STRING)
+    safer_reframe: Optional[str] = Field(default=None, max_length=MAX_DOSSIER_BLOB_STRING)
+    required_evidence_before_answering: Optional[list[str]] = Field(default=None, max_length=MAX_DOSSIER_BLOB_LIST)
 
 
 class Dossier(BaseModel):
     id: str
     title: str
     problem_statement: str
-    out_of_scope: list[str] = Field(default_factory=list)
+    out_of_scope: list[str] = Field(default_factory=list, max_length=MAX_DOSSIER_BLOB_LIST)
     dossier_type: DossierType
     status: DossierStatus = DossierStatus.active
     check_in_policy: CheckInPolicy = Field(default_factory=CheckInPolicy)
@@ -536,15 +547,15 @@ class WorkSessionStart(BaseModel):
 
 
 class DebriefUpdate(BaseModel):
-    what_i_did: Optional[str] = None
-    what_i_found: Optional[str] = None
-    what_you_should_do_next: Optional[str] = None
-    what_i_couldnt_figure_out: Optional[str] = None
+    what_i_did: Optional[str] = Field(default=None, max_length=MAX_DOSSIER_BLOB_STRING)
+    what_i_found: Optional[str] = Field(default=None, max_length=MAX_DOSSIER_BLOB_STRING)
+    what_you_should_do_next: Optional[str] = Field(default=None, max_length=MAX_DOSSIER_BLOB_STRING)
+    what_i_couldnt_figure_out: Optional[str] = Field(default=None, max_length=MAX_DOSSIER_BLOB_STRING)
 
 
 class InvestigationPlanUpdate(BaseModel):
-    items: list[PlanItem]
-    rationale: str = ""
+    items: list[PlanItem] = Field(max_length=MAX_DOSSIER_BLOB_LIST)
+    rationale: str = Field(default="", max_length=MAX_DOSSIER_BLOB_STRING)
     approve: bool = False                 # when True, set approved_at to now
 
     @field_validator("items", mode="before")
