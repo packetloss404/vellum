@@ -47,7 +47,7 @@ Vellum is not a "single agent writes to a structured doc" demo. The investigatio
 - **Backend:** Python + FastAPI + Pydantic (single source of truth for the dossier schema across API, DB, and agent tool schemas), SQLite + WAL, asyncio. Largest modules: `tools/handlers.py` (~58 KB), `agent/stuck.py` (~45 KB), `agent/runtime.py` (~44 KB), `agent/sub_runtime.py` (~34 KB).
 - **Agent:** Direct Anthropic Messages API with a manual agentic loop (no agent SDK). Default model: `claude-opus-4-7`. Intake uses `claude-sonnet-4-6`; compaction summarisation uses `claude-haiku-4-5`.
 - **DB:** SQLite (v1) — **22-table relational schema** with runtime column/index migration. The schema-level **partial unique indexes** (`idx_work_sessions_one_active_per_dossier`, `idx_decision_points_one_open_plan_approval_per_dossier`) are the load-bearing invariants the code-level guards protect.
-- **Frontend:** React 18 + TypeScript + Tailwind (Vite) + react-router + @tanstack/react-query + react-markdown. 41 components, polling for live dossier state. Serif-forward, warm, document-like. No rich-text editor.
+- **Frontend:** React 18 + TypeScript + Tailwind (Vite) + react-router + @tanstack/react-query + react-markdown. 40 components (41 `.tsx` files in `src/components/`, of which one is a co-located test for `AgentActivityIndicator`), polling for live dossier state. Serif-forward, warm, document-like. No rich-text editor.
 - **Tests:** **393 backend pytest tests** across 36 files (lifecycle, orchestrator, scheduler, stuck-detection, sub-investigation, resume, end-to-end roundtrip, plan items, intake, runtime, telemetry, prompt caching, db migrations, API auth, and the `test_storage_imports.py` public-surface lint) plus **26 frontend vitest tests** across 5 files (cx utility, time/format utilities, plan-diff category order, agent activity indicator state machine, and the time/format tests).
 
 ## Local dev
@@ -129,7 +129,7 @@ backend/vellum/
     runtime.py        # main agentic turn loop
     sub_runtime.py    # sub-investigation turn loop (recursive sub-agents)
     orchestrator.py   # concurrency cap, session lifecycle
-    scheduler.py      # sleep-mode: polls wake_store, fires sessions on schedule
+    scheduler.py      # sleep-mode: polls dossier_lifecycle wake flags, fires sessions on schedule
     compactor.py      # context compaction (summariser call when token budget is low)
     stuck.py          # stuck detection: loop/stall/budget signals, escalation tiers
     prompt.py         # system prompt assembly (main agent)
@@ -248,21 +248,25 @@ Most routes follow standard CRUD patterns on `/api/dossiers/{id}/...`; a few hav
 | `VELLUM_API_TOKEN` | unset | Bearer token for `/api/*`. Required when binding to a non-loopback address. |
 | `VELLUM_API_AUTH_REQUIRED` | `false` | If `true`, refuse to start without `VELLUM_API_TOKEN` set. |
 | `VELLUM_DB_PATH` | `vellum.db` | SQLite database file path. |
-| `VELLUM_HOST` | `127.0.0.1` | Bind address for uvicorn. |
-| `VELLUM_PORT` | `8731` | Port for uvicorn. |
+| `VELLUM_HOST` | `127.0.0.1` | Bind address for uvicorn. (Port is set via the `--port` flag in `dev.sh` / `uvicorn`, not via env var.) |
 | `VELLUM_AGENT_MAX_TURNS` | `200` | Hard backstop on agent turn count per session. Soft budget signals fire first; this is the runaway-loop safety net. At 32k max tokens and Opus 4.7 pricing, this is roughly a $30 ceiling per session. |
 | `VELLUM_SUB_AGENT_MAX_TURNS` | `60` | Same backstop for sub-investigations (their tool surface is narrower so the limit can be tighter). |
 | `VELLUM_AGENT_MAX_CONCURRENT_RUNS` | `2` | Process-wide concurrency cap. The orchestrator raises `AgentCapacityExceeded` past this. |
 | `VELLUM_SCHEDULER_POLL_SECONDS` | `30` | How often the sleep-mode scheduler polls for wake-ready dossiers. |
 | `VELLUM_LOOP_DETECTION_THRESHOLD` | `3` | Stuck detector: how many identical-args tool calls before a loop signal fires. |
-| `VELLUM_SAME_TOOL_NO_PROGRESS_THRESHOLD` | `8` | Stuck detector: how many calls to the same tool name before the no-progress heuristic fires (only fires if no new sections were created in the window). |
 | `VELLUM_SECTION_TOKEN_BUDGET` | `30000` | Stuck detector: per-section input-token budget before a section_budget signal. |
-| `VELLUM_SESSION_BUDGET_MULT` | `15` | Stuck detector: session budget = `mult × section_budget` (default 450k input tokens). |
+| `VELLUM_STUCK_SESSION_BUDGET_MULT` | `15` | Stuck detector: session budget = `mult × section_budget` (default 450k input tokens). |
 | `VELLUM_STUCK_REVISION_STALL_THRESHOLD` | `5` | Stuck detector: revisions to the same section before a revision_stall signal (resets on `add_artifact` or `spawn_sub_investigation`). |
-| `VELLUM_STUCK_ESCALATION_TIER1_TURNS` | `1` | Tier 1 stuck signals (silent reasoning note) fire on this turn. |
+| `VELLUM_ERROR_RETRY_BASE_SECONDS` | `300` | Self-heal: first backoff after a consecutive error (5 min). |
 | `VELLUM_ERROR_RETRY_MAX` | `5` | Self-heal: consecutive errored sessions before the dossier is quarantined. |
-| `COMPACT_INPUT_TOKEN_THRESHOLD` | `80000` | Input token count above which context compaction fires. ~80% of the 100k practical input limit. |
+| `VELLUM_ERROR_RETRY_CAP_SECONDS` | `21600` | Self-heal: max backoff between retries (6 hours). |
+| `VELLUM_COMPACT_INPUT_TOKEN_THRESHOLD` | `80000` | Input token count above which context compaction fires. ~80% of the 100k practical input limit. |
 | `VELLUM_RUN_AUTONOMOUS_TESTS` | unset | For `test_autonomous_live.py` — when `1` with `ANTHROPIC_API_KEY` set, the live autonomous-agent test runs. Otherwise it skips. |
+
+A few calibration knobs are constants in code, not env vars, because they were tuned during the 5-day build and the surface hasn't justified exposing them. If you need to change them, edit and restart:
+
+- `_SAME_TOOL_NO_PROGRESS_THRESHOLD = 8` in `agent/stuck.py:193` — how many calls to the same tool name before the no-progress heuristic fires (only counts calls that produced no new sections).
+- Tier-1 stuck escalation in `agent/stuck.py:413-414` — tier is by *signal count* (`stuck_escalation_count`), not by turn number. Tier 1 fires on the first signal in a session.
 
 ## Status
 
