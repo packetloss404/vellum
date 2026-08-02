@@ -19,7 +19,7 @@ Vellum is not a "single agent writes to a structured doc" demo. The investigatio
 - **Multi-dossier orchestrator** (`agent/orchestrator.py`). One `asyncio.Task` per dossier with bounded concurrency, `AgentAlreadyRunning` / `AgentCapacityExceeded` guards, lock-protected start/stop, graceful 30s shutdown, and done-callback pruning.
 - **Sleep-mode scheduler** (`agent/scheduler.py`, pinned by 13 dedicated tests). Polls for dossiers ready to wake every 30s, pre-creates `trigger=scheduled` work sessions, and retries on capacity/contention without dropping the user's change — a late answer keeps `wake_pending` set rather than being lost. The contention path is the canonical "reactive wake within one tick" promise.
 - **Recursive sub-investigations** (`agent/sub_runtime.py`). `spawn_sub_investigation` launches a real second agent runtime with its own work sessions, its own narrowed (allowlisted) tool surface, its own token accounting, a depth cap, force-completion nudge logic, and `sub_investigation_id` threaded through a `ContextVar`. It returns a `return_summary` back up to the parent's tool call.
-- **Tiered stuck detection** (`agent/stuck.py`, ~890 LOC, pinned by 21 tests). Far more than "token budgets." It tracks per-session state with exact-args loop hashing, same-tool-no-progress heuristics, per-section revision counters reset by real progress, section/session token budgets, and a three-tier escalation ladder that decides between a silent reasoning-trail note, a `decision_point`, and a forced-recommended `decision_point` — so the agent never burns cycles blindly. The `stuck_escalation_count` (H-19) and `last_signal_kind` (H-20) columns persist across sleep/wake cycles so the next session can re-surface "last time you got stuck, it was a loop not a budget."
+- **Tiered stuck detection** (`agent/stuck.py`, 923 LOC, pinned by 24 tests). Far more than "token budgets." It tracks per-session state with exact-args loop hashing, same-tool-no-progress heuristics, per-section revision counters reset by real progress, section/session token budgets, and a three-tier escalation ladder that decides between a silent reasoning-trail note, a `decision_point`, and a forced-recommended `decision_point` — so the agent never burns cycles blindly. The `stuck_escalation_count` (H-19) and `last_signal_kind` (H-20) columns persist across sleep/wake cycles so the next session can re-surface "last time you got stuck, it was a loop not a budget."
 - **Crash recovery at startup** (`lifecycle.py`). Reconciles orphaned work sessions and stale intakes on boot.
 - **Separate intake agent** (`intake/runtime.py`). A different, prose-speaking model interviews the user and constructs the dossier before the investigation agent ever runs.
 - **Soft-budget economics.** Per-turn USD cost accounting with a per-model pricing table drives live daily/session rollups (`budget_accounting`); crossing a cap surfaces a `decision_point` rather than killing the run. A 200-turn hard cap (`AGENT_MAX_TURNS`) is the backstop.
@@ -47,8 +47,8 @@ Vellum is not a "single agent writes to a structured doc" demo. The investigatio
 - **Backend:** Python + FastAPI + Pydantic (single source of truth for the dossier schema across API, DB, and agent tool schemas), SQLite + WAL, asyncio. Largest modules: `tools/handlers.py` (~58 KB), `agent/stuck.py` (~45 KB), `agent/runtime.py` (~44 KB), `agent/sub_runtime.py` (~34 KB).
 - **Agent:** Direct Anthropic Messages API with a manual agentic loop (no agent SDK). Default model: `claude-opus-4-7`. Intake uses `claude-sonnet-4-6`; compaction summarisation uses `claude-haiku-4-5`.
 - **DB:** SQLite (v1) — **22-table relational schema** with runtime column/index migration. The schema-level **partial unique indexes** (`idx_work_sessions_one_active_per_dossier`, `idx_decision_points_one_open_plan_approval_per_dossier`) are the load-bearing invariants the code-level guards protect.
-- **Frontend:** React 18 + TypeScript + Tailwind (Vite) + react-router + @tanstack/react-query + react-markdown. ~55 components, polling for live dossier state. Serif-forward, warm, document-like. No rich-text editor.
-- **Tests:** **387 backend pytest tests** across 36 files (lifecycle, orchestrator, scheduler, stuck-detection, sub-investigation, resume, end-to-end roundtrip, plan items, intake, runtime, telemetry, prompt caching, db migrations, API auth, and the new `test_storage_imports.py` public-surface lint) plus **26 frontend vitest tests** across 5 files (cx utility, time/format utilities, plan-diff category order, agent activity indicator state machine, and the new time/format tests).
+- **Frontend:** React 18 + TypeScript + Tailwind (Vite) + react-router + @tanstack/react-query + react-markdown. 41 components, polling for live dossier state. Serif-forward, warm, document-like. No rich-text editor.
+- **Tests:** **389 backend pytest tests** across 36 files (lifecycle, orchestrator, scheduler, stuck-detection, sub-investigation, resume, end-to-end roundtrip, plan items, intake, runtime, telemetry, prompt caching, db migrations, API auth, and the `test_storage_imports.py` public-surface lint) plus **26 frontend vitest tests** across 5 files (cx utility, time/format utilities, plan-diff category order, agent activity indicator state machine, and the time/format tests).
 
 ## Local dev
 
@@ -90,7 +90,7 @@ npm run dev    # vite on :5173, proxy to localhost:8731 for /api
 
 # Backend in offline / smoke-test mode (no real LLM)
 cd backend
-python -m pytest -m "not live"    # 387 tests, ~50s
+python -m pytest -m "not live"    # 389 tests, ~50s
 
 # Backend with the live LLM test (one scenario, costs ~$2-6)
 cd backend
@@ -100,7 +100,7 @@ VELLUM_RUN_AUTONOMOUS_TESTS=1 ANTHROPIC_API_KEY=… python -m pytest tests/test_
 ## Test suite quick reference
 
 ```bash
-# Backend (387 tests, ~50s)
+# Backend (389 tests, ~50s)
 cd backend && python -m pytest
 
 # Backend with the live autonomous test (requires ANTHROPIC_API_KEY)
@@ -116,7 +116,7 @@ cd frontend && npm run build
 The most load-bearing test files:
 
 - `test_scheduler.py` (13 tests) — pins the late-answer correctness contract at `agent/scheduler.py:202-216`. The "reactive wake within one tick" claim.
-- `test_stuck.py` (21 tests) — every stuck-detection signal kind, every exempt-tool carve-out, the `_STUCK_EXEMPT_TOOLS` whitelist contract, and the H-20 `last_signal_kind` persistence.
+- `test_stuck.py` (24 tests) — every stuck-detection signal kind, every exempt-tool carve-out, the `_STUCK_EXEMPT_TOOLS` whitelist contract, and the H-20 `last_signal_kind` persistence (all three signal kinds verified end-to-end through `_assign_tier_and_emit`).
 - `test_storage_imports.py` (3 tests) — pins the flat `storage.X` namespace contract: every public name importable, no old per-entity modules leak, no submodule attribute access.
 - `test_runtime_v2.py` — the dispatch loop, state-snapshot prepending, `pause_turn` handling, idempotent tool dispatch.
 - `test_sub_runtime.py` — sub-agent tool filter, `ContextVar` for `sub_investigation_id`, prod-then-force-complete path, the broken `asyncio.run()` fallback's actual current behavior.
@@ -138,7 +138,7 @@ backend/vellum/
   api/                # FastAPI routes (dossier CRUD, agent control, intake, settings)
   intake/             # intake conversation agent (creates dossiers)
   tools/              # 30 typed tool handlers (upsert_section, flag_needs_input, …)
-  storage/            # per-entity DB stores (13 files after cleanup-2)
+  storage/            # per-entity DB stores (14 files after cleanup-2)
     dossier_store.py        # core dossier CRUD
     plan_items_store.py     # first-class plan items
     sub_investigation_store.py
@@ -158,10 +158,11 @@ backend/vellum/
   db.py               # connection management + init_db + migration runner
   lifecycle.py        # reconcile orphaned work_sessions at startup
 
-backend/tests/        # 387 backend tests across 36 files
+backend/tests/        # 389 backend tests across 36 files
   conftest.py
-  test_stuck.py             # 21 tests — loop/section/session budget, revision stall,
+  test_stuck.py             # 24 tests — loop/section/session budget, revision stall,
                             # _STUCK_EXEMPT_TOOLS whitelist lint, last_signal_kind H-20
+                            # (all three signal kinds through _assign_tier_and_emit)
   test_scheduler.py         # 13 tests — 30s poll, contention path, late-answer
                             # correctness contract, exception containment
   test_storage_imports.py   # 3 tests — flat namespace contract
@@ -174,10 +175,10 @@ backend/tests/        # 387 backend tests across 36 files
   test_tool_surface.py, test_artifacts.py, test_user_notes.py,
   test_considered_and_rejected.py, test_investigation_log.py,
   test_day2_smoke_auto_resolve.py, test_runtime_hooks.py,
-  test_self_heal.py, test_db_migrations.py, test_day1_roundtrip.py,
-  test_jit_loading.py, test_runtime_hooks.py, test_prompt_caching.py,
-  test_agent_status.py, test_agent_turns.py, test_api_auth.py,
-  test_config_cost.py, test_trace_id.py
+  test_self_heal.py, test_db_migrations.py,
+  test_jit_loading.py, test_prompt_caching.py,
+  test_agent_prompts.py, test_agent_status.py, test_agent_turns.py,
+  test_api_auth.py, test_config_cost.py, test_trace_id.py
 
 frontend/src/
   pages/         # DossierListPage, IntakePage, DossierPage, DemoPage, SettingsPage,
@@ -260,7 +261,7 @@ Most routes follow standard CRUD patterns on `/api/dossiers/{id}/...`; a few hav
 | `VELLUM_STUCK_REVISION_STALL_THRESHOLD` | `5` | Stuck detector: revisions to the same section before a revision_stall signal (resets on `add_artifact` or `spawn_sub_investigation`). |
 | `VELLUM_STUCK_ESCALATION_TIER1_TURNS` | `1` | Tier 1 stuck signals (silent reasoning note) fire on this turn. |
 | `VELLUM_ERROR_RETRY_MAX` | `5` | Self-heal: consecutive errored sessions before the dossier is quarantined. |
-| `COMPACT_INPUT_TOKEN_THRESHOLD` | `100000` | Input token count above which context compaction fires. |
+| `COMPACT_INPUT_TOKEN_THRESHOLD` | `80000` | Input token count above which context compaction fires. ~80% of the 100k practical input limit. |
 | `VELLUM_RUN_AUTONOMOUS_TESTS` | unset | For `test_autonomous_live.py` — when `1` with `ANTHROPIC_API_KEY` set, the live autonomous-agent test runs. Otherwise it skips. |
 
 ## Status
