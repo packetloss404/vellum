@@ -33,14 +33,14 @@ Vellum is not a "single agent writes to a structured doc" demo. The investigatio
 ## What makes it different
 
 - **The agent challenges the framing before answering.** On a new dossier, the first move is almost never to answer the stated question — it's to audit the frame. If a user asks "what percentage should I open credit-card-debt negotiations at?", the agent refuses to propose a number until it has confirmed the debt is actually owed (statute of limitations, FDCPA validation, estate liability). Pushback on premises is the thesis, not a feature.
-- **The dossier is structured data, not prose.** The agent writes only through tool calls — `upsert_section`, `flag_needs_input`, `flag_decision_point`, `mark_ruled_out`, `append_reasoning`. There's no chat surface to the user; prose that isn't attached to a tool call evaporates.
-- **First-class states.** Sections carry `confident | provisional | blocked`; dossiers carry `active | delivered`; needs-input and decision-point blocks are top-level surfaces, not afterthoughts.
-- **Sleep-mode async runtime.** The agent can sleep and wake on a schedule. `schedule_wake(hours_from_now=N)` parks the session; the scheduler resumes it within one tick. Check-in cadence (daily / weekly / material-changes-only) is configurable at intake and auto-enforced.
-- **Sub-investigations.** The agent can spawn parallel child investigations (`spawn_sub_investigation`), each running their own turn loop, and fold results back into the parent dossier's plan items.
+- **The dossier is structured data, not prose.** The agent writes only through tool calls — `upsert_section`, `flag_needs_input`, `flag_decision_point`, `mark_ruled_out`, `append_reasoning`. There's no chat surface to the user; prose that isn't attached to a tool call evaporates. The closed-loop enforcement is verified by `test_runtime_v2.py:643-661` (state-snapshot prepending) and `runtime.py:282-290` (discarded-prose path).
+- **First-class states.** Sections carry `confident | provisional | blocked`; dossiers carry `active | paused | delivered`; needs-input and decision-point blocks are top-level surfaces, not afterthoughts. The two partial unique indexes (`idx_work_sessions_one_active_per_dossier`, `idx_decision_points_one_open_plan_approval_per_dossier`) are the load-bearing invariants the code-level guards protect.
+- **Sleep-mode async runtime.** The agent can sleep and wake on a schedule. `schedule_wake(hours_from_now=N)` parks the session; the scheduler resumes it within one tick. Check-in cadence (daily / weekly / material-changes-only) is configurable at intake and auto-enforced server-side (H-23 in `runtime.py:466-495` — the agent can't accidentally drop the wake).
+- **Sub-investigations.** The agent can spawn parallel child investigations (`spawn_sub_investigation`), each running their own turn loop with a narrowed allowlisted tool surface, and fold results back into the parent dossier's plan items.
 - **Context compaction.** Long sessions automatically compact their message history via a summarizer call (default `claude-haiku-4-5`) so they never hit the context ceiling.
-- **Quiet by default.** No pings, no notifications, no status updates. The dossier is a destination, not a stream.
-- **Stuck detection with escalation.** Repeated-tool-call detection, revision stalls, and token-budget signals surface clean decision_points — escalating across tiers until the user or agent resolves the loop. Escalation state persists across sleep/wake cycles.
-- **It survives crashes and runs unattended.** Idempotent tool dispatch, startup reconciliation, the orchestrator/scheduler pair, and tiered stuck detection mean a dossier can be paused, resumed, woken on a schedule, or recovered after a restart without losing or duplicating work.
+- **Quiet by default.** No pings, no notifications, no status updates. The dossier is a destination, not a stream. The 3-second polling on the activity indicator is the only "is the agent alive" affordance.
+- **Stuck detection with escalation.** Repeated-tool-call detection, revision stalls, and token-budget signals surface clean decision_points — escalating across tiers until the user or agent resolves the loop. The escalation tier (H-19) and the kind of signal that fired (H-20, `last_signal_kind`) both persist across sleep/wake so the next session can re-surface "last time you got stuck, it was a loop not a budget."
+- **It survives crashes and runs unattended.** Idempotent tool dispatch (keyed on Anthropic's `tool_use_id`), startup reconciliation (orphaned work sessions auto-close as `crashed`), the orchestrator/scheduler pair, and tiered stuck detection mean a dossier can be paused, resumed, woken on a schedule, or recovered after a restart without losing or duplicating work. The retention guard (`ERROR_RETRY_MAX=5` consecutive errored sessions) quarantines a sick dossier instead of looping it.
 
 ## Stack
 
@@ -66,15 +66,36 @@ cp .env.example .env              # then fill in ANTHROPIC_API_KEY
 cd ../frontend
 npm install
 
-# Run tests
-cd frontend && npm test       # frontend (vitest)
-
 # Run both together
 cd ..
 ./dev.sh                          # uvicorn on :8731, vite on :5173
 ```
 
-Visit `http://localhost:5173/` to start a dossier. Use `/stress`, `/stress2`, `/stress3`, `/stress4`, or `/demo` to load pre-built fixture dossiers without a backend.
+Visit `http://localhost:5173/` to start a dossier. Use `/stress`, `/stress2`, `/stress3`, `/stress4`, or `/demo` to load pre-built fixture dossiers without a backend (see "Fixture dossiers" below).
+
+### Fixture dossiers
+
+`/demo`, `/stress`, `/stress2`, `/stress3`, `/stress4` each load a pre-built fixture from `frontend/src/mocks/`. The fixture host (`components/FixtureHost.tsx`) mounts a fresh `QueryClient` pre-seeded with the fixture data so the dossier page renders the same as a live dossier would. This is what the submission video captures — the demos are reproducible without an API key.
+
+### Running individual subsystems
+
+```bash
+# Backend with auto-reload (no frontend)
+cd backend
+uvicorn vellum.main:app --reload --port 8731
+
+# Frontend with a mock API
+cd frontend
+npm run dev    # vite on :5173, proxy to localhost:8731 for /api
+
+# Backend in offline / smoke-test mode (no real LLM)
+cd backend
+python -m pytest -m "not live"    # 387 tests, ~50s
+
+# Backend with the live LLM test (one scenario, costs ~$2-6)
+cd backend
+VELLUM_RUN_AUTONOMOUS_TESTS=1 ANTHROPIC_API_KEY=… python -m pytest tests/test_autonomous_live.py
+```
 
 ## Test suite quick reference
 
