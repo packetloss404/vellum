@@ -43,7 +43,7 @@ from .artifact_store import (
 )
 
 # Budget operations
-from .budget_store import (
+from .audit import (
     record_budget_usage,
     get_budget_today,
     list_budget_range,
@@ -58,7 +58,7 @@ from .decision_point_store import (
 )
 
 # Idempotency operations
-from .idempotency_store import (
+from .settings import (
     get_tool_invocation,
     record_tool_invocation,
 )
@@ -86,7 +86,7 @@ from .needs_input_store import (
 )
 
 # Next action operations
-from .next_action_store import (
+from .dossier_lifecycle import (
     add_next_action,
     list_next_actions,
     complete_next_action,
@@ -112,7 +112,7 @@ from .session_store import (
 )
 
 # Settings operations
-from .settings_store import (
+from .settings import (
     get_setting,
     set_setting,
     list_settings,
@@ -132,7 +132,7 @@ from .sub_investigation_store import (
 )
 
 # Wake/sleep-mode operations
-from .wake_store import (
+from .dossier_lifecycle import (
     set_dossier_wake_at,
     mark_wake_pending,
     clear_dossier_wake,
@@ -146,7 +146,7 @@ from .wake_store import (
 )
 
 # User notes ("tell the agent something")
-from .user_note_store import (
+from .dossier_lifecycle import (
     create_user_note,
     list_user_notes,
     mark_user_notes_seen,
@@ -164,7 +164,7 @@ from .plan_items_store import (
 )
 
 # Agent turn operations (Phase 4A)
-from .turn_store import (
+from .audit import (
     create_agent_turn,
     list_agent_turns_for_dossier,
     list_agent_turns_for_session,
