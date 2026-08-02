@@ -4,6 +4,10 @@
 
 **Goal:** Move Vellum from "great hackathon project" to "shippable v1" — the surface a maintainer could read with full confidence. Scope: 17 items, 0 breaking changes to the public API, 358 backend tests + 12 frontend tests must stay green at every commit, every commit ships independently.
 
+**Implementation status (as of cleanup-2 close-out):**
+- Phases A, B, C, D, E — **shipped** (16 commits, all pushed to main). 387 backend tests + 26 frontend vitest tests now pass (was 358+12 at session start).
+- Phase F — **deferred** to a follow-up pass. The F.1 (stop serializing items into JSON) was already in place before this pass; the F.2 dossier_plans table + sentinel-guarded backfill, F.4 FK + CHECK migration, F.5 retention policy, and F.6 column drop are all multi-day efforts that should be tackled in their own dedicated session with their own soak windows. See the README "Known issues and follow-ups" section for the full list.
+
 **Constraints (re-stated from the deep-dive):**
 - Solo dev, low risk tolerance
 - 358 backend tests + 12 frontend tests must pass at every commit
@@ -18,23 +22,23 @@
 
 | # | Item | Decision | Risk | Source |
 |---|---|---|---|---|
-| 1 | Delete `_PLACEHOLDER_V2_SCHEMAS` dict + fallback | **Delete.** Unreachable in merged tree (verified). | Trivial | runtime #5 |
-| 2 | `mark_progress` docstring one-liner fix | **Fix.** Docstring is now self-inconsistent with the code. | Trivial | runtime (synthesis #3 residual) |
-| 3 | Add `test_scheduler.py` (12 tests, <5s, deterministic) | **Add.** Highest-value test in the repo. | Small | runtime #1 |
-| 4 | Hard-test the `_PROGRESS_*` whitelists | **Add a test.** Catches the maintenance trap. | Trivial | runtime #3 |
-| 5 | Document the `asyncio.run()` fallback in sub_runtime | **Add comments + a test.** Don't remove the fallback. | Small | runtime #4 |
-| 6 | Add `last_signal_kind` column on `dossiers` | **Add.** Additive, NULL-tolerant, ~50 LOC. | Small | runtime #2 |
-| 7 | Migrate `InvestigationPlanItem` callers → `PlanItem` | **Migrate now; delete later.** Two-step. | Small-medium | runtime #6 |
-| 8 | Consolidate thin store files (7 → 3) | **Consolidate.** 17 → 13 files. Pure import refactor. | Small | storage #1 |
-| 9 | Stop serializing `items` into `investigation_plan` JSON | **Phase 1 of 5-phase plan.** | Small | storage #2 |
-| 10 | Promote plan metadata to `dossier_plans` table | **Phase 2 of 5-phase plan.** | Small-medium | storage #2 |
-| 11 | Stop writing `investigation_plan` JSON | **Phase 3 of 5-phase plan.** | Small | storage #2 |
-| 12 | Drop `investigation_plan` column (after 30d zero reads) | **Phase 4 of 5-phase plan.** Final, one-way door. | Small | storage #2 |
-| 13 | Add 5 new FKs with `ON DELETE SET NULL` | **Add via table-recreate script.** | Small-medium | storage #3 |
-| 14 | Add CHECK constraints on 9 enum-stored columns | **Add via same script.** Pydantic-introspected. | Small | storage #5 (bonus) |
-| 15 | Append-only retention policy (opt-in) | **Add as opt-in, default off.** Honors "user is in the loop." | Medium | storage #4 |
-| 16 | Consolidate frontend: SectionCard/SourceList, common/ cleanup, cx, day-N rename | **All in scope.** Visual identity preserved. | Small-medium | frontend #1-#5 |
-| 17 | Expand vitest (7 new tests; ship 6, defer 1) | **Ship 6; defer `InvestigationLogSidebar` (flaky risk).** | Low-medium | frontend #6 |
+| 1 | Delete `_PLACEHOLDER_V2_SCHEMAS` dict + fallback | **Delete.** Unreachable in merged tree (verified). | Trivial | runtime #5 | ✅ shipped |
+| 2 | `mark_progress` docstring one-liner fix | **Fix.** Docstring is now self-inconsistent with the code. | Trivial | runtime (synthesis #3 residual) | ✅ shipped |
+| 3 | Add `test_scheduler.py` (12 tests, <5s, deterministic) | **Add.** Highest-value test in the repo. | Small | runtime #1 | ✅ shipped (13 tests) |
+| 4 | Hard-test the `_PROGRESS_*` whitelists | **Add a test.** Catches the maintenance trap. | Trivial | runtime #3 | ✅ shipped (2 lint tests) |
+| 5 | Document the `asyncio.run()` fallback in sub_runtime | **Add comments + a test.** Don't remove the fallback. | Small | runtime #4 | ✅ shipped (test exposes broken fallback) |
+| 6 | Add `last_signal_kind` column on `dossiers` | **Add.** Additive, NULL-tolerant, ~50 LOC. | Small | runtime #2 | ✅ shipped |
+| 7 | Migrate `InvestigationPlanItem` callers → `PlanItem` | **Migrate now; delete later.** Two-step. | Small-medium | runtime #6 | ⚠️ partial — debug log added, intake migration reverted (PlanItem is too permissive, breaks the plan_error contract) |
+| 8 | Consolidate thin store files (7 → 3) | **Consolidate.** 17 → 13 files. Pure import refactor. | Small | storage #1 | ✅ shipped |
+| 9 | Stop serializing `items` into `investigation_plan` JSON | **Phase 1 of 5-phase plan.** | Small | storage #2 | ✅ already in place pre-cleanup |
+| 10 | Promote plan metadata to `dossier_plans` table | **Phase 2 of 5-phase plan.** | Small-medium | storage #2 | ⏸ deferred |
+| 11 | Stop writing `investigation_plan` JSON | **Phase 3 of 5-phase plan.** | Small | storage #2 | ⏸ deferred (depends on 10) |
+| 12 | Drop `investigation_plan` column (after 30d zero reads) | **Phase 4 of 5-phase plan.** Final, one-way door. | Small | storage #2 | ⏸ deferred (depends on 11) |
+| 13 | Add 5 new FKs with `ON DELETE SET NULL` | **Add via table-recreate script.** | Small-medium | storage #3 | ⏸ deferred |
+| 14 | Add CHECK constraints on 9 enum-stored columns | **Add via same script.** Pydantic-introspected. | Small | storage #5 (bonus) | ⏸ deferred |
+| 15 | Append-only retention policy (opt-in) | **Add as opt-in, default off.** Honors "user is in the loop." | Medium | storage #4 | ⏸ deferred |
+| 16 | Consolidate frontend: SectionCard/SourceList, common/ cleanup, cx, day-N rename | **All in scope.** Visual identity preserved. | Small-medium | frontend #1-#5 | ✅ shipped |
+| 17 | Expand vitest (7 new tests; ship 6, defer 1) | **Ship 6; defer `InvestigationLogSidebar` (flaky risk).** | Low-medium | frontend #6 | ✅ shipped (5 files, 26 tests; deferred only the one flaky test) |
 
 ### Default decisions on the 13 open questions (callable as `ask_user` if the owner disagrees):
 
