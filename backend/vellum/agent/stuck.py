@@ -150,6 +150,30 @@ _EXEMPT_FROM_LOOP: set = {"update_debrief", "update_investigation_plan"}
 # same_tool_no_progress heuristic. Args usually differ per call anyway, so
 # the exact-args loop detector still catches true repeats.
 _EXEMPT_FROM_NO_PROGRESS: set = {"log_source_consulted", "web_search"}
+# Tools that are neither progress nor spin — reads, state changes, and
+# internal bookkeeping. Exempted from BOTH the loop and no-progress
+# heuristics. A new tool added to HANDLERS that isn't in one of the
+# other four sets MUST be added here with a comment explaining why, or
+# the test_progress_whitelist_covers_all_handlers lint will fail.
+_STUCK_EXEMPT_TOOLS: set = {
+    # JIT read-only (tools/handlers.py:711-714)
+    "get_section",
+    "list_sections",
+    "get_artifact",
+    "get_reasoning_window",
+    # Private cross-session note (not user-visible progress)
+    "append_reasoning",
+    # Section metadata edits (the section is already in the dossier; not
+    # analytic progress, not loop-prone)
+    "update_section_state",
+    "delete_section",
+    "reorder_sections",
+    # Artifact revision (tracked in the same way as upsert_section; not
+    # analytic progress, not loop-prone)
+    "update_artifact",
+    # Adds an action item to the dossier (metadata, not analytic progress)
+    "set_next_action",
+}
 # Tools beyond needs_input whose execution counts as "analytic progress"
 # for the revision-stall counter: a new artifact or a new sub-investigation
 # within the same session means the agent is moving forward, so any

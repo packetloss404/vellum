@@ -481,3 +481,55 @@ def test_spawn_sub_investigation_resets_revision_stall_counter(fresh_db):
     assert stuck.check_revision_stall(dossier_id, session_id) is None, (
         "spawn_sub_investigation should have reset the revision_stall counter"
     )
+
+
+# ---------------------------------------------------------------------------
+# Whitelist lint: every registered tool must be covered by exactly one of the
+# progress / exempt sets, so adding a new tool to HANDLERS without an
+# explicit decision surfaces a test failure.
+# ---------------------------------------------------------------------------
+
+def test_progress_whitelist_covers_all_handlers():
+    """Every tool registered in tools.handlers.HANDLERS must appear in at
+    least one of the progress or exempt sets in stuck.py. A new tool added
+    to HANDLERS without an explicit stuck-detection decision will fail this
+    test, surfacing the gap before it can silently inflate the no-progress
+    counter or trigger a spurious loop signal.
+    """
+    from vellum.agent import stuck
+    from vellum.tools import handlers
+
+    registered = set(handlers.HANDLERS.keys())
+    covered = (
+        stuck._PROGRESS_TOOL_NAMES
+        | stuck._PROGRESS_MUTATION_TOOL_NAMES
+        | stuck._EXEMPT_FROM_LOOP
+        | stuck._EXEMPT_FROM_NO_PROGRESS
+        | stuck._STUCK_EXEMPT_TOOLS
+        | stuck._UPSERT_TOOL_NAMES
+    )
+    missing = registered - covered
+    assert not missing, (
+        f"Tools registered in HANDLERS but missing from every stuck-detection "
+        f"whitelist: {sorted(missing)}. Add each to one of: "
+        f"_PROGRESS_TOOL_NAMES, _PROGRESS_MUTATION_TOOL_NAMES, "
+        f"_EXEMPT_FROM_LOOP, _EXEMPT_FROM_NO_PROGRESS, _STUCK_EXEMPT_TOOLS, "
+        f"_UPSERT_TOOL_NAMES."
+    )
+
+
+def test_progress_mutation_tools_are_a_strict_subset_of_progress_tools():
+    """A tool in _PROGRESS_MUTATION_TOOL_NAMES should also be in
+    _PROGRESS_TOOL_NAMES — both signals are progress. Overlap is the
+    safer default; a tool only in the mutation set is a hidden
+    progress-source the no-progress counter doesn't know about.
+    """
+    from vellum.agent import stuck
+
+    only_mutation = stuck._PROGRESS_MUTATION_TOOL_NAMES - stuck._PROGRESS_TOOL_NAMES
+    assert not only_mutation, (
+        f"Tools in _PROGRESS_MUTATION_TOOL_NAMES but not _PROGRESS_TOOL_NAMES: "
+        f"{sorted(only_mutation)}. Add each to _PROGRESS_TOOL_NAMES too — they "
+        f"count as progress for the no_progress heuristic as well as for the "
+        f"revision_stall counter."
+    )
