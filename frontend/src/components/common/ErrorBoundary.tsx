@@ -1,4 +1,5 @@
 import React from "react";
+import { Button } from "./Button";
 
 type ErrorBoundaryProps = {
   children: React.ReactNode;
@@ -37,13 +38,13 @@ export default class ErrorBoundary extends React.Component<
             <p className="font-serif text-ink-muted mt-4">
               The dossier will be here when you come back.
             </p>
-            <button
+            <Button
               type="button"
               onClick={this.handleReload}
-              className="mt-8 bg-accent text-paper font-sans text-sm rounded px-4 py-2 hover:bg-accent-hover"
+              className="mt-8"
             >
               Reload
-            </button>
+            </Button>
           </div>
         </div>
       );

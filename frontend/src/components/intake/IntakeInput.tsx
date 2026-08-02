@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Button } from "../common/Button";
 
 /**
  * IntakeInput — the sticky composer at the bottom of the intake thread.
@@ -115,13 +116,12 @@ export function IntakeInput({
           <div className="text-xs font-mono text-ink-faint">
             Enter to send · Shift+Enter for newline
           </div>
-          <button
+          <Button
             type="submit"
             disabled={!canSend}
-            className="bg-accent text-paper font-sans text-sm rounded px-4 py-2 hover:bg-accent-hover disabled:opacity-50"
           >
             Send to Vellum
-          </button>
+          </Button>
         </div>
       </div>
     </form>

@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Section, SectionType, SectionState } from "../../api/types";
-import { SourceList } from "../sections/SourceList";
+import { SourceList } from "../common/SourceList";
 import { relativeTime } from "../../utils/time";
 
 /**

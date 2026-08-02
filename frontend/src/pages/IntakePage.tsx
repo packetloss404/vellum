@@ -9,6 +9,7 @@ import { Header } from "../components/layout/Header";
 import { IntakeThread } from "../components/intake/IntakeThread";
 import { IntakeInput } from "../components/intake/IntakeInput";
 import { IntakeStateSummary } from "../components/intake/IntakeStateSummary";
+import { Button } from "../components/common/Button";
 import { useDocumentTitle } from "../utils/useDocumentTitle";
 
 /**
@@ -105,13 +106,12 @@ function IntakeStart() {
           ) : null}
 
           <div className="mt-4 flex items-center gap-4">
-            <button
+            <Button
               type="submit"
               disabled={!canSubmit}
-              className="bg-accent text-paper font-sans text-sm rounded px-4 py-2 hover:bg-accent-hover disabled:opacity-50"
             >
               {startIntake.isPending ? "Starting…" : "Start intake"}
-            </button>
+            </Button>
             <Link
               to="/"
               className="font-sans text-sm text-ink-faint hover:text-accent"
@@ -170,13 +170,12 @@ function IntakeConversation({ id }: { id: string }) {
             {SERVER_ERROR}
           </div>
           <div className="mt-4 flex items-center gap-4">
-            <button
+            <Button
               type="button"
               onClick={() => void query.refetch()}
-              className="bg-accent text-paper font-sans text-sm rounded px-4 py-2 hover:bg-accent-hover"
             >
               Retry
-            </button>
+            </Button>
             <Link
               to="/intake"
               className="font-sans text-sm text-ink-faint hover:text-accent"

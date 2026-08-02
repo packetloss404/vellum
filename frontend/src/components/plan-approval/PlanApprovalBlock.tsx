@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import type { DecisionPoint, DossierFull } from "../../api/types";
 import { Card } from "../common/Card";
 import { Pill } from "../common/Pill";
+import { Button } from "../common/Button";
 import { useResolveDecisionPoint, useStartAgent } from "../../api/hooks";
 import { relativeTime } from "../../utils/time";
 
@@ -271,14 +272,14 @@ export function PlanApprovalBlock({
           >
             Redirect
           </button>
-          <button
+          <Button
             type="button"
             onClick={handleApprove}
             disabled={resolver.isPending}
-            className="bg-accent text-paper font-sans text-sm rounded px-5 py-2 hover:bg-accent-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-5"
           >
             {approvePending ? "Approving…" : "Approve"}
-          </button>
+          </Button>
         </div>
       ) : (
         <form onSubmit={handleRedirectSubmit} className="mt-8">
@@ -309,13 +310,13 @@ export function PlanApprovalBlock({
             >
               Cancel
             </button>
-            <button
+            <Button
               type="submit"
               disabled={!canSubmitRedirect}
-              className="bg-accent text-paper font-sans text-sm rounded px-5 py-2 hover:bg-accent-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-5"
             >
               {redirectPending ? "Sending…" : "Send redirect"}
-            </button>
+            </Button>
           </div>
         </form>
       )}

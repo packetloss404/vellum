@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import type { NeedsInput } from "../../api/types";
 import { Card } from "../common/Card";
 import { Pill } from "../common/Pill";
+import { Button } from "../common/Button";
 import { useResolveNeedsInput } from "../../api/hooks";
 import { relativeTime } from "../../utils/time";
 
@@ -105,13 +106,12 @@ export function NeedsInputItem({ item, dossierId }: NeedsInputItemProps) {
               Couldn't send — try again.
             </span>
           ) : null}
-          <button
+          <Button
             type="submit"
             disabled={!canSubmit}
-            className="bg-accent text-paper font-sans text-sm rounded px-4 py-2 hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {mutation.isPending ? "Sending…" : "Send to dossier"}
-          </button>
+          </Button>
         </div>
       </form>
     </Card>
