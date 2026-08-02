@@ -619,7 +619,15 @@ def update_investigation_plan(
             (new_plan.model_dump_json(), dossier_id),
         )
         # Bulk-replace items in the plan_items table.
-        # Convert any legacy InvestigationPlanItem objects to PlanItem.
+        # H-21: the live path constructs PlanItem (intake/tools.py uses
+        # PlanItem.model_validate). The legacy InvestigationPlanItem
+        # conversion below is only reached if a caller passes an
+        # InvestigationPlanItem instance — e.g. an out-of-tree integration
+        # or a stale caller. The _coerce_legacy_items validator on
+        # InvestigationPlanUpdate already handles dict-shape; this branch
+        # is the safety net for object-shape. Once zero callers construct
+        # InvestigationPlanItem, both this and the validator can be
+        # deleted in a follow-up commit.
         plan_items: list[m.PlanItem] = []
         for it in data.items:
             if isinstance(it, m.PlanItem):

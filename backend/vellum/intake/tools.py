@@ -226,6 +226,12 @@ def commit_intake(intake_id: str, args: dict[str, Any]) -> dict[str, Any]:
             result["plan_error"] = "plan_rationale must be a string"
             return result
         try:
+            # Intake-layer validation: construct InvestigationPlanItem (which
+            # has stricter field requirements than PlanItem — e.g. ``question``
+            # is required, not defaulted). This preserves the intake contract
+            # of "surface plan_error for malformed seeds" that the existing
+            # tests pin. Once we want to relax that contract, we'd need a
+            # different validation layer.
             items = [m.InvestigationPlanItem.model_validate(i) for i in plan_items_raw]
         except Exception as exc:  # pydantic ValidationError or TypeError
             result["plan_error"] = f"invalid plan: {type(exc).__name__}: {exc}"

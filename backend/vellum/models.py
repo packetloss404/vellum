@@ -566,10 +566,18 @@ class InvestigationPlanUpdate(BaseModel):
     @classmethod
     def _coerce_legacy_items(cls, v: object) -> object:
         """Accept InvestigationPlanItem instances by converting them to PlanItem-
-        compatible dicts so callers using the old model continue to work."""
+        compatible dicts so callers using the old model continue to work.
+
+        H-21: this conversion is no longer silent. Each coercion emits a
+        ``logger.debug`` line so a future caller that accidentally constructs
+        legacy-shape items is traceable in the runtime logs. When zero
+        callers construct InvestigationPlanItem in a release, the model
+        and this validator can both be deleted.
+        """
         if not isinstance(v, list):
             return v
         coerced = []
+        n_legacy = 0
         for item in v:
             if isinstance(item, InvestigationPlanItem):
                 coerced.append(
@@ -582,8 +590,15 @@ class InvestigationPlanUpdate(BaseModel):
                         status=PlanItemStatus(item.status),
                     )
                 )
+                n_legacy += 1
             else:
                 coerced.append(item)
+        if n_legacy:
+            import logging
+            logging.getLogger(__name__).debug(
+                "plan_update: coerced %d legacy InvestigationPlanItem -> PlanItem",
+                n_legacy,
+            )
         return coerced
 
 
