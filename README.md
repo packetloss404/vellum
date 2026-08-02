@@ -103,7 +103,7 @@ backend/vellum/
 frontend/src/
   pages/        # DossierListPage, IntakePage, DossierPage, StressPage, DemoPage, SettingsPage
   components/   # dossier, needs-input, decision-points, plan-diff, intake, common
-  api/          # hooks, client, types.ts (hand-maintained), types.generated.ts (generated)
+  api/          # hooks, client, types.ts (hand-maintained mirror of backend Pydantic models)
   mocks/        # demo fixture data
 ```
 
@@ -146,11 +146,8 @@ Most routes follow standard CRUD patterns on `/api/dossiers/{id}/...`; a few hav
 
 v1, single-user, localhost. Runs against a live `ANTHROPIC_API_KEY`. A startup warning is emitted if `VELLUM_API_TOKEN` is unset and the bind address is not loopback — the server can be configured to refuse to start in that case.
 
-## Regenerating frontend types
+## Frontend types
 
-When the backend Pydantic schema changes, regenerate the TypeScript types:
+`frontend/src/api/types.ts` is hand-maintained and mirrors `backend/vellum/models.py` and `backend/vellum/intake/models.py`. ISO datetime strings come through as `string`; Pydantic `Optional` fields use `field?: T | null` so JSON `null` isn't conflated with JS `undefined`.
 
-1. Start the backend (or export the OpenAPI spec: `cd backend && python -c "from vellum.main import app; import json; f=open('openapi.json','w'); f.write(json.dumps(app.openapi(),indent=2)); f.close()"`)
-2. `cd frontend && npm run types:gen`
-
-This produces `src/api/types.generated.ts`. The hand-maintained `types.ts` re-exports the types the frontend needs and adds frontend-only types.
+When the backend Pydantic schema changes, update `types.ts` by hand. An auto-generated `types.generated.ts` is not currently wired up — a previous version shipped dead weight (no file imported it), so the file was removed. The two-file seam is a future refactor: either commit to hand-maintenance and keep the current shape, or wire the OpenAPI generator into the build and have `types.ts` re-export from it.
