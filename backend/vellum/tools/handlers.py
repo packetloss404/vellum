@@ -982,75 +982,6 @@ _maybe_add("mark_considered_and_rejected", "ConsideredAndRejectedCreate")
 _maybe_add("set_next_action", "NextActionCreate")
 
 
-# Permissive placeholder schemas used when a v2 Pydantic model hasn't merged
-# yet. Keeps `tool_schemas()` stable at 14+ entries on any branch. Real
-# schemas take precedence automatically once the model shows up in
-# `_INPUT_MODELS` via `_maybe_add`.
-_PLACEHOLDER_V2_SCHEMAS: dict[str, dict[str, Any]] = {
-    "update_investigation_plan": {
-        "type": "object",
-        "properties": {
-            "items": {"type": "array", "items": {"type": "object"}},
-            "approve": {"type": "boolean", "default": False},
-            "rationale": {"type": "string"},
-        },
-        "required": ["items"],
-        "additionalProperties": True,
-    },
-    "update_debrief": {
-        "type": "object",
-        "properties": {
-            "what_i_did": {"type": "string"},
-            "what_i_found": {"type": "string"},
-            "what_you_should_do_next": {"type": "string"},
-            "what_i_couldnt_figure_out": {"type": "string"},
-        },
-        "additionalProperties": True,
-    },
-    "add_artifact": {
-        "type": "object",
-        "properties": {
-            "kind": {"type": "string"},
-            "title": {"type": "string"},
-            "content": {"type": "string"},
-            "intended_use": {"type": "string"},
-        },
-        "required": ["kind", "title", "content"],
-        "additionalProperties": True,
-    },
-    "spawn_sub_investigation": {
-        "type": "object",
-        "properties": {
-            "title": {"type": "string"},
-            "question": {"type": "string"},
-            "rationale": {"type": "string"},
-        },
-        "required": ["title", "question"],
-        "additionalProperties": True,
-    },
-    "mark_considered_and_rejected": {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string"},
-            "why_compelling": {"type": "string"},
-            "why_rejected": {"type": "string"},
-            "cost_of_error": {"type": "string"},
-        },
-        "required": ["path", "why_compelling", "why_rejected", "cost_of_error"],
-        "additionalProperties": True,
-    },
-    "set_next_action": {
-        "type": "object",
-        "properties": {
-            "action": {"type": "string"},
-            "rationale": {"type": "string"},
-        },
-        "required": ["action", "rationale"],
-        "additionalProperties": True,
-    },
-}
-
-
 def _section_ids_schema() -> dict[str, Any]:
     return {"type": "array", "items": {"type": "string"}, "default": []}
 
@@ -1078,17 +1009,6 @@ def tool_schemas() -> list[dict[str, Any]]:
             "name": name,
             "description": TOOL_DESCRIPTIONS[name],
             "input_schema": model.model_json_schema(),
-        })
-
-    # --- v2 placeholder fallbacks for tools whose model hasn't merged yet ---
-    registered = {s["name"] for s in schemas}
-    for name, placeholder in _PLACEHOLDER_V2_SCHEMAS.items():
-        if name in registered:
-            continue
-        schemas.append({
-            "name": name,
-            "description": TOOL_DESCRIPTIONS[name],
-            "input_schema": placeholder,
         })
 
     # --- v1 hand-written schemas ---
