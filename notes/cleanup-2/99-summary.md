@@ -1,9 +1,11 @@
 # Cleanup-2 — Final Summary
 
-**Date:** 2026-08-02 (single overnight session)
-**Commits:** 19 (8 one-shot + 4 research/design + 7 implementation + 6 docs)
-**Tests:** 358 → 387 backend (+29); 12 → 26 frontend (+14)
-**Files:** 17 → 13 storage modules (-4); 4 dead common/ components deleted; 1 dead types.generated.ts deleted
+**Date:** 2026-08-02 (single overnight session, plus an extended peer-review + bug-check pass)
+**Commits:** ~30 (8 one-shot + 4 research/design + 7 implementation + 6 docs + 5 peer-review + 5 bug-check + ~3 polish)
+**Tests:** 358 → 393 backend (+35); 12 → 26 frontend (+14)
+**Files:** 17 → 14 storage modules (-3, see note); 4 dead common/ components deleted; 1 dead types.generated.ts deleted
+
+> **Note on storage count:** the design plan said "17 → 13" but the actual landed count is 14. The 13 vs 14 distinction is whether `__init__.py` and `_helpers.py` count — they do for the README's project layout, so the README says 14.
 
 ## What got shipped
 
@@ -98,3 +100,39 @@
 - `frontend/src/components/sections/{SectionCard,SectionsList}.tsx` (2 files)
 - `frontend/src/components/sections/SourceList.tsx` (moved to common/ — git mv)
 - `backend/tests/test_day{1_roundtrip,2_autonomous,3_lifecycle}.py` (3 files — git mv to behavior-named)
+
+## Peer review + bug check (extended pass)
+
+After the cleanup-2 implementation, three peer-review subagents and three bug-check subagents fanned out. The headline was: high-quality work, but several real bugs and a number of stale doc claims.
+
+### Peer review (3 reports)
+
+| Report | Headline |
+|---|---|
+| `peer-review-backend.md` | 3 HIGH, 2 MED, 6 LOW. All 3 HIGH and 2 MED fixed in commit `1296ab5`. Most LOWs fixed in the same commit; a few stylistic LOWs deferred. |
+| `peer-review-frontend.md` | 1 HIGH (broken build), 1 MED (stale test), 1 MED (stale docstring), 5 LOW. The HIGH and the 2 MEDs were already fixed by an earlier commit (`5ef85ac`) before the report was generated; only one LOW (the `mid-word` description in `format.test.ts`) needed new action. |
+| `peer-review-docs.md` | 4 HIGH (env-var + project-layout staleness), 4 MED, several LOW. All 4 HIGHs and 2 MEDs fixed in commit `4579d89`; one MED (HANDLER_OVERRIDES documentation) fixed in `e142ff4`; the LOWs on `mark_progress` comment / day-N markers are intentional and left in place. |
+
+### Bug check (3 reports)
+
+| Report | Headline |
+|---|---|
+| `bug-check-backend.md` | 3 MED + 3 LOW. The 3 MEDs: (1) audit-write failure mis-records `is_error=True` — fixed in `a5c0618`; (2) `_resolve_session` runs outside the try/except — fixed in `a5c0618`; (3) idem shim only covers a partial-replay window — **deferred** (needs claim-then-do outbox, separate PR). The 3 LOWs: (4) daemon-thread loss on fast exit — accepted by design; (5) `_surface_stuck`/`_surface_budget_signal` block the event loop — fixed in `a5c0618`; (6) `resume` route missing orphan cleanup — fixed in `a5c0618`. |
+| `bug-check-frontend.md` | 2 MED + 3 LOW. B1 (intake retry re-sends already-received message) and B2 (IntakeInput clobbers typed text on failure) both fixed in `09a6382`. B3 (OpenApprovalsStrip missing the plan_approval title-fallback heuristic) fixed in the same commit. B4 (intake thread pending flicker) and B5 (404 noise during the `/resume-state` rollout) — the endpoint actually exists now, so B5 is moot; B4 deferred as low-impact. |
+| `bug-check-docs.md` | 6 HIGH + 1 MED + 1 LOW. All 8 fixed in `280fbd5`. The most visible: 3 env vars in the README's env-vars table don't exist (`VELLUM_SAME_TOOL_NO_PROGRESS_THRESHOLD`, `VELLUM_STUCK_ESCALATION_TIER1_TURNS`, `VELLUM_PORT`), 2 were mis-named (`VELLUM_SESSION_BUDGET_MULT` → `VELLUM_STUCK_SESSION_BUDGET_MULT`; `COMPACT_INPUT_TOKEN_THRESHOLD` → `VELLUM_COMPACT_INPUT_TOKEN_THRESHOLD`), one stale storage-module ref (`wake_store.py` was deleted in cleanup-2), and the test-count drift. Two real env vars (`VELLUM_ERROR_RETRY_BASE_SECONDS`, `VELLUM_ERROR_RETRY_CAP_SECONDS`) were surfaced. |
+
+### Net delta of the extended pass
+
+- +6 backend tests (peer-review: 4 new for H-20 + inverse + loop test; bug-check: 2 new for orphan `_resolve_session` + orphan resume cleanup)
+- +2 frontend files (test count unchanged — no new vitest tests added in the extended pass)
+- ~10 real bugs fixed (5 backend + 3 frontend + 2 doc-staleness ones with downstream effects)
+- 3 real bugs **deferred** (idem-shim partial-replay, asyncio.run fallback, intake migration to PlanItem)
+- 1 epistemic win: HANDLER_OVERRIDES was almost deleted as "dead code" but is load-bearing for sub-investigation dispatch — the cleanup-2 doc revisions recorded this in the README
+
+## State at handoff (2026-08-02 03:30)
+
+- All 393 backend tests + 26 frontend tests + `npm run build` green
+- 30+ commits on `main`, all pushed
+- README: 280 lines, every concrete claim cross-checked
+- 3 peer-review reports + 3 bug-check reports + this summary in `notes/cleanup-2/`
+- Open follow-ups documented under "What got deferred (Phase F)" above
