@@ -75,6 +75,9 @@ def test_all_documented_storage_names_importable():
         "increment_consecutive_error_count", "reset_consecutive_error_count",
         "set_dossier_quarantined", "clear_dossier_quarantine",
         "get_dossier_error_state",
+        # H-20: last stuck signal kind (dossier_lifecycle.py)
+        "set_dossier_last_signal_kind",
+        "get_dossier_last_signal_kind",
         # User notes (now in dossier_lifecycle.py)
         "create_user_note", "list_user_notes", "mark_user_notes_seen",
         # Plan items

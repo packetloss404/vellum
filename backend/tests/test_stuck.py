@@ -545,10 +545,11 @@ def test_last_signal_kind_visible_after_assign_tier_and_emit(fresh_db):
     """When ``_assign_tier_and_emit`` runs (what the runtime does per
     turn when ``check_stuck_state`` returns a signal), the dossier's
     ``last_signal_kind`` column gets updated. We invoke that path
-    directly to verify the storage write fires. The earlier
-    ``test_last_signal_kind_persisted_on_loop_signal`` test exercises
-    the loop path; this one covers section_budget so we know all
-    signal kinds trigger the write.
+    directly to verify the storage write fires for the section_budget
+    signal kind. The companion tests
+    ``test_last_signal_kind_persisted_on_loop_signal`` and
+    ``test_last_signal_kind_persisted_on_session_budget_signal`` cover
+    the other two kinds.
     """
     from vellum import config, models as m, storage
     from vellum.agent import stuck
@@ -568,6 +569,56 @@ def test_last_signal_kind_visible_after_assign_tier_and_emit(fresh_db):
     stuck._assign_tier_and_emit(session_id, sig)
 
     assert storage.get_dossier_last_signal_kind(dossier_id) == "section_budget"
+
+
+def test_last_signal_kind_persisted_on_loop_signal(fresh_db):
+    """A loop signal (driven by repeat identical-args tool calls past
+    threshold) also persists last_signal_kind through _assign_tier_and_emit.
+    """
+    from vellum import config, storage
+    from vellum.agent import stuck
+
+    dossier_id, session_id = _mk_dossier_and_session()
+    stuck.reset_session(session_id)
+    stuck.init_session(session_id, dossier_id)
+
+    sig = None
+    for _ in range(config.LOOP_DETECTION_THRESHOLD + 1):
+        sig = stuck.record_tool_call(
+            session_id, "web_search", {"q": "loop kind test"}
+        )
+        if sig is not None:
+            break
+    assert sig is not None and sig.kind == "loop"
+
+    stuck._assign_tier_and_emit(session_id, sig)
+
+    assert storage.get_dossier_last_signal_kind(dossier_id) == "loop"
+
+
+def test_last_signal_kind_persisted_on_session_budget_signal(fresh_db):
+    """A session_budget signal (driven by session-wide input tokens
+    exceeding the multiplier × section_budget) also persists
+    last_signal_kind through _assign_tier_and_emit.
+    """
+    from vellum import config, storage
+    from vellum.agent import stuck
+
+    dossier_id, session_id = _mk_dossier_and_session()
+    stuck.reset_session(session_id)
+    stuck.init_session(session_id, dossier_id)
+
+    # Drive a session_budget signal by exceeding the multiplier.
+    stuck.record_input_tokens(
+        session_id, None,
+        config.STUCK_SESSION_BUDGET_MULT * config.SECTION_TOKEN_BUDGET + 1,
+    )
+    sig = stuck.check_session_budget(session_id)
+    assert sig is not None and sig.kind == "session_budget"
+
+    stuck._assign_tier_and_emit(session_id, sig)
+
+    assert storage.get_dossier_last_signal_kind(dossier_id) == "session_budget"
 
 
 def test_last_signal_kind_null_for_clean_dossier(fresh_db):
