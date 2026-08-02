@@ -1,7 +1,11 @@
 """Storage layer for Vellum, split into per-domain modules.
 
-This module re-exports all public storage functions from their respective
-domain-specific modules, maintaining the same API as the original monolithic storage.py.
+The cleanup-2 pass merged 7 thin per-entity stores into 3 cohesive modules
+(``dossier_lifecycle``, ``audit``, ``settings``) but the flat ``storage.X``
+namespace is unchanged — every public name is still importable here. New
+modules follow the same per-domain split; the heavy files (dossier_store,
+plan_items_store, sub_investigation_store) stay on their own. The public-
+surface contract is pinned by ``tests/test_storage_imports.py``.
 """
 
 # Dossier operations
