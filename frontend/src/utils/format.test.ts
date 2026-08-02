@@ -19,7 +19,7 @@ describe("truncate", () => {
     expect(truncate("hello world", -1)).toBe("");
   });
 
-  it("truncates mid-word and appends ellipsis", () => {
+  it("truncates and appends ellipsis", () => {
     expect(truncate("supercalifragilistic", 8)).toBe("superca…");
     expect(truncate("hello world", 6)).toBe("hello…");
     expect(truncate("hello world", 8)).toBe("hello w…");
