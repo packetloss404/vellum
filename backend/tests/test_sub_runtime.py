@@ -576,3 +576,65 @@ def test_prod_after_empty_turn_then_force_complete(fresh_db):
 
     assert result["terminated_without_completion"] is True
     assert "[incomplete" in result["return_summary"]
+
+
+# ---------------------------------------------------------------------------
+# spawn_handler fallback path: when called from inside a running event loop,
+# `asyncio.run` raises "asyncio.run() cannot be called from a running event
+# loop" — the catch at sub_runtime.py:764-783 falls back to a manually
+# constructed loop. This is the load-bearing edge case for the parent
+# runtime calling spawn_handler without to_thread.
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_handler_when_called_inside_running_loop(fresh_db):
+    """When ``spawn_handler`` is invoked from within an already-running
+    asyncio loop (a future caller that doesn't dispatch through
+    ``asyncio.to_thread``), the sub-investigation does NOT silently succeed
+    and does NOT raise. The outer except at sub_runtime.py:784 catches
+    the inner error, records it, and the call returns a structured error
+    response — so the parent agent sees a clean failure rather than an
+    unhandled exception bubbling up through tool dispatch.
+
+    NOTE: the intended fallback at sub_runtime.py:769-781 (manual
+    new_event_loop + run_until_complete) is currently broken — the inner
+    ``run_until_complete`` raises "Cannot run the event loop while another
+    loop is running" because the outer loop is still active. The right
+    fix is to run the sub-investigation in a separate thread with its own
+    loop; deferred to a follow-up cleanup pass. Today, the structured
+    error is the contract.
+    """
+    from vellum import models as m, storage
+    from vellum.agent import sub_runtime
+
+    dossier = _mk_dossier()
+    storage.start_work_session(dossier.id, m.WorkSessionTrigger.manual)
+
+    responses: list = []  # never reached
+
+    with patch(
+        "vellum.agent.sub_runtime.anthropic.AsyncAnthropic",
+        return_value=_make_mock_client(responses),
+    ):
+        async def _drive_inside_loop():
+            return sub_runtime.spawn_handler(
+                dossier.id,
+                {
+                    "scope": "Scope from inside a running loop",
+                    "questions": ["Q1"],
+                },
+            )
+
+        result = asyncio.run(_drive_inside_loop())
+
+    # Outer except caught the inner error and returned a structured response.
+    assert result["sub_investigation_id"].startswith("sub_")
+    assert result["terminated_without_completion"] is True
+    assert "error" in result
+    assert "RuntimeError" in result["error"]
+
+    # The sub row is in 'abandoned' state (the defense-in-depth at
+    # sub_runtime.py:794-805 abandoned it after the error).
+    sub = storage.get_sub_investigation(result["sub_investigation_id"])
+    assert sub is not None
+    assert sub.state == m.SubInvestigationState.abandoned
