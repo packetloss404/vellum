@@ -66,6 +66,9 @@ cp .env.example .env              # then fill in ANTHROPIC_API_KEY
 cd ../frontend
 npm install
 
+# Run tests
+cd frontend && npm test       # frontend (vitest)
+
 # Run both together
 cd ..
 ./dev.sh                          # uvicorn on :8731, vite on :5173

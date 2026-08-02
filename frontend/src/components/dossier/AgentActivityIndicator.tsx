@@ -72,7 +72,11 @@ function wakeReasonLabel(reason: string | null | undefined): string {
   }
 }
 
-function derive(
+// Exported for direct unit testing of the state machine. The component
+// itself derives these values from the API hooks, but the priority order
+// (running > waking > scheduled > idle) and label mapping are load-bearing
+// and worth pinning with a test.
+export function derive(
   running: boolean,
   startedAt: string | null | undefined,
   wakeAt: string | null | undefined,
