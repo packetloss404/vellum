@@ -199,9 +199,15 @@ Most routes follow standard CRUD patterns on `/api/dossiers/{id}/...`; a few hav
   - Returns `{ ok, action, dossier_id, decision_point_id, plan_unapproved }`. Responds 404 if the dossier is missing, 409 if no plan has been drafted (the agent produces a plan on first turn; call this afterwards).
   - The endpoint itself does **not** wake the agent — approving the returned DP goes through the existing `resolve_decision_point` hook, which sets `wake_pending=1` and the scheduler resumes within one tick.
 
-- **`POST /api/dossiers/{id}/visit`** — marks last-visited; empties the "since your last visit" plan-diff window.
+- **`POST /api/dossiers/{id}/visit`** — marks last-visited; empties the "since your last visit" plan-diff window. The visit-before-diff timing in `DossierPage.tsx:54-67` snapshots the change log *before* the `POST /visit` invalidates it.
 
-- **`POST /api/dossiers/{id}/resume`** — explicit agent restart on an existing dossier.
+- **`POST /api/dossiers/{id}/resume`** — explicit agent restart on an existing dossier. Returns 409 if a work session is already active; returns 404 if the dossier is missing or quarantined.
+
+- **`GET /api/dossiers/{id}/resume-state`** — read-only snapshot for the UI to decide whether to offer a resume action. Returns `{ active_work_session_id, wake_pending, wake_at, wake_reason, consecutive_error_count, quarantined_at }`.
+
+- **`GET /api/agents/running`** — list of all in-flight agent runs (powers the "Researching" pill on every dossier card in the list view; avoids an N+1 fanout). One request, not N.
+
+- **`GET /api/agent/status`** — the running state of the agent for a single dossier. Used by `AgentActivityIndicator` to derive the 4-state `running | waking | scheduled | idle` machine.
 
 - **Optional API token guard** — set `VELLUM_API_TOKEN` (single env var, server-side only) to require a bearer token for `/api/*`. In dev, the Vite proxy reads `VELLUM_API_TOKEN` at startup and injects the `Authorization: Bearer …` header on every proxied request, so the token never ships in the browser bundle. `/health` remains public. Empty token keeps localhost dev unchanged unless `VELLUM_API_AUTH_REQUIRED=true`.
 
@@ -218,10 +224,23 @@ Most routes follow standard CRUD patterns on `/api/dossiers/{id}/...`; a few hav
 | `VELLUM_INTAKE_MODEL` | `claude-sonnet-4-6` | Intake conversation model. |
 | `VELLUM_SUMMARY_MODEL` | `claude-haiku-4-5` | Compaction summariser model. |
 | `VELLUM_API_TOKEN` | unset | Bearer token for `/api/*`. Required when binding to a non-loopback address. |
+| `VELLUM_API_AUTH_REQUIRED` | `false` | If `true`, refuse to start without `VELLUM_API_TOKEN` set. |
 | `VELLUM_DB_PATH` | `vellum.db` | SQLite database file path. |
 | `VELLUM_HOST` | `127.0.0.1` | Bind address for uvicorn. |
 | `VELLUM_PORT` | `8731` | Port for uvicorn. |
+| `VELLUM_AGENT_MAX_TURNS` | `200` | Hard backstop on agent turn count per session. Soft budget signals fire first; this is the runaway-loop safety net. At 32k max tokens and Opus 4.7 pricing, this is roughly a $30 ceiling per session. |
+| `VELLUM_SUB_AGENT_MAX_TURNS` | `60` | Same backstop for sub-investigations (their tool surface is narrower so the limit can be tighter). |
+| `VELLUM_AGENT_MAX_CONCURRENT_RUNS` | `2` | Process-wide concurrency cap. The orchestrator raises `AgentCapacityExceeded` past this. |
+| `VELLUM_SCHEDULER_POLL_SECONDS` | `30` | How often the sleep-mode scheduler polls for wake-ready dossiers. |
+| `VELLUM_LOOP_DETECTION_THRESHOLD` | `3` | Stuck detector: how many identical-args tool calls before a loop signal fires. |
+| `VELLUM_SAME_TOOL_NO_PROGRESS_THRESHOLD` | `8` | Stuck detector: how many calls to the same tool name before the no-progress heuristic fires (only fires if no new sections were created in the window). |
+| `VELLUM_SECTION_TOKEN_BUDGET` | `30000` | Stuck detector: per-section input-token budget before a section_budget signal. |
+| `VELLUM_SESSION_BUDGET_MULT` | `15` | Stuck detector: session budget = `mult × section_budget` (default 450k input tokens). |
+| `VELLUM_STUCK_REVISION_STALL_THRESHOLD` | `5` | Stuck detector: revisions to the same section before a revision_stall signal (resets on `add_artifact` or `spawn_sub_investigation`). |
+| `VELLUM_STUCK_ESCALATION_TIER1_TURNS` | `1` | Tier 1 stuck signals (silent reasoning note) fire on this turn. |
+| `VELLUM_ERROR_RETRY_MAX` | `5` | Self-heal: consecutive errored sessions before the dossier is quarantined. |
 | `COMPACT_INPUT_TOKEN_THRESHOLD` | `100000` | Input token count above which context compaction fires. |
+| `VELLUM_RUN_AUTONOMOUS_TESTS` | unset | For `test_autonomous_live.py` — when `1` with `ANTHROPIC_API_KEY` set, the live autonomous-agent test runs. Otherwise it skips. |
 
 ## Status
 
