@@ -533,3 +533,71 @@ def test_progress_mutation_tools_are_a_strict_subset_of_progress_tools():
         f"count as progress for the no_progress heuristic as well as for the "
         f"revision_stall counter."
     )
+
+
+# ---------------------------------------------------------------------------
+# H-20: last_signal_kind column. Persists the kind of stuck signal that
+# last fired so the next session can recall it across sleep/wake.
+# ---------------------------------------------------------------------------
+
+
+def test_last_signal_kind_visible_after_assign_tier_and_emit(fresh_db):
+    """When ``_assign_tier_and_emit`` runs (what the runtime does per
+    turn when ``check_stuck_state`` returns a signal), the dossier's
+    ``last_signal_kind`` column gets updated. We invoke that path
+    directly to verify the storage write fires. The earlier
+    ``test_last_signal_kind_persisted_on_loop_signal`` test exercises
+    the loop path; this one covers section_budget so we know all
+    signal kinds trigger the write.
+    """
+    from vellum import config, models as m, storage
+    from vellum.agent import stuck
+
+    dossier_id, session_id = _mk_dossier_and_session()
+    stuck.reset_session(session_id)
+    stuck.init_session(session_id, dossier_id)
+
+    # Drive a section_budget signal directly (faster than the loop path
+    # and doesn't depend on a specific threshold).
+    stuck.record_input_tokens(
+        session_id, "sec_alpha", config.SECTION_TOKEN_BUDGET + 1
+    )
+    sig = stuck.check_section_budget(dossier_id, session_id)
+    assert sig is not None and sig.kind == "section_budget"
+
+    stuck._assign_tier_and_emit(session_id, sig)
+
+    assert storage.get_dossier_last_signal_kind(dossier_id) == "section_budget"
+
+
+def test_last_signal_kind_null_for_clean_dossier(fresh_db):
+    """A dossier with no prior stuck signal has last_signal_kind=NULL."""
+    from vellum import models as m, storage
+
+    dossier = storage.create_dossier(
+        m.DossierCreate(
+            title="clean dossier",
+            problem_statement="no signals fired",
+            dossier_type=m.DossierType.investigation,
+        )
+    )
+    assert storage.get_dossier_last_signal_kind(dossier.id) is None
+
+
+def test_last_signal_kind_visible_in_dossier_pydantic(fresh_db):
+    """The Dossier Pydantic model exposes last_signal_kind for the
+    build_state_snapshot consumer.
+    """
+    from vellum import models as m, storage
+
+    dossier = storage.create_dossier(
+        m.DossierCreate(
+            title="visible kind",
+            problem_statement="snapshot consumer test",
+            dossier_type=m.DossierType.investigation,
+        )
+    )
+    storage.set_dossier_last_signal_kind(dossier.id, "session_budget")
+
+    fetched = storage.get_dossier(dossier.id)
+    assert fetched.last_signal_kind == "session_budget"

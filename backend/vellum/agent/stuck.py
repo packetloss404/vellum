@@ -58,7 +58,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 
-from vellum import config
+from vellum import config, storage
 
 logger = logging.getLogger(__name__)
 
@@ -405,6 +405,21 @@ def _assign_tier_and_emit(session_id: str, signal: StuckSignal) -> StuckSignal:
             args=(dossier_id_for_persist,),
             daemon=True,
         ).start()
+        # H-20: best-effort sync persist of the signal *kind* (loop,
+        # same_tool_no_progress, section_budget, session_budget,
+        # revision_stall). The escalation count survives sleep/wake;
+        # the kind now does too, so the next session can re-surface
+        # "last time you got stuck, it was X, not Y" without
+        # re-triping the same heuristic from scratch. Sync (a single
+        # UPDATE is microseconds; we already released _STATE_LOCK so
+        # no coroutine is blocked on the write).
+        try:
+            storage.set_dossier_last_signal_kind(
+                dossier_id_for_persist, signal.kind
+            )
+        except Exception:
+            # Never block signal emission on a write failure.
+            pass
     # H-08: _emit_investigation_log performs two synchronous storage writes
     # (get_work_session + append_investigation_log). Calling it directly on the
     # event-loop thread would block all coroutines for the duration. When there

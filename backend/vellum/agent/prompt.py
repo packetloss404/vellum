@@ -391,6 +391,18 @@ def build_state_snapshot(dossier_full: "m.DossierFull") -> str:
         )
         lines.append("")
 
+    # H-20: surface the last stuck signal kind so the agent can recall
+    # what tripped the previous session across sleep/wake cycles. The
+    # escalation tier is in a separate field; the kind is the new piece.
+    if d.last_signal_kind:
+        lines.append("## Last stuck signal (last session)")
+        lines.append(
+            f"kind: {d.last_signal_kind} — last session ended with this stuck "
+            "heuristic firing. If you re-trip the same heuristic, escalate to "
+            "the user via declare_stuck rather than re-investing in the same path."
+        )
+        lines.append("")
+
     # Plan approval status — the gate on substantive work.
     plan = d.investigation_plan
     lines.append("## Plan status")

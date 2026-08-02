@@ -142,6 +142,8 @@ from .dossier_lifecycle import (
     reset_consecutive_error_count,
     set_dossier_quarantined,
     clear_dossier_quarantine,
+    set_dossier_last_signal_kind,
+    get_dossier_last_signal_kind,
     get_dossier_error_state,
 )
 

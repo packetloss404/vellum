@@ -224,6 +224,10 @@ class Dossier(BaseModel):
     consecutive_error_count: int = 0
     quarantined_at: Optional[datetime] = None
     quarantine_reason: Optional[str] = None
+    # H-20: the kind of stuck signal that last fired. Persists across
+    # sleep/wake so the next session can re-surface "last time you got
+    # stuck, it was a loop not a budget." NULL-tolerant on legacy rows.
+    last_signal_kind: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

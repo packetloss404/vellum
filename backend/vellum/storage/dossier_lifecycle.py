@@ -156,6 +156,34 @@ def clear_dossier_quarantine(dossier_id: str) -> None:
         )
 
 
+def set_dossier_last_signal_kind(dossier_id: str, kind: str) -> None:
+    """Persist the kind of stuck signal that last fired on this dossier.
+
+    Mirrors the stuck_escalation_count write in agent/stuck.py: best-effort
+    and asynchronous from the runtime's perspective. A write failure must
+    not break signal emission.
+    """
+    with connect() as conn:
+        conn.execute(
+            "UPDATE dossiers SET last_signal_kind = ? WHERE id = ?",
+            (kind, dossier_id),
+        )
+
+
+def get_dossier_last_signal_kind(dossier_id: str) -> Optional[str]:
+    """Read the last_signal_kind column. Returns None if dossier missing or
+    the column is NULL (i.e. no signal has fired on this dossier).
+    """
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT last_signal_kind FROM dossiers WHERE id = ?",
+            (dossier_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return row["last_signal_kind"]
+
+
 def get_dossier_error_state(dossier_id: str) -> Optional[dict]:
     """Read the self-heal fields for a dossier. Returns None if not found."""
     with connect() as conn:

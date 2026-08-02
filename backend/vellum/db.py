@@ -55,6 +55,12 @@ _REQUIRED_COLUMNS: list[tuple[str, str, str]] = [
     ("dossiers", "consecutive_error_count", "INTEGER NOT NULL DEFAULT 0"),
     ("dossiers", "quarantined_at", "TEXT"),
     ("dossiers", "quarantine_reason", "TEXT"),
+    # H-20: the kind of stuck signal that last fired. Persists across
+    # sleep/wake cycles so the next session can re-surface "last time
+    # you got stuck, it was a loop not a budget" — the kind is the
+    # information the escalation_count alone doesn't carry. NULL-tolerant
+    # on existing rows; the ratchet's ALTER TABLE adds it as TEXT NULL.
+    ("dossiers", "last_signal_kind", "TEXT"),
 ]
 
 

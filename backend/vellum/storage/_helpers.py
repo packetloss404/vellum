@@ -135,6 +135,7 @@ def _row_to_dossier(row: sqlite3.Row) -> m.Dossier:
         consecutive_error_count=int(_row_get(row, "consecutive_error_count") or 0),
         quarantined_at=_dt(_row_get(row, "quarantined_at")),
         quarantine_reason=_row_get(row, "quarantine_reason"),
+        last_signal_kind=_row_get(row, "last_signal_kind"),
         created_at=_dt(row["created_at"]),
         updated_at=_dt(row["updated_at"]),
     )
