@@ -48,7 +48,7 @@ Vellum is not a "single agent writes to a structured doc" demo. The investigatio
 - **Agent:** Direct Anthropic Messages API with a manual agentic loop (no agent SDK). Default model: `claude-opus-4-7`. Intake uses `claude-sonnet-4-6`; compaction summarisation uses `claude-haiku-4-5`.
 - **DB:** SQLite (v1) — **22-table relational schema** with runtime column/index migration. The schema-level **partial unique indexes** (`idx_work_sessions_one_active_per_dossier`, `idx_decision_points_one_open_plan_approval_per_dossier`) are the load-bearing invariants the code-level guards protect.
 - **Frontend:** React 18 + TypeScript + Tailwind (Vite) + react-router + @tanstack/react-query + react-markdown. 41 components, polling for live dossier state. Serif-forward, warm, document-like. No rich-text editor.
-- **Tests:** **391 backend pytest tests** across 36 files (lifecycle, orchestrator, scheduler, stuck-detection, sub-investigation, resume, end-to-end roundtrip, plan items, intake, runtime, telemetry, prompt caching, db migrations, API auth, and the `test_storage_imports.py` public-surface lint) plus **26 frontend vitest tests** across 5 files (cx utility, time/format utilities, plan-diff category order, agent activity indicator state machine, and the time/format tests).
+- **Tests:** **393 backend pytest tests** across 36 files (lifecycle, orchestrator, scheduler, stuck-detection, sub-investigation, resume, end-to-end roundtrip, plan items, intake, runtime, telemetry, prompt caching, db migrations, API auth, and the `test_storage_imports.py` public-surface lint) plus **26 frontend vitest tests** across 5 files (cx utility, time/format utilities, plan-diff category order, agent activity indicator state machine, and the time/format tests).
 
 ## Local dev
 
@@ -90,7 +90,7 @@ npm run dev    # vite on :5173, proxy to localhost:8731 for /api
 
 # Backend in offline / smoke-test mode (no real LLM)
 cd backend
-python -m pytest -m "not live"    # 391 tests, ~50s
+python -m pytest -m "not live"    # 393 tests, ~50s
 
 # Backend with the live LLM test (one scenario, costs ~$2-6)
 cd backend
@@ -100,7 +100,7 @@ VELLUM_RUN_AUTONOMOUS_TESTS=1 ANTHROPIC_API_KEY=… python -m pytest tests/test_
 ## Test suite quick reference
 
 ```bash
-# Backend (391 tests, ~50s)
+# Backend (393 tests, ~50s)
 cd backend && python -m pytest
 
 # Backend with the live autonomous test (requires ANTHROPIC_API_KEY)
@@ -158,7 +158,7 @@ backend/vellum/
   db.py               # connection management + init_db + migration runner
   lifecycle.py        # reconcile orphaned work_sessions at startup
 
-backend/tests/        # 391 backend tests across 36 files
+backend/tests/        # 393 backend tests across 36 files
   conftest.py
   test_stuck.py             # 25 tests — loop/section/session budget, revision stall,
                             # _STUCK_EXEMPT_TOOLS whitelist lint, last_signal_kind H-20,

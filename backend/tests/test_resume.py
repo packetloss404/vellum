@@ -153,6 +153,14 @@ def test_resume_with_active_session_returns_409(client, monkeypatch):
 
     active = storage.start_work_session(dossier.id, m.WorkSessionTrigger.manual)
 
+    # Simulate that the orchestrator has a live task for this dossier
+    # (so we don't trigger the orphan-cleanup path — that has its own
+    # test below).
+    monkeypatch.setattr(
+        "vellum.api.agent_routes._orchestrator_running",
+        lambda did: True,
+    )
+
     resp = client.post(f"/api/dossiers/{dossier.id}/resume")
     assert resp.status_code == 409, resp.text
     body = resp.json()
@@ -168,6 +176,43 @@ def test_resume_with_active_session_returns_409(client, monkeypatch):
     assert still_active is not None
     assert still_active.id == active.id
     assert still_active.ended_at is None
+
+
+def test_resume_closes_orphan_session_when_orchestrator_has_no_task(client, monkeypatch):
+    """If there's an active work_session row but the orchestrator has no
+    live task for it (the task errored, GC'd, or the process is alive
+    but the task is dead), /resume should close the orphan and start
+    a fresh one — parity with the /start route. Otherwise the user
+    is stuck waiting for a process restart.
+    """
+    from vellum import models as m, storage
+
+    calls = _patch_orchestrator_start(monkeypatch)
+    dossier = _mk_dossier()
+    orphan = storage.start_work_session(dossier.id, m.WorkSessionTrigger.manual)
+
+    # Orchestrator has no live task (returns False).
+    monkeypatch.setattr(
+        "vellum.api.agent_routes._orchestrator_running",
+        lambda did: False,
+    )
+
+    resp = client.post(f"/api/dossiers/{dossier.id}/resume")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # The orphan was closed (ended_at set, reason=crashed).
+    closed = storage.get_work_session(orphan.id)
+    assert closed is not None
+    assert closed.ended_at is not None
+    assert closed.end_reason == m.WorkSessionEndReason.crashed
+
+    # A new session was created for the resume.
+    assert body["work_session_id"] != orphan.id
+    new_active = storage.get_active_work_session(dossier.id)
+    assert new_active is not None
+    assert new_active.id == body["work_session_id"]
+    assert new_active.trigger == m.WorkSessionTrigger.resume
 
 
 def test_start_work_session_rejects_duplicate_active_session(fresh_db):

@@ -132,7 +132,39 @@ class DossierAgent:
         from . import prompt as prompt_mod
         from . import stuck as stuck_mod
 
-        session_id = self._resolve_session()
+        # ``_resolve_session`` and the pre-loop storage calls can raise
+        # (the route may have created a session row under
+        # ``expected_session_id`` but the row is already ended, or storage
+        # is briefly unavailable). If they do, close the session so the
+        # user can recover on the next click without waiting for a
+        # process restart to run ``lifecycle.reconcile_at_startup``.
+        session_id: Optional[str] = None
+        try:
+            session_id = self._resolve_session()
+        except Exception as exc:  # noqa: BLE001
+            # Best-effort close of the expected session if the route
+            # pre-created one. ``_resolve_session`` raises on
+            # already-ended / not-found / wrong-dossier — any of those
+            # means the row may still be open and the next user action
+            # would 409 forever.
+            expected = getattr(self, "expected_session_id", None)
+            if expected:
+                try:
+                    storage.end_work_session_with_reason(
+                        expected, m.WorkSessionEndReason.error
+                    )
+                except Exception:
+                    logger.warning(
+                        "runtime: failed to close expected session %s after _resolve_session raised",
+                        expected, exc_info=True,
+                    )
+            return RunResult(
+                reason="error",
+                turns=0,
+                session_id=session_id or (expected or ""),
+                error=f"_resolve_session: {type(exc).__name__}: {exc}",
+            )
+
         # H-19: register the session so stuck can load/persist escalation count.
         stuck_mod.init_session(session_id, self.dossier_id)
         state = _LoopState()
@@ -220,7 +252,7 @@ class DossierAgent:
                     # Budget soft-signal: check after each turn. Never hard-
                     # stops the loop; emits a decision_point if the session
                     # or daily threshold is crossed (and not yet reported).
-                    self._check_budget_signals(session_id)
+                    await self._check_budget_signals(session_id)
 
                 # H-01: serialize Anthropic SDK objects to plain dicts before
                 # storing in state.messages. The compactor's isinstance(block,
@@ -413,7 +445,7 @@ class DossierAgent:
                     # is deduped inside stuck.py's *_reported sets, so the
                     # runtime will not re-surface the same signal on a
                     # subsequent turn.
-                    self._surface_stuck(stuck_signal)
+                    await self._surface_stuck(stuck_signal)
 
                 # Refresh the snapshot for the next turn by appending a
                 # synthetic user message after tool results. This keeps
@@ -592,26 +624,13 @@ class DossierAgent:
             result = await asyncio.to_thread(
                 handlers.dispatch, self.dossier_id, tool_name, tool_input
             )
-            result_json = _coerce_tool_result(result)
-            await asyncio.to_thread(
-                storage.record_tool_invocation,
-                tool_use_id,
-                self.dossier_id,
-                tool_name,
-                _hash_tool_input(tool_input),
-                result_json,
-                False,
-            )
-            return {
-                "type": "tool_result",
-                "tool_use_id": tool_use_id,
-                "content": result_json,
-            }
         except Exception as exc:  # noqa: BLE001 — surface to the model, don't kill the loop
+            # The handler raised. Record this so a replay doesn't re-run
+            # a handler that already errored (cheap insurance against
+            # thrashing the DB on the same failure). Audit-write failure
+            # here is logged-and-swallowed — it must not affect what the
+            # model sees.
             err_content = f"{type(exc).__name__}: {exc}"
-            # Record the error so a replay doesn't re-run a handler that
-            # already errored (cheap insurance against thrashing the DB
-            # on the same failure).
             try:
                 await asyncio.to_thread(
                     storage.record_tool_invocation,
@@ -623,7 +642,10 @@ class DossierAgent:
                     True,
                 )
             except Exception:
-                pass
+                logger.warning(
+                    "runtime: failed to audit tool_use_id=%s handler-error",
+                    tool_use_id, exc_info=True,
+                )
             return {
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
@@ -631,7 +653,36 @@ class DossierAgent:
                 "is_error": True,
             }
 
-    def _check_budget_signals(self, session_id: str) -> None:
+        # Handler succeeded. ``result_json`` is what the model gets.
+        # The audit write is best-effort and NEVER feeds back into the
+        # tool_result — a separate try/except so an audit-write failure
+        # (disk full, schema drift, SQLite busy) doesn't get re-recorded
+        # as a fake handler error and trick the model into retrying
+        # non-idempotent handlers (``add_artifact``, ``flag_needs_input``,
+        # etc., which create fresh id'd rows on each call).
+        result_json = _coerce_tool_result(result)
+        try:
+            await asyncio.to_thread(
+                storage.record_tool_invocation,
+                tool_use_id,
+                self.dossier_id,
+                tool_name,
+                _hash_tool_input(tool_input),
+                result_json,
+                False,
+            )
+        except Exception:
+            logger.warning(
+                "runtime: failed to audit tool_use_id=%s success",
+                tool_use_id, exc_info=True,
+            )
+        return {
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": result_json,
+        }
+
+    async def _check_budget_signals(self, session_id: str) -> None:
         """Soft-signal budget check — runs after each turn's usage capture.
 
         Emits a ``declare_stuck``-shaped decision_point via storage when the
@@ -653,7 +704,7 @@ class DossierAgent:
                 today = None
             if today is not None and today.spent_usd >= daily_cap:
                 self._budget_daily_reported = True
-                self._surface_budget_signal(
+                await self._surface_budget_signal(
                     kind="budget_daily",
                     detail=(
                         f"Daily global spend ${today.spent_usd:.2f} has reached "
@@ -669,7 +720,7 @@ class DossierAgent:
                 ws = None
             if ws is not None and ws.cost_usd >= session_cap:
                 self._budget_session_reported = True
-                self._surface_budget_signal(
+                await self._surface_budget_signal(
                     kind="budget_session",
                     detail=(
                         f"This work session has spent ${ws.cost_usd:.2f}, crossing "
@@ -677,7 +728,7 @@ class DossierAgent:
                     ),
                 )
 
-    def _surface_budget_signal(self, kind: str, detail: str) -> None:
+    async def _surface_budget_signal(self, kind: str, detail: str) -> None:
         summary = (
             f"{detail} Soft signal only — I'll keep working unless you tell "
             f"me otherwise, but this is worth a check-in."
@@ -695,7 +746,11 @@ class DossierAgent:
             trust_mode = False
         if trust_mode:
             try:
-                handlers.dispatch(
+                # Run handler off the event loop so a slow SQLite write
+                # doesn't stall concurrent agents (parity with
+                # _dispatch_client_tool).
+                await asyncio.to_thread(
+                    handlers.dispatch,
                     self.dossier_id,
                     "append_reasoning",
                     {
@@ -731,7 +786,8 @@ class DossierAgent:
             },
         ]
         try:
-            handlers.dispatch(
+            await asyncio.to_thread(
+                handlers.dispatch,
                 self.dossier_id,
                 "check_stuck",
                 {"summary_of_attempts": summary, "options_for_user": options},
@@ -739,7 +795,7 @@ class DossierAgent:
         except Exception:
             pass
 
-    def _surface_stuck(self, signal: Any) -> None:
+    async def _surface_stuck(self, signal: Any) -> None:
         """Convert a StuckSignal into the tier-appropriate user surface.
 
         Phase 3 part C tier policy:
@@ -754,6 +810,9 @@ class DossierAgent:
         The stuck signal originated in the runtime, not the model, but the
         user-facing surface (tiers 2/3) still routes through the same
         check_stuck handler the model would have called.
+
+        Async + ``asyncio.to_thread`` so the handler dispatch doesn't
+        block the event loop — parity with ``_dispatch_client_tool``.
         """
         tier = int(getattr(signal, "tier", 2) or 2)
         summary = (
@@ -765,7 +824,8 @@ class DossierAgent:
             # Heads-up only — no decision_point. Agent reads the note on the
             # next turn's state snapshot and is expected to narrow + continue.
             try:
-                handlers.dispatch(
+                await asyncio.to_thread(
+                    handlers.dispatch,
                     self.dossier_id,
                     "append_reasoning",
                     {
@@ -798,7 +858,8 @@ class DossierAgent:
                     chosen.get("label") if isinstance(chosen, dict) else None
                 ) or "(no option)"
                 try:
-                    handlers.dispatch(
+                    await asyncio.to_thread(
+                        handlers.dispatch,
                         self.dossier_id,
                         "append_reasoning",
                         {
@@ -821,7 +882,8 @@ class DossierAgent:
             {"label": "Pause for your direction", "implications": "", "recommended": True},
         ]
         try:
-            handlers.dispatch(
+            await asyncio.to_thread(
+                handlers.dispatch,
                 self.dossier_id,
                 "check_stuck",
                 {"summary_of_attempts": summary, "options_for_user": options},

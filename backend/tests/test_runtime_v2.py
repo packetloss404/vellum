@@ -493,6 +493,38 @@ def test_work_session_opened_and_closed_exactly_once(fresh_db):
     assert storage.get_active_work_session(did) is None
 
 
+def test_resolve_session_failure_closes_expected_session(fresh_db):
+    """If ``_resolve_session`` raises (e.g. the route pre-created a
+    session that was already ended between the pre-flight and the
+    agent's first await), the agent must close the expected session
+    so the next user action doesn't 409 forever waiting for a process
+    restart. The pre-loop code path is the one that was the orphan
+    source before the fix.
+    """
+    did = _seed_dossier()
+    # Pre-create an "expected" session like the start route would.
+    expected = storage.start_work_session(did, m.WorkSessionTrigger.manual)
+    # Force the resolved session to be already-ended so _resolve_session
+    # raises "is already ended" on its first lookup.
+    storage.end_work_session_with_reason(expected.id, m.WorkSessionEndReason.turn_limit)
+
+    agent = _make_agent(did, make_mock_client([_message([_text("never reached")], stop_reason="end_turn")]))
+    agent.expected_session_id = expected.id
+
+    result = _run(agent.run(max_turns=2))
+
+    assert result.reason == "error"
+    assert "_resolve_session" in (result.error or "")
+
+    # The expected session is still closed (it was closed by us, but the
+    # important assertion is that no NEW orphan session is left active).
+    assert storage.get_active_work_session(did) is None
+    # And the original session's row is still ended.
+    fetched = storage.get_work_session(expected.id)
+    assert fetched is not None
+    assert fetched.ended_at is not None
+
+
 def test_record_session_usage_called_with_input_and_output_tokens(fresh_db, monkeypatch):
     """Runtime must credit model usage to the active session."""
     did = _seed_dossier()

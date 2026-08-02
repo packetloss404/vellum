@@ -196,15 +196,23 @@ async def resume(dossier_id: str) -> dict:
 
     active = storage.get_active_work_session(dossier_id)
     if active is not None:
-        # 409 with structured body so the client gets both the error
-        # detail AND the id of the offending session in one response.
-        return JSONResponse(
-            status_code=409,
-            content={
-                "detail": "work_session already active for this dossier",
-                "dossier_id": dossier_id,
-                "active_work_session_id": active.id,
-            },
+        # Parity with the /start route: if there's an active session
+        # row but the orchestrator has no live task for it (the task
+        # errored without going through done_callback, or the process
+        # is alive but the task is dead), close the orphan and continue
+        # with the resume. Otherwise the user is stuck waiting for a
+        # process restart.
+        if _orchestrator_running(dossier_id):
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": "work_session already active for this dossier",
+                    "dossier_id": dossier_id,
+                    "active_work_session_id": active.id,
+                },
+            )
+        storage.end_work_session_with_reason(
+            active.id, m.WorkSessionEndReason.crashed
         )
 
     try:
