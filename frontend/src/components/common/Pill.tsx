@@ -1,4 +1,5 @@
 import React from "react";
+import { cx } from "../../utils/cx";
 
 export type PillVariant = "default" | "state" | "attention" | "accent";
 export type PillState = "confident" | "provisional" | "blocked";
@@ -25,10 +26,6 @@ const stateClasses: Record<PillState, string> = {
   provisional: "bg-state-provisional-bg text-state-provisional",
   blocked: "bg-state-blocked-bg text-state-blocked",
 };
-
-function cx(...parts: Array<string | false | undefined>): string {
-  return parts.filter(Boolean).join(" ");
-}
 
 export function Pill({
   children,

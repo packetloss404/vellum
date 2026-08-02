@@ -1,4 +1,5 @@
 import React from "react";
+import { cx } from "../../utils/cx";
 
 /**
  * Button — the one button primitive.
@@ -41,10 +42,6 @@ const sizeClasses: Record<ButtonSize, string> = {
   sm: "text-xs px-3 py-1.5",
   md: "text-sm px-4 py-2",
 };
-
-function cx(...parts: Array<string | false | undefined>): string {
-  return parts.filter(Boolean).join(" ");
-}
 
 export function Button({
   variant = "primary",

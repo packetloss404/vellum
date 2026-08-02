@@ -1,4 +1,5 @@
 import React from "react";
+import { cx } from "../../utils/cx";
 
 /**
  * Card — the fundamental content container.
@@ -25,10 +26,6 @@ const toneClasses: Record<CardTone, string> = {
   surface: "bg-surface",
   sunk: "bg-paper-dark",
 };
-
-function cx(...parts: Array<string | false | undefined>): string {
-  return parts.filter(Boolean).join(" ");
-}
 
 export function Card({
   children,
