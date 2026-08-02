@@ -596,14 +596,13 @@ def test_spawn_handler_when_called_inside_running_loop(fresh_db):
     response — so the parent agent sees a clean failure rather than an
     unhandled exception bubbling up through tool dispatch.
 
-    NOTE: the intended fallback at sub_runtime.py:769-781 (manual
-    new_event_loop + run_until_complete) is currently broken — the inner
-    ``run_until_complete`` raises "Cannot run the event loop while another
-    loop is running" because the outer loop is still active. The right
-    fix is to run the sub-investigation in a separate thread with its own
-    loop; deferred to a follow-up cleanup pass. Today, the structured
-    error is the contract.
+    The broken-fallback path also must not leak the underlying coroutine
+    (the unawaited ``run_sub_investigation`` would otherwise trigger a
+    ``RuntimeWarning`` and accumulate frame references in long-running
+    processes). We pin that contract here with ``warnings.catch_warnings``
+    promoted to error.
     """
+    import warnings
     from vellum import models as m, storage
     from vellum.agent import sub_runtime
 
@@ -625,7 +624,11 @@ def test_spawn_handler_when_called_inside_running_loop(fresh_db):
                 },
             )
 
-        result = asyncio.run(_drive_inside_loop())
+        # Promote the "coroutine was never awaited" warning to an error
+        # so a regression in the coroutine-close path fails this test.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            result = asyncio.run(_drive_inside_loop())
 
     # Outer except caught the inner error and returned a structured response.
     assert result["sub_investigation_id"].startswith("sub_")

@@ -263,6 +263,37 @@ class TestSnapshotIndex:
             f"snapshot too long ({len(snapshot)} chars) for a small dossier with previews"
         )
 
+    def test_last_signal_kind_block_in_snapshot(self, fresh_db):
+        """H-20: the snapshot surfaces the last stuck signal kind so the
+        next session can re-surface "last time you got stuck, it was a
+        loop not a budget" without re-tripping the same heuristic. The
+        block is the user-visible payoff of the column, so a regression
+        in ``build_state_snapshot`` that drops the block must fail this
+        test.
+        """
+        dossier_id = _make_dossier()
+        # Set the kind directly (we're testing the snapshot consumer,
+        # not the persist path — that's covered by test_stuck.py).
+        storage.set_dossier_last_signal_kind(dossier_id, "loop")
+        full = storage.get_dossier_full(dossier_id)
+        snapshot = prompt_mod.build_state_snapshot(full)
+        assert "## Last stuck signal (last session)" in snapshot
+        assert "kind: loop" in snapshot
+        # The action recommendation must be present so the agent knows
+        # what to do on re-trip.
+        assert "declare_stuck" in snapshot
+
+    def test_no_last_signal_kind_block_when_clean(self, fresh_db):
+        """H-20: dossiers with no prior stuck signal must NOT have the
+        "Last stuck signal" block in their snapshot — adding noise to a
+        clean dossier would confuse the agent into thinking it had
+        prior context.
+        """
+        dossier_id = _make_dossier()
+        full = storage.get_dossier_full(dossier_id)
+        snapshot = prompt_mod.build_state_snapshot(full)
+        assert "## Last stuck signal" not in snapshot
+
 
 # --- Registry / schema coverage ---
 

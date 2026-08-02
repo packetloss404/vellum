@@ -495,6 +495,13 @@ def test_progress_whitelist_covers_all_handlers():
     to HANDLERS without an explicit stuck-detection decision will fail this
     test, surfacing the gap before it can silently inflate the no-progress
     counter or trigger a spurious loop signal.
+
+    The inverse direction (covered - registered) is also asserted so a
+    typo in a whitelist entry — e.g. ``"add_artifac"`` instead of
+    ``"add_artifact"`` — is caught. Today the only legitimate extra
+    (a tool in some whitelist but not in HANDLERS) is ``web_search``,
+    the server-side tool that lives in ``_EXEMPT_FROM_NO_PROGRESS``
+    without a HANDLERS entry.
     """
     from vellum.agent import stuck
     from vellum.tools import handlers
@@ -515,6 +522,19 @@ def test_progress_whitelist_covers_all_handlers():
         f"_PROGRESS_TOOL_NAMES, _PROGRESS_MUTATION_TOOL_NAMES, "
         f"_EXEMPT_FROM_LOOP, _EXEMPT_FROM_NO_PROGRESS, _STUCK_EXEMPT_TOOLS, "
         f"_UPSERT_TOOL_NAMES."
+    )
+    # Inverse: every name in the whitelists that's not in HANDLERS must
+    # be one of the known server-side tools (``web_search``). Any other
+    # name is almost certainly a typo and would silently be ignored by
+    # the runtime (``if tool_name in _STUCK_EXEMPT_TOOLS`` matches the
+    # typo, the tool is treated as progress, no signal ever fires).
+    expected_extras = {"web_search"}
+    extras = covered - registered
+    assert extras == expected_extras, (
+        f"Whitelist contains names not in HANDLERS: {sorted(extras - expected_extras)}. "
+        f"Each of these is a likely typo — the runtime would never fire a stuck "
+        f"signal for the typo'd name. Update the expected_extras set if you "
+        f"intentionally added a new server-side tool."
     )
 
 
@@ -545,11 +565,11 @@ def test_last_signal_kind_visible_after_assign_tier_and_emit(fresh_db):
     """When ``_assign_tier_and_emit`` runs (what the runtime does per
     turn when ``check_stuck_state`` returns a signal), the dossier's
     ``last_signal_kind`` column gets updated. We invoke that path
-    directly to verify the storage write fires for the section_budget
+    directly to verify the dispatch fires for the section_budget
     signal kind. The companion tests
     ``test_last_signal_kind_persisted_on_loop_signal`` and
     ``test_last_signal_kind_persisted_on_session_budget_signal`` cover
-    the other two kinds.
+    the other two signal kinds through the persist function directly.
     """
     from vellum import config, models as m, storage
     from vellum.agent import stuck
@@ -566,14 +586,36 @@ def test_last_signal_kind_visible_after_assign_tier_and_emit(fresh_db):
     sig = stuck.check_section_budget(dossier_id, session_id)
     assert sig is not None and sig.kind == "section_budget"
 
-    stuck._assign_tier_and_emit(session_id, sig)
+    # Spy on the persist function so we can verify dispatch without
+    # racing the daemon thread. The production path uses a daemon
+    # thread (so the SQLite write doesn't block the event loop); tests
+    # call the underlying function directly to keep assertions
+    # deterministic.
+    captured: dict = {}
+    real_persist = stuck._persist_last_signal_kind
+    def _spy(dossier_id_, kind):
+        captured["dossier_id"] = dossier_id_
+        captured["kind"] = kind
+        real_persist(dossier_id_, kind)
+    monkey = __import__("pytest").MonkeyPatch()
+    try:
+        monkey.setattr(stuck, "_persist_last_signal_kind", _spy)
+        stuck._assign_tier_and_emit(session_id, sig)
+    finally:
+        monkey.undo()
 
+    assert captured.get("kind") == "section_budget"
+    assert captured.get("dossier_id") == dossier_id
+    # The actual write should also land (the spy calls through to real).
     assert storage.get_dossier_last_signal_kind(dossier_id) == "section_budget"
 
 
 def test_last_signal_kind_persisted_on_loop_signal(fresh_db):
-    """A loop signal (driven by repeat identical-args tool calls past
-    threshold) also persists last_signal_kind through _assign_tier_and_emit.
+    """A loop signal persists last_signal_kind through the persist
+    function. Uses ``flag_needs_input`` (a non-whitelisted tool) to
+    drive the loop — ``web_search`` is in ``_EXEMPT_FROM_NO_PROGRESS``,
+    so a future refactor that moves it into ``_EXEMPT_FROM_LOOP`` would
+    silently break this test if we'd picked it.
     """
     from vellum import config, storage
     from vellum.agent import stuck
@@ -585,21 +627,21 @@ def test_last_signal_kind_persisted_on_loop_signal(fresh_db):
     sig = None
     for _ in range(config.LOOP_DETECTION_THRESHOLD + 1):
         sig = stuck.record_tool_call(
-            session_id, "web_search", {"q": "loop kind test"}
+            session_id, "flag_needs_input", {"label": "loop kind test"}
         )
         if sig is not None:
             break
     assert sig is not None and sig.kind == "loop"
 
-    stuck._assign_tier_and_emit(session_id, sig)
+    stuck._persist_last_signal_kind(dossier_id, sig.kind)
 
     assert storage.get_dossier_last_signal_kind(dossier_id) == "loop"
 
 
 def test_last_signal_kind_persisted_on_session_budget_signal(fresh_db):
-    """A session_budget signal (driven by session-wide input tokens
-    exceeding the multiplier × section_budget) also persists
-    last_signal_kind through _assign_tier_and_emit.
+    """A session_budget signal persists last_signal_kind through the
+    persist function directly. Driven by exceeding the session-token
+    multiplier.
     """
     from vellum import config, storage
     from vellum.agent import stuck
@@ -616,9 +658,59 @@ def test_last_signal_kind_persisted_on_session_budget_signal(fresh_db):
     sig = stuck.check_session_budget(session_id)
     assert sig is not None and sig.kind == "session_budget"
 
-    stuck._assign_tier_and_emit(session_id, sig)
+    stuck._persist_last_signal_kind(dossier_id, sig.kind)
 
     assert storage.get_dossier_last_signal_kind(dossier_id) == "session_budget"
+
+
+def test_assign_tier_and_emit_dispatches_persist_in_daemon_thread(fresh_db):
+    """H-20 must not block the event loop. ``_assign_tier_and_emit``
+    should schedule the storage write on a daemon thread, not run it
+    synchronously. We verify by checking the thread is a daemon and
+    not the calling thread.
+    """
+    from vellum import config
+    from vellum.agent import stuck
+    import threading
+
+    dossier_id, session_id = _mk_dossier_and_session()
+    stuck.reset_session(session_id)
+    stuck.init_session(session_id, dossier_id)
+
+    stuck.record_input_tokens(
+        session_id, "sec_alpha", config.SECTION_TOKEN_BUDGET + 1
+    )
+    sig = stuck.check_section_budget(dossier_id, session_id)
+    assert sig is not None and sig.kind == "section_budget"
+
+    # Patch the persist function to capture the thread it was called
+    # from. The persist must run on a different (daemon) thread, not
+    # the calling thread, so the event loop stays unblocked.
+    caller_thread_ident = threading.get_ident()
+    captured: dict = {}
+    real_persist = stuck._persist_last_signal_kind
+    def _spy(dossier_id_, kind):
+        captured["thread_ident"] = threading.get_ident()
+        captured["daemon"] = threading.current_thread().daemon
+        real_persist(dossier_id_, kind)
+    monkey = __import__("pytest").MonkeyPatch()
+    try:
+        monkey.setattr(stuck, "_persist_last_signal_kind", _spy)
+        stuck._assign_tier_and_emit(session_id, sig)
+        # The spy ran on a different thread; wait briefly for it to finish.
+        import time
+        for _ in range(50):
+            if "thread_ident" in captured:
+                break
+            time.sleep(0.01)
+    finally:
+        monkey.undo()
+
+    assert "thread_ident" in captured, "persist function was not called"
+    assert captured["thread_ident"] != caller_thread_ident, (
+        "H-20 write ran synchronously on the calling thread — would block the event loop"
+    )
+    assert captured["daemon"] is True, "H-20 write thread is not a daemon"
 
 
 def test_last_signal_kind_null_for_clean_dossier(fresh_db):

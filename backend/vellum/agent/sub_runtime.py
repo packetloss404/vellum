@@ -752,34 +752,58 @@ def spawn_handler(parent_dossier_id: str, args: dict[str, Any]) -> dict[str, Any
     result: Optional[dict[str, Any]] = None
     spawn_error: Optional[BaseException] = None
     try:
+        # Build the coroutine once; both the outer `asyncio.run` and the
+        # inner `run_until_complete` (used when we're already inside a
+        # running loop) consume the same coroutine. On every failure
+        # path we close the coroutine so CPython doesn't emit
+        # "coroutine was never awaited" and so the coroutine frame
+        # doesn't accumulate in long-running processes.
+        inner_coro = run_sub_investigation(
+            parent_dossier_id,
+            sub.id,
+            spawn_data.scope,
+            list(spawn_data.questions or []),
+        )
         try:
-            result = asyncio.run(
-                run_sub_investigation(
+            result = asyncio.run(inner_coro)
+        except RuntimeError as exc:
+            # If we're already inside a running loop (e.g. the main runtime
+            # called us without asyncio.to_thread), fall back to nesting. We
+            # don't expect this in normal operation — handlers are dispatched
+            # via to_thread — but guard against it. asyncio.run has already
+            # closed its own loop above, so we just need a fresh inner loop.
+            if "asyncio.run() cannot be called" in str(exc):
+                # `asyncio.run` doesn't actually start the coroutine when
+                # it fails the loop check, so `inner_coro` is still open.
+                # Build a fresh coroutine for the inner attempt.
+                fallback_coro = run_sub_investigation(
                     parent_dossier_id,
                     sub.id,
                     spawn_data.scope,
                     list(spawn_data.questions or []),
                 )
-            )
-        except RuntimeError as exc:
-            # If we're already inside a running loop (e.g. the main runtime
-            # called us without asyncio.to_thread), fall back to nesting. We
-            # don't expect this in normal operation — handlers are dispatched
-            # via to_thread — but guard against it.
-            if "asyncio.run() cannot be called" in str(exc):
+                # Close the original (never-started) coroutine to suppress
+                # the unawaited warning.
+                inner_coro.close()
+                inner_coro = fallback_coro
                 loop = asyncio.new_event_loop()
                 try:
-                    result = loop.run_until_complete(
-                        run_sub_investigation(
-                            parent_dossier_id,
-                            sub.id,
-                            spawn_data.scope,
-                            list(spawn_data.questions or []),
-                        )
-                    )
+                    try:
+                        result = loop.run_until_complete(inner_coro)
+                    except BaseException:
+                        # Close the coroutine to release its frame and
+                        # suppress the unawaited-coroutine warning. If
+                        # the coroutine already finished, close() is a
+                        # no-op. We then re-raise so the outer except
+                        # can decide whether to surface the error.
+                        inner_coro.close()
+                        raise
                 finally:
                     loop.close()
             else:
+                # Some other RuntimeError — close the coroutine before
+                # re-raising so we don't leak.
+                inner_coro.close()
                 raise
     except Exception as exc:  # noqa: BLE001 — surface to main agent
         logger.exception(

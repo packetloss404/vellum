@@ -272,6 +272,30 @@ def _persist_escalation_count(dossier_id: str) -> None:
         )
 
 
+def _persist_last_signal_kind(dossier_id: str, kind: str) -> None:
+    """H-20: persist the last stuck-signal kind to the dossiers table.
+
+    Mirrors the H-19 daemon-thread pattern: the runtime calls this off
+    the event loop so the SQLite write doesn't block coroutines. The
+    ``last_signal_kind`` is a heuristic name (``loop``,
+    ``same_tool_no_progress``, ``section_budget``, ``session_budget``,
+    ``revision_stall``) — it's a hint for the next session's prompt, not
+    a precise history. Best-effort; a write failure must never surface
+    to the caller.
+
+    Intentionally does not touch ``dossiers.updated_at`` — stuck signals
+    are noise that should not reorder the dossier list.
+    """
+    try:
+        from vellum import storage
+        storage.set_dossier_last_signal_kind(dossier_id, kind)
+    except Exception:
+        logger.debug(
+            "stuck: failed to persist last_signal_kind for dossier %s", dossier_id,
+            exc_info=True,
+        )
+
+
 def init_session(session_id: str, dossier_id: str) -> None:
     """H-19: register a new session with its dossier_id so the escalation
     counter can be loaded from and persisted to the dossiers table.
@@ -405,21 +429,19 @@ def _assign_tier_and_emit(session_id: str, signal: StuckSignal) -> StuckSignal:
             args=(dossier_id_for_persist,),
             daemon=True,
         ).start()
-        # H-20: best-effort sync persist of the signal *kind* (loop,
-        # same_tool_no_progress, section_budget, session_budget,
-        # revision_stall). The escalation count survives sleep/wake;
-        # the kind now does too, so the next session can re-surface
-        # "last time you got stuck, it was X, not Y" without
-        # re-triping the same heuristic from scratch. Sync (a single
-        # UPDATE is microseconds; we already released _STATE_LOCK so
-        # no coroutine is blocked on the write).
-        try:
-            storage.set_dossier_last_signal_kind(
-                dossier_id_for_persist, signal.kind
-            )
-        except Exception:
-            # Never block signal emission on a write failure.
-            pass
+        # H-20: persist the signal *kind* (loop, same_tool_no_progress,
+        # section_budget, session_budget, revision_stall) so the next
+        # session can re-surface "last time you got stuck, it was X, not
+        # Y" without re-triping the same heuristic. Daemon thread to
+        # avoid blocking the event loop on the SQLite round-trip; mirrors
+        # the H-19 pattern above. Last write wins — if two signals fire
+        # in the same turn, the later one overwrites the earlier, which
+        # matches the "last signal" semantics.
+        threading.Thread(
+            target=_persist_last_signal_kind,
+            args=(dossier_id_for_persist, signal.kind),
+            daemon=True,
+        ).start()
     # H-08: _emit_investigation_log performs two synchronous storage writes
     # (get_work_session + append_investigation_log). Calling it directly on the
     # event-loop thread would block all coroutines for the duration. When there

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
+
+logger = logging.getLogger(__name__)
 
 
 def new_id(prefix: str) -> str:
@@ -594,8 +597,7 @@ class InvestigationPlanUpdate(BaseModel):
             else:
                 coerced.append(item)
         if n_legacy:
-            import logging
-            logging.getLogger(__name__).debug(
+            logger.debug(
                 "plan_update: coerced %d legacy InvestigationPlanItem -> PlanItem",
                 n_legacy,
             )

@@ -284,6 +284,9 @@ __all__ = [
     "set_dossier_quarantined",
     "clear_dossier_quarantine",
     "get_dossier_error_state",
+    # H-20: last stuck signal kind
+    "set_dossier_last_signal_kind",
+    "get_dossier_last_signal_kind",
     "create_user_note",
     "list_user_notes",
     "mark_user_notes_seen",

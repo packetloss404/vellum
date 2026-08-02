@@ -19,7 +19,7 @@ Vellum is not a "single agent writes to a structured doc" demo. The investigatio
 - **Multi-dossier orchestrator** (`agent/orchestrator.py`). One `asyncio.Task` per dossier with bounded concurrency, `AgentAlreadyRunning` / `AgentCapacityExceeded` guards, lock-protected start/stop, graceful 30s shutdown, and done-callback pruning.
 - **Sleep-mode scheduler** (`agent/scheduler.py`, pinned by 13 dedicated tests). Polls for dossiers ready to wake every 30s, pre-creates `trigger=scheduled` work sessions, and retries on capacity/contention without dropping the user's change — a late answer keeps `wake_pending` set rather than being lost. The contention path is the canonical "reactive wake within one tick" promise.
 - **Recursive sub-investigations** (`agent/sub_runtime.py`). `spawn_sub_investigation` launches a real second agent runtime with its own work sessions, its own narrowed (allowlisted) tool surface, its own token accounting, a depth cap, force-completion nudge logic, and `sub_investigation_id` threaded through a `ContextVar`. It returns a `return_summary` back up to the parent's tool call.
-- **Tiered stuck detection** (`agent/stuck.py`, 923 LOC, pinned by 24 tests). Far more than "token budgets." It tracks per-session state with exact-args loop hashing, same-tool-no-progress heuristics, per-section revision counters reset by real progress, section/session token budgets, and a three-tier escalation ladder that decides between a silent reasoning-trail note, a `decision_point`, and a forced-recommended `decision_point` — so the agent never burns cycles blindly. The `stuck_escalation_count` (H-19) and `last_signal_kind` (H-20) columns persist across sleep/wake cycles so the next session can re-surface "last time you got stuck, it was a loop not a budget."
+- **Tiered stuck detection** (`agent/stuck.py`, 941 LOC, pinned by 25 tests). Far more than "token budgets." It tracks per-session state with exact-args loop hashing, same-tool-no-progress heuristics, per-section revision counters reset by real progress, section/session token budgets, and a three-tier escalation ladder that decides between a silent reasoning-trail note, a `decision_point`, and a forced-recommended `decision_point` — so the agent never burns cycles blindly. The `stuck_escalation_count` (H-19) and `last_signal_kind` (H-20) columns persist across sleep/wake cycles so the next session can re-surface "last time you got stuck, it was a loop not a budget."
 - **Crash recovery at startup** (`lifecycle.py`). Reconciles orphaned work sessions and stale intakes on boot.
 - **Separate intake agent** (`intake/runtime.py`). A different, prose-speaking model interviews the user and constructs the dossier before the investigation agent ever runs.
 - **Soft-budget economics.** Per-turn USD cost accounting with a per-model pricing table drives live daily/session rollups (`budget_accounting`); crossing a cap surfaces a `decision_point` rather than killing the run. A 200-turn hard cap (`AGENT_MAX_TURNS`) is the backstop.
@@ -48,7 +48,7 @@ Vellum is not a "single agent writes to a structured doc" demo. The investigatio
 - **Agent:** Direct Anthropic Messages API with a manual agentic loop (no agent SDK). Default model: `claude-opus-4-7`. Intake uses `claude-sonnet-4-6`; compaction summarisation uses `claude-haiku-4-5`.
 - **DB:** SQLite (v1) — **22-table relational schema** with runtime column/index migration. The schema-level **partial unique indexes** (`idx_work_sessions_one_active_per_dossier`, `idx_decision_points_one_open_plan_approval_per_dossier`) are the load-bearing invariants the code-level guards protect.
 - **Frontend:** React 18 + TypeScript + Tailwind (Vite) + react-router + @tanstack/react-query + react-markdown. 41 components, polling for live dossier state. Serif-forward, warm, document-like. No rich-text editor.
-- **Tests:** **389 backend pytest tests** across 36 files (lifecycle, orchestrator, scheduler, stuck-detection, sub-investigation, resume, end-to-end roundtrip, plan items, intake, runtime, telemetry, prompt caching, db migrations, API auth, and the `test_storage_imports.py` public-surface lint) plus **26 frontend vitest tests** across 5 files (cx utility, time/format utilities, plan-diff category order, agent activity indicator state machine, and the time/format tests).
+- **Tests:** **391 backend pytest tests** across 36 files (lifecycle, orchestrator, scheduler, stuck-detection, sub-investigation, resume, end-to-end roundtrip, plan items, intake, runtime, telemetry, prompt caching, db migrations, API auth, and the `test_storage_imports.py` public-surface lint) plus **26 frontend vitest tests** across 5 files (cx utility, time/format utilities, plan-diff category order, agent activity indicator state machine, and the time/format tests).
 
 ## Local dev
 
@@ -90,7 +90,7 @@ npm run dev    # vite on :5173, proxy to localhost:8731 for /api
 
 # Backend in offline / smoke-test mode (no real LLM)
 cd backend
-python -m pytest -m "not live"    # 389 tests, ~50s
+python -m pytest -m "not live"    # 391 tests, ~50s
 
 # Backend with the live LLM test (one scenario, costs ~$2-6)
 cd backend
@@ -100,7 +100,7 @@ VELLUM_RUN_AUTONOMOUS_TESTS=1 ANTHROPIC_API_KEY=… python -m pytest tests/test_
 ## Test suite quick reference
 
 ```bash
-# Backend (389 tests, ~50s)
+# Backend (391 tests, ~50s)
 cd backend && python -m pytest
 
 # Backend with the live autonomous test (requires ANTHROPIC_API_KEY)
@@ -116,8 +116,8 @@ cd frontend && npm run build
 The most load-bearing test files:
 
 - `test_scheduler.py` (13 tests) — pins the late-answer correctness contract at `agent/scheduler.py:202-216`. The "reactive wake within one tick" claim.
-- `test_stuck.py` (24 tests) — every stuck-detection signal kind, every exempt-tool carve-out, the `_STUCK_EXEMPT_TOOLS` whitelist contract, and the H-20 `last_signal_kind` persistence (all three signal kinds verified end-to-end through `_assign_tier_and_emit`).
-- `test_storage_imports.py` (3 tests) — pins the flat `storage.X` namespace contract: every public name importable, no old per-entity modules leak, no submodule attribute access.
+- `test_stuck.py` (25 tests) — every stuck-detection signal kind, every exempt-tool carve-out, the `_STUCK_EXEMPT_TOOLS` whitelist contract, the H-20 `last_signal_kind` persistence, and the daemon-thread dispatch contract.
+- `test_storage_imports.py` (4 tests) — pins the flat `storage.X` namespace contract: every public name importable, no old per-entity modules leak, no submodule attribute access, and no new public name added to `__all__` without being added to the expected set.
 - `test_runtime_v2.py` — the dispatch loop, state-snapshot prepending, `pause_turn` handling, idempotent tool dispatch.
 - `test_sub_runtime.py` — sub-agent tool filter, `ContextVar` for `sub_investigation_id`, prod-then-force-complete path, the broken `asyncio.run()` fallback's actual current behavior.
 
@@ -158,14 +158,14 @@ backend/vellum/
   db.py               # connection management + init_db + migration runner
   lifecycle.py        # reconcile orphaned work_sessions at startup
 
-backend/tests/        # 389 backend tests across 36 files
+backend/tests/        # 391 backend tests across 36 files
   conftest.py
-  test_stuck.py             # 24 tests — loop/section/session budget, revision stall,
-                            # _STUCK_EXEMPT_TOOLS whitelist lint, last_signal_kind H-20
-                            # (all three signal kinds through _assign_tier_and_emit)
+  test_stuck.py             # 25 tests — loop/section/session budget, revision stall,
+                            # _STUCK_EXEMPT_TOOLS whitelist lint, last_signal_kind H-20,
+                            # daemon-thread dispatch contract
   test_scheduler.py         # 13 tests — 30s poll, contention path, late-answer
                             # correctness contract, exception containment
-  test_storage_imports.py   # 3 tests — flat namespace contract
+  test_storage_imports.py   # 4 tests — flat namespace contract + inverse check
   test_intake.py, test_intake_e2e.py, test_plan_items.py,
   test_plan_approval.py, test_dossier_extensions.py,
   test_orchestrator.py, test_runtime_v2.py, test_sub_runtime.py,
