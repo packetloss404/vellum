@@ -72,13 +72,20 @@ export function IntakeInput({
     if (e) e.preventDefault();
     if (!canSend) return;
     const text = trimmed;
-    // Clear optimistically so the textarea feels responsive. If the caller
-    // throws, restore so the user can retry without retyping.
-    setValue("");
     try {
       await onSend(text);
+      // Clear on confirmed success only. If we clear optimistically and
+      // the call later fails, restoring the value would clobber anything
+      // the user has typed in the meantime — the lost-input failure mode
+      // is worse than the no-clear failure mode (a Send button enabled
+      // when it shouldn't be is much easier to recover from). The parent
+      // already disables the textarea + button while a request is in
+      // flight, so a double-send is gated by the parent's pending state.
+      setValue("");
     } catch {
-      setValue(text);
+      // Leave the value in place. The parent's error state is the signal
+      // that the user should retry, and we want to preserve whatever
+      // they've typed since.
     }
   }
 

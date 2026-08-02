@@ -210,18 +210,25 @@ function IntakeConversation({ id }: { id: string }) {
   }
 
   async function doSend(text: string) {
+    // Stash the text BEFORE the await so a fast double-tap doesn't lose
+    // it. We clear the ref in the two terminal branches below.
     lastUserMessageRef.current = text;
     setSendError(null);
     try {
       const result = await sendMessage.mutateAsync({ intakeId: id, content: text });
       // The backend returns HTTP 200 even when the intake agent itself
       // raised an error mid-turn; surface it rather than silently dropping.
+      // Critically, the message DID reach the server, so the Retry button
+      // would re-send a duplicate — don't offer it.
       if (result.error) {
         setSendError(SERVER_ERROR);
+        lastUserMessageRef.current = null;
       } else {
         lastUserMessageRef.current = null;
       }
     } catch {
+      // Network / 5xx / abort. The message did NOT reach the server, so
+      // a Retry that re-sends the same text is correct behavior.
       setSendError(SERVER_ERROR);
       // Re-throw so IntakeInput restores the textarea content.
       throw new Error(SERVER_ERROR);
