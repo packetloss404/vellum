@@ -1,6 +1,6 @@
 # Multi-platform index digests recorded 2026-09-04. Keep the readable tag so
 # automated dependency tooling can propose intentional digest updates.
-FROM node:22.20.0-alpine@sha256:dbcedd8aeab47fbc0f4dd4bffa55b7c3c729a707875968d467aaaea42d6225af AS build
+FROM node:26.8.1-alpine@sha256:2d984a15c9b54fd0aeb608b8e0d0d83529eb34d2966db27a1fb4f1edc3d298a3 AS build
 
 WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json ./
