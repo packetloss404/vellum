@@ -28,7 +28,7 @@ Vellum is not a "single agent writes to a structured doc" demo. The investigatio
 
 ## For hackathon reviewers
 
-- **Scope freeze** — out of scope for v1: multi-user, auth, notifications, mobile, rich-text editor, LLMs other than Claude, Postgres, Temporal. Everything listed works on localhost against the Anthropic Messages API.
+- **Scope freeze** — out of scope for v1: multi-user identity, external notifications, mobile, rich-text editor, LLMs other than Claude, Postgres, Temporal. Everything listed works on localhost against the Anthropic Messages API.
 - **Models** — three-model split: `claude-opus-4-7` for the dossier agent, `claude-sonnet-4-6` for intake, `claude-haiku-4-5` reserved for summarization.
 
 ## What makes it different
@@ -49,7 +49,7 @@ Vellum is not a "single agent writes to a structured doc" demo. The investigatio
 - **Agent:** Direct Anthropic Messages API with a manual agentic loop (no agent SDK). Default model: `claude-opus-4-7`. Intake uses `claude-sonnet-4-6`; compaction summarisation uses `claude-haiku-4-5`.
 - **DB:** SQLite (v1) — **22-table relational schema** with runtime column/index migration. The schema-level **partial unique indexes** (`idx_work_sessions_one_active_per_dossier`, `idx_decision_points_one_open_plan_approval_per_dossier`) are the load-bearing invariants the code-level guards protect.
 - **Frontend:** React 18 + TypeScript + Tailwind (Vite) + react-router + @tanstack/react-query + react-markdown. 41 components (42 `.tsx` files in `src/components/`, of which one is a co-located test for `AgentActivityIndicator`), polling for live dossier state. Serif-forward, warm, document-like. No rich-text editor.
-- **Tests:** **398 passing backend pytest tests plus 2 conditional skips** across 37 files (lifecycle, orchestrator, scheduler, long-research autonomy, stuck-detection, sub-investigation, resume, end-to-end roundtrip, plan items, intake, runtime, telemetry, prompt caching, db migrations, API auth, and the `test_storage_imports.py` public-surface lint) plus **26 passing frontend vitest tests** across 5 files.
+- **Tests:** **446 passing backend pytest tests plus 3 conditional skips** and **28 passing frontend Vitest tests**. The suites cover lifecycle, scheduler, bounded research, evidence, recovery, API boundaries, and UI audit surfaces.
 
 ## Project documentation
 
@@ -57,7 +57,7 @@ Vellum is not a "single agent writes to a structured doc" demo. The investigatio
 - [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — current sequencing and phase gates.
 - [`BACKLOG.md`](BACKLOG.md) — canonical unfinished-work queue.
 - [`deploy/README.md`](deploy/README.md) — hardened production Docker, Caddy
-  authentication, health/readiness checks, verified backup/restore, and rollback.
+  routing, health/readiness checks, verified backup/restore, and rollback.
 - `notes/` — dated audits and historical plans; useful evidence, not the active roadmap.
 
 ## Local dev
@@ -252,9 +252,9 @@ Most routes follow standard CRUD patterns on `/api/dossiers/{id}/...`; a few hav
 - **Optional API token guard** — set `VELLUM_API_TOKEN` (single env var,
   server-side only) to require a bearer token for `/api/*`. In dev, the Vite
   proxy injects it without shipping it in the browser bundle. In production,
-  Nginx injects this token only after its trusted-proxy allowlist and Caddy
-  supplies the user-facing basic-auth boundary. `/health` and `/ready` remain
-  public for monitoring. Empty token keeps localhost dev unchanged unless
+  Nginx injects this token only after its trusted-proxy allowlist. Caddy is the
+  TLS reverse proxy; this trusted-use, single-user deployment intentionally has
+  no end-user login. Empty token keeps localhost dev unchanged unless
   `VELLUM_API_AUTH_REQUIRED=true`.
 
 - **`GET /api/settings`, `PUT /api/settings/{key}`** — DB-backed settings (sleep-mode toggle, budget caps, warn fractions, progress-forcing threshold). Soft signals only; crossing a cap surfaces a decision_point rather than terminating the agent.
@@ -299,7 +299,7 @@ A few calibration knobs are constants in code, not env vars, because they were t
 
 v1, single-user. Local development runs on Vite/FastAPI; the production
 Docker/Nginx stack is deployed behind Caddy at `https://vellum.ianlan.dev`.
-Production requires Caddy basic authentication, Nginx source allowlisting,
+Production requires Caddy TLS routing, Nginx and host source allowlisting,
 API-token enforcement, and a private backend port. Dependencies are locked,
 container bases are digest-pinned, and the recovery tooling produces verified
 online SQLite backups. See `deploy/README.md` for the network boundary,

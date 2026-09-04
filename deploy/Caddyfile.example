@@ -1,25 +1,9 @@
-# Generate VELLUM_BASIC_AUTH_HASH on the Caddy host before reload:
-#   caddy hash-password
-# Export it in the environment used by the Caddy service. Do not commit the
-# hash or the plaintext password to this repository.
 vellum.ianlan.dev {
     encode zstd gzip
 
-    @probe path /health /ready
-    handle @probe {
-        reverse_proxy 10.80.12.12:8730 {
-            header_up -Authorization
-        }
-    }
-
-    handle {
-        basic_auth {
-            ian {$VELLUM_BASIC_AUTH_HASH}
-        }
-        reverse_proxy 10.80.12.12:8730 {
-            # Basic credentials terminate at Caddy and never cross the LAN.
-            header_up -Authorization
-        }
+    reverse_proxy 10.80.12.12:8730 {
+        # The browser never supplies the private backend bearer token.
+        header_up -Authorization
     }
 
     header Strict-Transport-Security "max-age=31536000; includeSubDomains"

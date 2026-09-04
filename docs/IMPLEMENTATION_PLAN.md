@@ -11,7 +11,7 @@ This plan sequences the accepted backlog. It replaces the cleanup-2 phase plan a
 - Durable orchestrator, scheduler, crash reconciliation, stuck detection, sub-investigations, and cost telemetry.
 - Bounded autonomous long research with standard/deep policies, measurable evidence targets, multi-session continuation, and UI controls.
 - Production Docker stack: private backend, Nginx web/API gateway, persistent SQLite, and Caddy-compatible host listener.
-- Verification baseline: 398 backend tests passing with 2 conditional skips, 26 frontend tests passing, and a successful frontend production build.
+- Verification baseline: 446 backend tests passing with 3 conditional skips, 28 frontend tests passing, and a successful frontend production build.
 
 ## Phase 1 — Reliability and production boundary
 
@@ -21,7 +21,7 @@ This plan sequences the accepted backlog. It replaces the cleanup-2 phase plan a
 2. Inventory handlers by replay behavior: naturally idempotent, idempotent with a stable entity key, or create-only/compound.
 3. Implement claim, completion, and abandoned-claim reconciliation with crash-window tests.
 4. Reject delivered/terminal dossiers at route, scheduler, and runtime boundaries.
-5. Deploy the implemented Nginx source allowlist and Caddy basic-auth boundary,
+5. Deploy the implemented Nginx/host source allowlist and Caddy TLS boundary,
    then verify Cloudflare/Caddy origin behavior with `sh deploy/smoke.sh`.
 6. Exercise the implemented checksummed online backup and guarded restore
    tooling against a disposable copy and record the production recovery test.
@@ -71,6 +71,6 @@ This plan sequences the accepted backlog. It replaces the cleanup-2 phase plan a
 - Add a regression test for every fixed bug and a migration test for every data-shape change.
 - Run backend tests, frontend tests, and the production build before merging.
 - For deployment changes, run `sh deploy/smoke.sh`; it verifies `/health`,
-  `/ready`, anonymous rejection, `/`, `/docs/`, security headers, and an
-  authenticated `/api` route through the public proxy.
+  `/ready`, `/`, `/docs/`, security headers, and an `/api` route through the
+  public proxy.
 - Update `BACKLOG.md` in the same change: move completed items, record blockers, and avoid duplicating work in README Known Issues.

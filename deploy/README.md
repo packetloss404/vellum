@@ -44,47 +44,26 @@ sudo chown 1000:1000 data
 chmod 0700 data data/backups
 ```
 
-## Caddy authentication
+## Caddy edge
 
 The Nginx bearer token protects the backend from bypassing the application
-gateway; it is not end-user authentication because Nginx injects it for every
-permitted request. Caddy must therefore authenticate public users.
+gateway. It is not end-user authentication: Nginx injects it for permitted
+requests, and the browser never receives it.
 
-`deploy/Caddyfile.example` leaves `/health` and `/ready` public for monitoring
-and requires HTTP basic authentication everywhere else. On the Caddy host:
-
-```bash
-read -rsp 'New Vellum password: ' VELLUM_PASSWORD; echo
-VELLUM_BASIC_AUTH_HASH="$(printf '%s' "$VELLUM_PASSWORD" | caddy hash-password --plaintext)"
-unset VELLUM_PASSWORD
-sudo install -d -m 0750 /etc/caddy
-umask 077
-printf "VELLUM_BASIC_AUTH_HASH='%s'\n" "$VELLUM_BASIC_AUTH_HASH" \
-  | sudo tee /etc/caddy/vellum.env >/dev/null
-unset VELLUM_BASIC_AUTH_HASH
-```
-
-Install the site block from `deploy/Caddyfile.example`, then add a systemd
-override so Caddy receives the hash without storing a plaintext password:
-
-```ini
-[Service]
-EnvironmentFile=/etc/caddy/vellum.env
-```
-
-Apply it with:
+Vellum is intentionally a single-user trusted-use tool and does not place an
+application login at Caddy. Install the site block from
+`deploy/Caddyfile.example`, validate it, and reload Caddy:
 
 ```bash
-sudo systemctl daemon-reload
-set -a; . /etc/caddy/vellum.env; set +a
 caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
 
-Keep Cloudflare in DNS-only mode until the origin and authentication checks
-pass. Cloudflare can then be proxied; it forwards the browser's Authorization
-header to Caddy. A 522 means Cloudflare cannot reach Caddy. A 525 means the
-origin TLS handshake failed.
+The current public DNS name is internet-reachable. If network-private access is
+later required, put the hostname behind a VPN, private DNS, or an identity-aware
+edge such as Cloudflare Access; that is a separate product decision from adding
+an application login. A 522 means Cloudflare cannot reach Caddy. A 525 means
+the origin TLS handshake failed.
 
 ## Deploy
 
@@ -107,19 +86,12 @@ database is usable. `/health` is the less strict process-liveness endpoint.
 
 ## Deploy verification
 
-Run the public-route smoke script from a trusted workstation. It checks public
-liveness/readiness, verifies that anonymous application access gets HTTP 401,
-then checks the homepage, docs, and API with the Caddy login. Credentials are
-environment variables and the script supplies them to curl through a temporary
-mode-0600 configuration file, so they do not appear in curl's process arguments
-or shell history.
+Run the public-route smoke script from a trusted workstation. It checks
+liveness/readiness, the homepage, docs, API, and the application security
+headers. Set `VELLUM_REQUIRE_HSTS=true` when the Caddy HSTS policy is active.
 
 ```bash
-export VELLUM_SMOKE_USER=ian
-read -rsp 'Vellum password: ' VELLUM_SMOKE_PASSWORD; echo
-export VELLUM_SMOKE_PASSWORD
 sh deploy/smoke.sh https://vellum.ianlan.dev
-unset VELLUM_SMOKE_PASSWORD
 ```
 
 Also inspect container state on the application host:

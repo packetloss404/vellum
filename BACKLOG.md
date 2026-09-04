@@ -33,7 +33,7 @@ The runtime records `tool_invocations` after a handler commits. A crash between 
 
 **Priority:** P0
 
-The hardened stack, Caddy basic-auth example, public smoke test, and verified
+The hardened stack, Caddy routing example, public smoke test, and verified
 backup/restore tooling are implemented. Completion now requires deploying the
 new boundary and recording one production smoke and recovery exercise.
 
@@ -42,9 +42,9 @@ new boundary and recording one production smoke and recovery exercise.
 - Port 8730 is restricted to the Caddy host/trusted network.
 - Caddy and Cloudflare behavior is covered by a short verification and rollback runbook.
 - Backup and restore steps for `shared/data/vellum.db` are tested once.
-- `/health`, the homepage, and one authenticated `/api` route are checked after every deploy.
-- Anonymous application and API access is rejected at Caddy while health and
-  readiness remain monitorable.
+- `/health`, `/ready`, the homepage, docs, and one `/api` route are checked after every deploy.
+- The single-user trusted-use boundary remains explicit; network-private access
+  requires a separate VPN, private-DNS, or identity-aware-edge decision.
 
 ### RUN-02 — Reject new runs for terminal dossiers
 
@@ -164,4 +164,4 @@ The bounded standard/deep modes, progress rollups, scheduler continuation, and U
 
 ## Explicitly outside the current v1 plan
 
-Multi-user tenancy, end-user identity/authentication, notifications, mobile clients, rich-text editing, a database migration away from SQLite, and an orchestration platform such as Temporal are not active backlog items. Add them only after a product decision changes the single-user scope.
+Multi-user tenancy, end-user identity/authentication, external notification channels, mobile clients, rich-text editing, a database migration away from SQLite, and an orchestration platform such as Temporal are not active backlog items. Add them only after a product decision changes the single-user scope.

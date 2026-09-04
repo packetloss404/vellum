@@ -75,7 +75,7 @@ CI rejects stale locks and audits both the Python runtime lock and the complete
 npm tree. Dependabot proposes weekly Python, npm, image-digest, and CI-action
 updates; updates still require the normal test/build review.
 
-The reconciled baseline is 398 backend tests passing with 2 conditional skips, plus 26 frontend tests passing. Treat the test output—not this sentence—as authoritative when the suite changes, then update the active docs.
+The reconciled baseline is 446 backend tests passing with 3 conditional skips, plus 28 frontend tests passing. Treat the test output—not this sentence—as authoritative when the suite changes, then update the active docs.
 
 ## Runtime map
 
@@ -113,7 +113,7 @@ The application supports optional bearer-token enforcement. Local loopback devel
 
 Production uses `docker-compose.prod.yml`: a private backend container and a
 hardened Nginx web container with a configurable host bind. See
-[`deploy/README.md`](../deploy/README.md) for Caddy authentication, ingress
+[`deploy/README.md`](../deploy/README.md) for Caddy routing, ingress
 allowlisting, health/readiness checks, verified backup/restore, and rollback.
 
 Do not publish backend port 8731. If Caddy is on another host, bind 8730 to the
