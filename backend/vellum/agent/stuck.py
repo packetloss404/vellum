@@ -222,6 +222,11 @@ _PROGRESS_TOOL_NAMES: set = {
     "summarize_session",
     "record_premise_challenge",
     "update_sub_investigation",
+    # Completing a deliberate adverse-evidence pass or a claim-level audit
+    # advances the research method. Exact-repeat detection still catches an
+    # agent that calls either tool in a loop.
+    "record_disconfirmation",
+    "audit_research_completion",
 }
 
 

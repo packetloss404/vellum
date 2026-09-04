@@ -44,6 +44,7 @@ def test_all_documented_storage_names_importable():
         "resolve_decision_point", "list_decision_points",
         # Idempotency (now in settings.py)
         "get_tool_invocation", "record_tool_invocation",
+        "claim_tool_invocation", "complete_tool_invocation", "execute_db_tool_invocation",
         # Log
         "append_reasoning", "list_reasoning_trail", "add_ruled_out",
         "list_ruled_out", "append_investigation_log", "list_investigation_log",
@@ -62,6 +63,7 @@ def test_all_documented_storage_names_importable():
         "record_turn_usage", "end_work_session_with_reason",
         "end_orphan_session_as_crashed", "save_session_summary",
         "get_session_summary", "list_session_summaries_for_dossier",
+        "mark_work_session_launched", "increment_work_session_turns", "reserve_model_call",
         # Settings (now in settings.py)
         "get_setting", "set_setting", "list_settings", "seed_default_settings",
         # Sub-investigation
@@ -88,6 +90,18 @@ def test_all_documented_storage_names_importable():
         "create_agent_turn", "list_agent_turns_for_dossier",
         "list_agent_turns_for_session", "list_agent_turns_for_trace",
         "get_turn_cost_summary_for_dossier",
+        # Long research
+        "update_research_policy", "start_autonomous_research",
+        "pause_autonomous_research", "set_research_stop_reason",
+        "get_research_progress", "get_active_research_run", "get_research_run",
+        "list_research_runs", "restart_autonomous_research",
+        "resume_autonomous_research", "schedule_research_wake",
+        "resume_waiting_research_run", "lease_due_research_wakes",
+        "claim_research_wake_session", "release_research_wake",
+        "consume_research_wake", "mark_run_session_launched",
+        "sync_run_cost_from_session", "transition_run_after_session",
+        "sync_runs_for_sleep_mode", "get_research_evidence",
+        "list_notifications", "mark_notification_read",
         # Exceptions
         "ActiveWorkSessionExists",
     }
@@ -149,7 +163,8 @@ def test_all_public_names_are_in_expected_set():
         "add_decision_point", "get_decision_point",
         "resolve_decision_point", "list_decision_points",
         # Idempotency
-        "get_tool_invocation", "record_tool_invocation",
+            "get_tool_invocation", "record_tool_invocation",
+            "claim_tool_invocation", "complete_tool_invocation", "execute_db_tool_invocation",
         # Log
         "append_reasoning", "list_reasoning_trail", "add_ruled_out",
         "list_ruled_out", "append_investigation_log", "list_investigation_log",
@@ -167,7 +182,8 @@ def test_all_public_names_are_in_expected_set():
         "increment_session_tokens", "record_session_usage",
         "record_turn_usage", "end_work_session_with_reason",
         "end_orphan_session_as_crashed", "save_session_summary",
-        "get_session_summary", "list_session_summaries_for_dossier",
+            "get_session_summary", "list_session_summaries_for_dossier",
+            "mark_work_session_launched", "increment_work_session_turns", "reserve_model_call",
         # Settings
         "get_setting", "set_setting", "list_settings", "seed_default_settings",
         # Sub-investigation
@@ -194,6 +210,18 @@ def test_all_public_names_are_in_expected_set():
         "create_agent_turn", "list_agent_turns_for_dossier",
         "list_agent_turns_for_session", "list_agent_turns_for_trace",
         "get_turn_cost_summary_for_dossier",
+        # Long research
+        "update_research_policy", "start_autonomous_research",
+        "pause_autonomous_research", "set_research_stop_reason",
+            "get_research_progress", "get_active_research_run", "get_research_run",
+            "list_research_runs", "restart_autonomous_research",
+            "resume_autonomous_research", "schedule_research_wake",
+            "resume_waiting_research_run", "lease_due_research_wakes",
+            "claim_research_wake_session", "release_research_wake",
+            "consume_research_wake", "mark_run_session_launched",
+            "sync_run_cost_from_session", "transition_run_after_session",
+            "sync_runs_for_sleep_mode", "get_research_evidence",
+            "list_notifications", "mark_notification_read",
         # Exceptions
         "ActiveWorkSessionExists",
     }

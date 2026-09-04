@@ -24,6 +24,15 @@ yarn-error.log*
 .env
 .env.local
 .env.*.local
+.env.production
+.env.production.*
+!.env.production.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
 
 # Databases
 *.db
@@ -32,6 +41,14 @@ yarn-error.log*
 *.db-journal
 *.db-wal
 *.db-shm
+backups/
+*.sqlite3.sha256
+*.sqlite3.json
+
+# Production/deployment state
+data/
+releases/
+shared/
 
 # OS
 .DS_Store

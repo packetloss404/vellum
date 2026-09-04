@@ -1,0 +1,80 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    env_file:
+      - ${VELLUM_ENV_FILE:-.env.production}
+    environment:
+      VELLUM_DB_PATH: /app/data/vellum.db
+      VELLUM_HOST: 0.0.0.0
+      VELLUM_API_AUTH_REQUIRED: "true"
+    volumes:
+      - ./data:/app/data
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    expose:
+      - "8731"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8731/ready', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - NET_BIND_SERVICE
+      - SETGID
+      - SETUID
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      VELLUM_API_TOKEN: ${VELLUM_API_TOKEN}
+      VELLUM_TRUSTED_PROXY_IP: ${VELLUM_TRUSTED_PROXY_IP:-10.80.13.11}
+    ports:
+      - "${VELLUM_BIND_ADDRESS:-127.0.0.1}:8730:80"
+    tmpfs:
+      - /etc/nginx/conf.d:size=1m,mode=0755
+      - /var/cache/nginx:size=32m,mode=0755
+      - /var/run:size=1m,mode=0755
+      - /tmp:size=16m,mode=1777
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

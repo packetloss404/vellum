@@ -84,6 +84,7 @@ def _row_to_dossier(row: sqlite3.Row) -> m.Dossier:
     plan_json = row["investigation_plan"]
     theory_json = _row_get(row, "working_theory")
     pc_json = _row_get(row, "premise_challenge")
+    research_policy_json = _row_get(row, "research_policy")
 
     debrief = m.Debrief.model_validate_json(debrief_json) if debrief_json else None
     if debrief is not None:
@@ -125,6 +126,13 @@ def _row_to_dossier(row: sqlite3.Row) -> m.Dossier:
         dossier_type=m.DossierType(row["dossier_type"]),
         status=m.DossierStatus(row["status"]),
         check_in_policy=m.CheckInPolicy.model_validate_json(row["check_in_policy"]),
+        research_policy=(
+            m.ResearchPolicy.model_validate_json(research_policy_json)
+            if research_policy_json
+            else m.ResearchPolicy()
+        ),
+        research_started_at=_dt(_row_get(row, "research_started_at")),
+        research_stop_reason=_row_get(row, "research_stop_reason"),
         debrief=debrief,
         investigation_plan=(
             m.InvestigationPlan.model_validate_json(plan_json) if plan_json else None
@@ -248,6 +256,12 @@ def _row_to_work_session(row: sqlite3.Row) -> m.WorkSession:
         cost_usd=_row_get(row, "cost_usd") or 0.0,
         end_reason=end_reason,
         trace_id=_row_get(row, "trace_id") or "",
+        research_run_id=_row_get(row, "research_run_id"),
+        wake_id=_row_get(row, "wake_id"),
+        max_turns_snapshot=_row_get(row, "max_turns_snapshot"),
+        turns_started=int(_row_get(row, "turns_started") or 0),
+        launched_at=_dt(_row_get(row, "launched_at")),
+        launch_state=_row_get(row, "launch_state") or "created",
     )
 
 

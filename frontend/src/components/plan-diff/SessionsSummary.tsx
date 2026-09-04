@@ -40,6 +40,7 @@ const TRIGGER_LABEL: Record<WorkSessionTrigger, string> = {
   resume: "Resumed",
   intake: "Intake",
   manual: "Manual",
+  autonomous: "Autonomous research",
 };
 
 function formatDollars(cost: number | undefined): string {

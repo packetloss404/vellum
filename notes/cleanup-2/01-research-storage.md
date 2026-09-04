@@ -1,5 +1,10 @@
 # Vellum — Cleanup-2 Research: Storage & Schema Refactor
 
+> **Historical research snapshot (2026-08-02).** “Current state” and migration
+> proposals below describe the pre-cleanup tree. Use
+> [`docs/IMPLEMENTATION_PLAN.md`](../../docs/IMPLEMENTATION_PLAN.md) for current
+> sequencing and [`BACKLOG.md`](../../BACKLOG.md) for actionable work.
+
 **Scope:** deep-dive brief items #6 (thin store files), #7 (`investigation_plan` column), #9 (missing FKs), #11 (append-only retention), plus a bonus on enum CHECK constraints. All file refs are `path:line` against `D:\projects\Vellum` on 2026-08-02. **No code is being modified** — this is a research report.
 
 **Author's note on framing.** Each item below is graded by the project's stated tolerance for risk: solo dev, 358 backend tests must keep passing at every commit, forward-only migrations, and "the user is in the loop" — auto-decisions logged, not hidden. Recommendations skew conservative; where a bigger-bang refactor is genuinely worth it, the rationale is laid out so the owner can decide.

@@ -8,6 +8,9 @@ CREATE TABLE IF NOT EXISTS dossiers (
     dossier_type TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
     check_in_policy TEXT NOT NULL DEFAULT '{"cadence":"on_demand","notes":""}',
+    research_policy TEXT NOT NULL DEFAULT '{"depth":"standard","autonomy_enabled":false,"max_sessions":4,"max_turns_per_session":30,"max_cost_usd":12.0,"target_source_count":20,"min_primary_sources":3,"continuation_delay_minutes":1.0}',
+    research_started_at TEXT,
+    research_stop_reason TEXT,
     debrief TEXT,
     investigation_plan TEXT,
     last_visited_at TEXT,
@@ -116,9 +119,155 @@ CREATE TABLE IF NOT EXISTS work_sessions (
     cost_usd REAL NOT NULL DEFAULT 0,
     end_reason TEXT,
     trace_id TEXT NOT NULL DEFAULT '',
-    FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE
+    research_run_id TEXT,
+    wake_id TEXT UNIQUE,
+    max_turns_snapshot INTEGER,
+    turns_started INTEGER NOT NULL DEFAULT 0,
+    launched_at TEXT,
+    launch_state TEXT NOT NULL DEFAULT 'created',
+    FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE,
+    FOREIGN KEY (research_run_id) REFERENCES research_runs(id) ON DELETE SET NULL,
+    FOREIGN KEY (wake_id) REFERENCES research_wakes(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_work_sessions_dossier ON work_sessions(dossier_id, started_at);
+
+-- Autonomous research is modelled as an immutable-budget run. Dossier-level
+-- research fields remain dual-written for one rollback-compatible release.
+CREATE TABLE IF NOT EXISTS research_runs (
+    id TEXT PRIMARY KEY,
+    dossier_id TEXT NOT NULL,
+    policy_snapshot TEXT NOT NULL,
+    depth TEXT NOT NULL,
+    strategy_version TEXT NOT NULL DEFAULT 'v1',
+    status TEXT NOT NULL DEFAULT 'queued',
+    initiated_by TEXT NOT NULL DEFAULT 'user',
+    state_version INTEGER NOT NULL DEFAULT 1,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    ended_at TEXT,
+    stop_reason TEXT,
+    completion_reason TEXT,
+    sessions_started INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    start_idempotency_key TEXT,
+    FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_research_runs_dossier ON research_runs(dossier_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS research_run_events (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    work_session_id TEXT,
+    event_type TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    transition_version INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (run_id) REFERENCES research_runs(id) ON DELETE CASCADE,
+    UNIQUE(run_id, event_type, transition_version)
+);
+CREATE INDEX IF NOT EXISTS idx_research_run_events_run ON research_run_events(run_id, created_at);
+
+CREATE TABLE IF NOT EXISTS research_wakes (
+    id TEXT PRIMARY KEY,
+    dossier_id TEXT NOT NULL,
+    run_id TEXT,
+    reason TEXT NOT NULL,
+    due_at TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    lease_owner TEXT,
+    lease_expires_at TEXT,
+    expected_run_version INTEGER,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE,
+    FOREIGN KEY (run_id) REFERENCES research_runs(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_research_wakes_due ON research_wakes(state, due_at);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id TEXT PRIMARY KEY,
+    dossier_id TEXT NOT NULL,
+    run_id TEXT,
+    event_id TEXT,
+    event_type TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    is_read INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE,
+    FOREIGN KEY (run_id) REFERENCES research_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY (event_id) REFERENCES research_run_events(id) ON DELETE CASCADE,
+    UNIQUE(event_id, event_type)
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(is_read, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS evidence_sources (
+    id TEXT PRIMARY KEY,
+    dossier_id TEXT NOT NULL,
+    canonical_url TEXT NOT NULL,
+    original_url TEXT NOT NULL,
+    title TEXT,
+    domain TEXT,
+    source_kind TEXT NOT NULL DEFAULT 'web',
+    model_source_type TEXT,
+    model_authority TEXT,
+    authority_status TEXT NOT NULL DEFAULT 'unverified',
+    authority_basis TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE,
+    UNIQUE(dossier_id, canonical_url)
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_sources_dossier ON evidence_sources(dossier_id, created_at);
+
+CREATE TABLE IF NOT EXISTS evidence_observations (
+    id TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL,
+    run_id TEXT,
+    work_session_id TEXT,
+    provenance TEXT NOT NULL,
+    retrieved_at TEXT,
+    page_age TEXT,
+    published_at TEXT,
+    excerpt TEXT,
+    excerpt_sha256 TEXT,
+    limitations TEXT,
+    provider TEXT,
+    provider_ref TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (source_id) REFERENCES evidence_sources(id) ON DELETE CASCADE,
+    FOREIGN KEY (run_id) REFERENCES research_runs(id) ON DELETE SET NULL,
+    UNIQUE(provider, provider_ref)
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_observations_run ON evidence_observations(run_id, created_at);
+
+CREATE TABLE IF NOT EXISTS research_claims (
+    id TEXT PRIMARY KEY,
+    dossier_id TEXT NOT NULL,
+    run_id TEXT,
+    plan_item_id TEXT,
+    section_id TEXT,
+    claim_text TEXT NOT NULL,
+    materiality TEXT NOT NULL DEFAULT 'supporting',
+    status TEXT NOT NULL DEFAULT 'draft',
+    primary_required INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE,
+    FOREIGN KEY (run_id) REFERENCES research_runs(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_research_claims_run ON research_claims(run_id, status);
+
+CREATE TABLE IF NOT EXISTS claim_evidence (
+    claim_id TEXT NOT NULL,
+    observation_id TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    excerpt TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (claim_id, observation_id, relation),
+    FOREIGN KEY (claim_id) REFERENCES research_claims(id) ON DELETE CASCADE,
+    FOREIGN KEY (observation_id) REFERENCES evidence_observations(id) ON DELETE CASCADE
+);
 
 CREATE TABLE IF NOT EXISTS change_log (
     id TEXT PRIMARY KEY,
@@ -245,6 +394,9 @@ CREATE TABLE IF NOT EXISTS tool_invocations (
     input_hash TEXT NOT NULL,
     result_json TEXT NOT NULL,
     is_error INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL DEFAULT 'completed',
+    claimed_at TEXT,
+    completed_at TEXT,
     created_at TEXT NOT NULL,
     FOREIGN KEY (dossier_id) REFERENCES dossiers(id) ON DELETE CASCADE
 );

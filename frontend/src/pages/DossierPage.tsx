@@ -19,6 +19,7 @@ import { NextActionsList } from "../components/dossier/NextActionsList";
 import { InvestigationLogSidebar } from "../components/dossier/InvestigationLogSidebar";
 import { QuarantineBanner } from "../components/dossier/QuarantineBanner";
 import { UserNoteComposer } from "../components/dossier/UserNoteComposer";
+import { ResearchControl } from "../components/dossier/ResearchControl";
 import { PlanDiffSidebar } from "../components/plan-diff/PlanDiffSidebar";
 import {
   useChangeLog,
@@ -241,6 +242,12 @@ export default function DossierPage({
             decisionPoints={decision_points ?? []}
           />
         </div>
+
+        {!readOnlyFixture ? (
+          <div className="mt-6">
+            <ResearchControl dossierId={dossierId} delivered={isDelivered} />
+          </div>
+        ) : null}
 
         <div className="mt-8">
           <PremiseChallengeBlock challenge={dossier.premise_challenge} />

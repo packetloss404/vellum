@@ -359,7 +359,10 @@ def _patch_orchestrator_start(monkeypatch: pytest.MonkeyPatch) -> None:
         max_turns: int = 200,
         model: Optional[str] = None,
         expected_session_id: Optional[str] = None,
+        session_factory=None,
     ) -> dict:
+        if session_factory is not None:
+            expected_session_id = session_factory()
         return {"status": "started", "dossier_id": dossier_id}
 
     monkeypatch.setattr(orch_mod.ORCHESTRATOR, "start", _fake_start)

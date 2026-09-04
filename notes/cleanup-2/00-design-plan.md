@@ -1,11 +1,23 @@
 # Vellum — Cleanup-2 Design + Plan
 
+> **Historical plan.** Cleanup-2 closed on 2026-08-02. The active roadmap is
+> [`docs/IMPLEMENTATION_PLAN.md`](../../docs/IMPLEMENTATION_PLAN.md), and the
+> canonical unfinished-work queue is [`BACKLOG.md`](../../BACKLOG.md). This
+> document preserves the original design rationale and phase detail.
+
+**Reconciled 2026-08-30:** phases A–E remain shipped; the post-review baseline
+is 393 backend and 26 frontend tests. Bounded long research, its 5 backend
+tests, and production deployment landed afterward in the current working tree,
+bringing the current baseline to 398 passing backend tests (2 conditional skips) +
+26 passing frontend tests. Every still-actionable deferred item
+has a backlog ID; this file is no longer used to track status.
+
 **Synthesizes:** `01-research-storage.md` (5 items), `02-research-runtime.md` (6 items), `03-research-frontend.md` (6 items).
 
 **Goal:** Move Vellum from "great hackathon project" to "shippable v1" — the surface a maintainer could read with full confidence. Scope: 17 items, 0 breaking changes to the public API, 358 backend tests + 12 frontend tests must stay green at every commit, every commit ships independently.
 
 **Implementation status (as of cleanup-2 close-out):**
-- Phases A, B, C, D, E — **shipped** (16 commits, all pushed to main). 387 backend tests + 26 frontend vitest tests now pass (was 358+12 at session start).
+- Phases A, B, C, D, E — **shipped** (all pushed to main). 393 backend tests + 26 frontend vitest tests passed after the peer-review and bug-check fixes (was 358+12 at session start).
 - Phase F — **deferred** to a follow-up pass. The F.1 (stop serializing items into JSON) was already in place before this pass; the F.2 dossier_plans table + sentinel-guarded backfill, F.4 FK + CHECK migration, F.5 retention policy, and F.6 column drop are all multi-day efforts that should be tackled in their own dedicated session with their own soak windows. See the README "Known issues and follow-ups" section for the full list.
 
 **Constraints (re-stated from the deep-dive):**
@@ -20,8 +32,8 @@
 
 ## 1. Target architecture (the 17 items, decisions made)
 
-| # | Item | Decision | Risk | Source |
-|---|---|---|---|---|
+| # | Item | Decision | Risk | Source | Status |
+|---|---|---|---|---|---|
 | 1 | Delete `_PLACEHOLDER_V2_SCHEMAS` dict + fallback | **Delete.** Unreachable in merged tree (verified). | Trivial | runtime #5 | ✅ shipped |
 | 2 | `mark_progress` docstring one-liner fix | **Fix.** Docstring is now self-inconsistent with the code. | Trivial | runtime (synthesis #3 residual) | ✅ shipped |
 | 3 | Add `test_scheduler.py` (12 tests, <5s, deterministic) | **Add.** Highest-value test in the repo. | Small | runtime #1 | ✅ shipped (13 tests) |
@@ -355,6 +367,7 @@ The 358 backend tests + 18+ frontend tests, plus the 12 new ones added in this p
 
 ## 7. Next step
 
-**Recommend:** start with Phase A today (1 day, trivial risk), then Phase B tomorrow (1 day, the scheduler test is the highest-value test in the repo). Phases C-E are next week's work. Phase F is a 2-week tail with a 30-day soak for the column drop.
-
-If the project owner wants a different ordering, the most common swap is "do Phase E (frontend) first because the visual changes are more rewarding to see." That works too — the phases are independent, only the test-infrastructure comes first.
+Phases A–E are complete. The surviving Phase-F work is mapped to DATA-01,
+DATA-02, DATA-03, and OPS-02 in `BACKLOG.md`. It is sequenced after the REL-01
+tool-dispatch reliability fix in `docs/IMPLEMENTATION_PLAN.md`. Do not execute
+this historical phase list directly; use the active plan and its current gates.

@@ -41,7 +41,8 @@ export type WorkSessionTrigger =
   | "reactive"
   | "resume"
   | "intake"
-  | "manual";
+  | "manual"
+  | "autonomous";
 
 export type WorkSessionEndReason =
   | "ended_turn"
@@ -57,7 +58,10 @@ export type WakeReason =
   | "scheduled"
   | "crash_resume"
   | "needs_input_resolved"
-  | "decision_resolved";
+  | "decision_resolved"
+  | "error_retry"
+  | "user_note"
+  | "autonomous_continue";
 
 export type ChangeKind =
   | "section_created"
@@ -102,6 +106,182 @@ export interface CheckInPolicy {
   notes: string;
 }
 
+export type ResearchDepth = "standard" | "deep";
+
+export interface ResearchPolicy {
+  depth: ResearchDepth;
+  autonomy_enabled: boolean;
+  max_sessions: number;
+  max_turns_per_session: number;
+  max_cost_usd: number;
+  target_source_count: number;
+  min_primary_sources: number;
+  continuation_delay_minutes: number;
+}
+
+export interface ResearchProgress {
+  dossier_id: string;
+  status:
+    | "manual"
+    | "queued"
+    | "running"
+    | "waiting_for_user"
+    | "pause_requested"
+    | "blocked_sleep"
+    | "paused"
+    | "completed"
+    | "failed"
+    | "quarantined"
+    | "cancelled"
+    | "superseded"
+    | "cap_reached"
+    | "delivered";
+  policy: ResearchPolicy;
+  started_at?: string | null;
+  stop_reason?: string | null;
+  sessions_used: number;
+  cost_usd: number;
+  source_count: number;
+  unique_source_count: number;
+  primary_source_count: number;
+  unique_domains: number;
+  sources_linked_to_sections: number;
+  sources_with_limitations: number;
+  contradictory_sources: number;
+  completed_plan_items: number;
+  total_plan_items: number;
+  open_needs_input_count: number;
+  open_decision_point_count: number;
+  active_run_id?: string | null;
+  run_version?: number | null;
+  allowed_actions?: Array<"start" | "pause" | "resume" | "restart">;
+  active_session_id?: string | null;
+  next_wake_at?: string | null;
+  completion_report?: ResearchCompletionReport;
+}
+
+export interface ResearchCompletionCheck {
+  key: string;
+  label: string;
+  passed: boolean;
+  current: number;
+  target: number;
+  detail?: string;
+}
+
+export interface ResearchCompletionReport {
+  ready: boolean;
+  checks: ResearchCompletionCheck[];
+  completed_plan_items: number;
+  abandoned_plan_items: number;
+  total_plan_items: number;
+}
+
+export type ResearchRunStatus =
+  | "queued"
+  | "running"
+  | "pause_requested"
+  | "waiting_for_user"
+  | "blocked_sleep"
+  | "paused"
+  | "completed"
+  | "cap_reached"
+  | "failed"
+  | "quarantined"
+  | "cancelled"
+  | "superseded";
+
+export interface ResearchRun {
+  id: string;
+  dossier_id: string;
+  policy_snapshot: ResearchPolicy;
+  depth: ResearchDepth;
+  strategy_version: string;
+  status: ResearchRunStatus;
+  initiated_by: string;
+  state_version: number;
+  started_at: string;
+  updated_at: string;
+  ended_at?: string | null;
+  stop_reason?: string | null;
+  completion_reason?: string | null;
+  sessions_started: number;
+  cost_usd: number;
+}
+
+export interface EvidenceSource {
+  id: string;
+  dossier_id: string;
+  canonical_url: string;
+  original_url: string;
+  title?: string | null;
+  domain?: string | null;
+  source_kind: string;
+  model_source_type?: string | null;
+  model_authority?: string | null;
+  authority_status: string;
+  authority_basis?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EvidenceObservation {
+  id: string;
+  source_id: string;
+  run_id?: string | null;
+  work_session_id?: string | null;
+  provenance: "discovered" | "cited" | "consulted" | "user_provided";
+  retrieved_at?: string | null;
+  page_age?: string | null;
+  published_at?: string | null;
+  excerpt?: string | null;
+  excerpt_sha256?: string | null;
+  provider?: string | null;
+  provider_ref?: string | null;
+  created_at: string;
+}
+
+export interface ResearchClaim {
+  id: string;
+  dossier_id: string;
+  run_id?: string | null;
+  plan_item_id?: string | null;
+  section_id?: string | null;
+  claim_text: string;
+  materiality: string;
+  status: string;
+  primary_required: boolean | number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ClaimEvidence {
+  claim_id: string;
+  observation_id: string;
+  relation: "supports" | "contradicts" | "context";
+  excerpt?: string | null;
+  created_at: string;
+}
+
+export interface ResearchEvidence {
+  run_id: string;
+  sources: EvidenceSource[];
+  observations: EvidenceObservation[];
+  claims: ResearchClaim[];
+  claim_evidence: ClaimEvidence[];
+}
+
+export interface NotificationEntry {
+  id: string;
+  dossier_id: string;
+  run_id?: string | null;
+  event_id?: string | null;
+  event_type: string;
+  payload: Record<string, unknown>;
+  is_read: boolean;
+  created_at: string;
+}
+
 // ---------- Core domain objects ----------
 
 export interface Dossier {
@@ -112,6 +292,9 @@ export interface Dossier {
   dossier_type: DossierType;
   status: DossierStatus;
   check_in_policy: CheckInPolicy;
+  research_policy?: ResearchPolicy;
+  research_started_at?: string | null;
+  research_stop_reason?: string | null;
   last_visited_at?: string | null;
   created_at: string;
   updated_at: string;

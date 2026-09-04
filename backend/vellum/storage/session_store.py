@@ -22,15 +22,32 @@ from ._helpers import (
 def start_work_session(
     dossier_id: str,
     trigger: m.WorkSessionTrigger = m.WorkSessionTrigger.manual,
+    *,
+    research_run_id: Optional[str] = None,
+    wake_id: Optional[str] = None,
+    max_turns_snapshot: Optional[int] = None,
 ) -> m.WorkSession:
     now = m.utc_now()
     trace_id = uuid.uuid4().hex
+    implicit_run = False
+    if research_run_id is None and trigger is m.WorkSessionTrigger.autonomous:
+        from .research import get_active_research_run
+        active_run = get_active_research_run(dossier_id)
+        if active_run is not None:
+            research_run_id = active_run.id
+            max_turns_snapshot = active_run.policy_snapshot.max_turns_per_session
+            implicit_run = True
     session = m.WorkSession(
         id=m.new_id("ws"),
         dossier_id=dossier_id,
         started_at=now,
         trigger=trigger,
         trace_id=trace_id,
+        research_run_id=research_run_id,
+        wake_id=wake_id,
+        max_turns_snapshot=max_turns_snapshot,
+        launched_at=now if implicit_run else None,
+        launch_state="launched" if implicit_run else "created",
     )
     try:
         with connect() as conn:
@@ -46,17 +63,82 @@ def start_work_session(
                 raise ActiveWorkSessionExists(_row_to_work_session(existing))
             conn.execute(
                 """
-                INSERT INTO work_sessions (id, dossier_id, started_at, trigger, token_budget_used, trace_id)
-                VALUES (?, ?, ?, ?, 0, ?)
+                INSERT INTO work_sessions
+                    (id, dossier_id, started_at, trigger, token_budget_used, trace_id,
+                     research_run_id, wake_id, max_turns_snapshot, launched_at, launch_state)
+                VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
                 """,
-                (session.id, dossier_id, _dt_str(now), trigger.value, trace_id),
+                (session.id, dossier_id, _dt_str(now), trigger.value, trace_id,
+                 research_run_id, wake_id, max_turns_snapshot,
+                 _dt_str(now) if implicit_run else None,
+                 "launched" if implicit_run else "created"),
             )
     except sqlite3.IntegrityError as exc:
         existing = get_active_work_session(dossier_id)
         if existing is not None:
             raise ActiveWorkSessionExists(existing) from exc
         raise
+    if implicit_run and research_run_id:
+        from .research import mark_run_session_launched
+        mark_run_session_launched(research_run_id, session.id)
     return session
+
+
+def mark_work_session_launched(session_id: str) -> Optional[m.WorkSession]:
+    """Mark a pre-created session as owned by an accepted orchestrator task."""
+    now_s = _dt_str(m.utc_now())
+    with connect() as conn:
+        conn.execute(
+            "UPDATE work_sessions SET launched_at=?,launch_state='launched' "
+            "WHERE id=? AND launch_state='created'",
+            (now_s, session_id),
+        )
+        row = conn.execute("SELECT * FROM work_sessions WHERE id=?", (session_id,)).fetchone()
+    return _row_to_work_session(row) if row else None
+
+
+def increment_work_session_turns(session_id: str) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE work_sessions SET turns_started=turns_started+1 WHERE id=?", (session_id,))
+
+
+def reserve_model_call(session_id: str) -> dict:
+    """Atomically reserve one main/sub model attempt under session/run caps."""
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT ws.*,rr.status AS run_status,rr.sessions_started,rr.cost_usd AS run_cost,"
+            "rr.policy_snapshot,rr.state_version FROM work_sessions ws "
+            "LEFT JOIN research_runs rr ON rr.id=ws.research_run_id WHERE ws.id=?",
+            (session_id,),
+        ).fetchone()
+        if row is None or row["ended_at"] is not None:
+            return {"allowed": False, "reason": "session_inactive"}
+        limit = row["max_turns_snapshot"]
+        if row["research_run_id"]:
+            policy = m.ResearchPolicy.model_validate_json(row["policy_snapshot"])
+            limit = int(limit or policy.max_turns_per_session)
+            if row["run_status"] not in ("running", "queued"):
+                return {"allowed": False, "reason": row["run_status"] or "run_inactive"}
+            if int(row["sessions_started"] or 0) > policy.max_sessions:
+                return {"allowed": False, "reason": "session_cap_reached"}
+            if float(row["run_cost"] or 0) >= policy.max_cost_usd:
+                from .research import _transition
+                updated = _transition(
+                    conn, row["research_run_id"], "cap_reached",
+                    stop_reason="cost_cap_reached", event_type="run_cap_reached",
+                    payload={"reason": "cost_cap_reached"}, notify=True,
+                )
+                conn.execute(
+                    "UPDATE research_wakes SET state='cancelled',updated_at=? "
+                    "WHERE run_id=? AND state IN ('pending','leased')",
+                    (_dt_str(m.utc_now()), row["research_run_id"]),
+                )
+                return {"allowed": False, "reason": "cost_cap_reached"}
+        if limit is not None and int(row["turns_started"] or 0) >= int(limit):
+            return {"allowed": False, "reason": "turn_cap_reached"}
+        conn.execute("UPDATE work_sessions SET turns_started=turns_started+1 WHERE id=?", (session_id,))
+        return {"allowed": True, "reason": None, "turn_number": int(row["turns_started"] or 0) + 1}
 
 
 def get_work_session(session_id: str) -> Optional[m.WorkSession]:
@@ -114,6 +196,7 @@ def record_session_usage(
     cache_read_input_tokens: int = 0,
 ) -> None:
     """Accumulate per-turn usage on a work_session row."""
+    now_s = _dt_str(m.utc_now())
     with connect() as conn:
         conn.execute(
             """
@@ -135,6 +218,11 @@ def record_session_usage(
                 int(input_tokens + output_tokens),
                 session_id,
             ),
+        )
+        conn.execute(
+            "UPDATE research_runs SET cost_usd=cost_usd+?,updated_at=? "
+            "WHERE id=(SELECT research_run_id FROM work_sessions WHERE id=?)",
+            (float(cost_usd), now_s, session_id),
         )
 
 
@@ -173,6 +261,11 @@ def record_turn_usage(
             ),
         )
         conn.execute(
+            "UPDATE research_runs SET cost_usd=cost_usd+?,updated_at=? "
+            "WHERE id=(SELECT research_run_id FROM work_sessions WHERE id=?)",
+            (float(cost_usd), now_s, session_id),
+        )
+        conn.execute(
             """
             INSERT INTO budget_accounting (day, spent_usd, input_tokens, output_tokens,
                 cache_creation_input_tokens, cache_read_input_tokens, updated_at)
@@ -208,7 +301,8 @@ def end_work_session_with_reason(
             """
             UPDATE work_sessions
                SET ended_at = ?,
-                   end_reason = ?
+                   end_reason = ?,
+                   launch_state = 'ended'
              WHERE id = ? AND ended_at IS NULL
             """,
             (now_s, reason.value, session_id),

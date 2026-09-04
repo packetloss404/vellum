@@ -53,6 +53,33 @@ from .audit import (
     list_budget_range,
 )
 
+# Long-research policy and progress
+from .research import (
+    update_research_policy,
+    start_autonomous_research,
+    pause_autonomous_research,
+    set_research_stop_reason,
+    get_research_progress,
+    get_active_research_run,
+    get_research_run,
+    list_research_runs,
+    restart_autonomous_research,
+    resume_autonomous_research,
+    schedule_research_wake,
+    resume_waiting_research_run,
+    lease_due_research_wakes,
+    claim_research_wake_session,
+    release_research_wake,
+    consume_research_wake,
+    mark_run_session_launched,
+    sync_run_cost_from_session,
+    transition_run_after_session,
+    sync_runs_for_sleep_mode,
+    get_research_evidence,
+    list_notifications,
+    mark_notification_read,
+)
+
 # Decision point operations
 from .decision_point_store import (
     add_decision_point,
@@ -65,6 +92,9 @@ from .decision_point_store import (
 from .settings import (
     get_tool_invocation,
     record_tool_invocation,
+    claim_tool_invocation,
+    complete_tool_invocation,
+    execute_db_tool_invocation,
 )
 
 # Log operations (reasoning, ruled out, investigation log, considered & rejected, change log)
@@ -110,6 +140,9 @@ from .session_store import (
     record_turn_usage,
     end_work_session_with_reason,
     end_orphan_session_as_crashed,
+    mark_work_session_launched,
+    increment_work_session_turns,
+    reserve_model_call,
     save_session_summary,
     get_session_summary,
     list_session_summaries_for_dossier,
@@ -223,6 +256,9 @@ __all__ = [
     # Idempotency
     "get_tool_invocation",
     "record_tool_invocation",
+    "claim_tool_invocation",
+    "complete_tool_invocation",
+    "execute_db_tool_invocation",
     # Log
     "append_reasoning",
     "list_reasoning_trail",
@@ -256,6 +292,9 @@ __all__ = [
     "record_turn_usage",
     "end_work_session_with_reason",
     "end_orphan_session_as_crashed",
+    "mark_work_session_launched",
+    "increment_work_session_turns",
+    "reserve_model_call",
     "save_session_summary",
     "get_session_summary",
     "list_session_summaries_for_dossier",
@@ -304,6 +343,30 @@ __all__ = [
     "list_agent_turns_for_session",
     "list_agent_turns_for_trace",
     "get_turn_cost_summary_for_dossier",
+    # Long research
+    "update_research_policy",
+    "start_autonomous_research",
+    "pause_autonomous_research",
+    "set_research_stop_reason",
+    "get_research_progress",
+    "get_active_research_run",
+    "get_research_run",
+    "list_research_runs",
+    "restart_autonomous_research",
+    "resume_autonomous_research",
+    "schedule_research_wake",
+    "resume_waiting_research_run",
+    "lease_due_research_wakes",
+    "claim_research_wake_session",
+    "release_research_wake",
+    "consume_research_wake",
+    "mark_run_session_launched",
+    "sync_run_cost_from_session",
+    "transition_run_after_session",
+    "sync_runs_for_sleep_mode",
+    "get_research_evidence",
+    "list_notifications",
+    "mark_notification_read",
     # Exceptions
     "ActiveWorkSessionExists",
 ]

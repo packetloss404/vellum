@@ -76,9 +76,19 @@ def resolve_needs_input(
         except Exception:
             pass
         if sleep_mode_on:
-            conn.execute(
-                "UPDATE dossiers SET wake_pending = 1, wake_reason = ? WHERE id = ?",
-                (m.WakeReason.needs_input_resolved.value, dossier_id),
+            from .research import _resume_waiting_research_run_tx
+            handled = _resume_waiting_research_run_tx(
+                conn, dossier_id, m.WakeReason.needs_input_resolved
+            )
+            if not handled:
+                conn.execute(
+                    "UPDATE dossiers SET wake_pending = 1, wake_reason = ? WHERE id = ?",
+                    (m.WakeReason.needs_input_resolved.value, dossier_id),
+                )
+        else:
+            from .research import _resume_waiting_research_run_tx
+            _resume_waiting_research_run_tx(
+                conn, dossier_id, m.WakeReason.needs_input_resolved
             )
         row = conn.execute("SELECT * FROM needs_input WHERE id = ?", (needs_input_id,)).fetchone()
     return _row_to_needs_input(row)

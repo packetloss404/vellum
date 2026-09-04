@@ -31,6 +31,11 @@ export const qk = {
     ["dossier", id, "considered-and-rejected"] as const,
   agentStatus: (id: string) => ["dossier", id, "agent-status"] as const,
   resumeState: (id: string) => ["dossier", id, "resume-state"] as const,
+  research: (id: string) => ["dossier", id, "research"] as const,
+  researchRuns: (id: string) => ["dossier", id, "research", "runs"] as const,
+  researchEvidence: (id: string, runId: string) =>
+    ["dossier", id, "research", "runs", runId, "evidence"] as const,
+  notifications: () => ["notifications"] as const,
   runningAgents: () => ["agents", "running"] as const,
 };
 
@@ -372,6 +377,99 @@ export function useResumeAgent() {
       qc.invalidateQueries({ queryKey: qk.dossier(dossierId) });
       qc.invalidateQueries({ queryKey: qk.dossiers() });
     },
+  });
+}
+
+export const useResearchProgress = (dossierId: string) =>
+  useQuery({
+    queryKey: qk.research(dossierId),
+    queryFn: () => api.getResearchProgress(dossierId),
+    enabled: !!dossierId,
+    refetchInterval: 3000,
+    staleTime: 0,
+  });
+
+export const useResearchRuns = (dossierId: string) =>
+  useQuery({
+    queryKey: qk.researchRuns(dossierId),
+    queryFn: () => api.listResearchRuns(dossierId),
+    enabled: !!dossierId,
+  });
+
+export const useResearchEvidence = (dossierId: string, runId?: string | null) =>
+  useQuery({
+    queryKey: qk.researchEvidence(dossierId, runId ?? ""),
+    queryFn: () => api.getResearchEvidence(dossierId, runId!),
+    enabled: !!dossierId && !!runId,
+  });
+
+export const useNotifications = () =>
+  useQuery({
+    queryKey: qk.notifications(),
+    queryFn: () => api.listNotifications(true),
+    refetchInterval: 15_000,
+    staleTime: 0,
+  });
+
+function invalidateResearch(qc: ReturnType<typeof useQueryClient>, dossierId: string) {
+  qc.invalidateQueries({ queryKey: qk.research(dossierId) });
+  qc.invalidateQueries({ queryKey: qk.dossier(dossierId) });
+  qc.invalidateQueries({ queryKey: qk.resumeState(dossierId) });
+  qc.invalidateQueries({ queryKey: qk.agentStatus(dossierId) });
+  qc.invalidateQueries({ queryKey: qk.runningAgents() });
+  qc.invalidateQueries({ queryKey: qk.researchRuns(dossierId) });
+  qc.invalidateQueries({ queryKey: qk.notifications() });
+}
+
+export function useSaveResearchPolicy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { dossierId: string; policy: import("./types").ResearchPolicy }) =>
+      api.saveResearchPolicy(vars.dossierId, vars.policy),
+    onSuccess: (_data, vars) => invalidateResearch(qc, vars.dossierId),
+  });
+}
+
+export function useStartAutonomousResearch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { dossierId: string; policy: import("./types").ResearchPolicy }) =>
+      api.startAutonomousResearch(vars.dossierId, vars.policy),
+    onSuccess: (_data, vars) => invalidateResearch(qc, vars.dossierId),
+  });
+}
+
+export function usePauseAutonomousResearch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (dossierId: string) => api.pauseAutonomousResearch(dossierId),
+    onSuccess: (_data, dossierId) => invalidateResearch(qc, dossierId),
+  });
+}
+
+export function useResumeAutonomousResearch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { dossierId: string; runId: string }) =>
+      api.resumeAutonomousResearch(vars.dossierId, vars.runId),
+    onSuccess: (_data, vars) => invalidateResearch(qc, vars.dossierId),
+  });
+}
+
+export function useRestartAutonomousResearch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { dossierId: string; policy: import("./types").ResearchPolicy }) =>
+      api.restartAutonomousResearch(vars.dossierId, vars.policy),
+    onSuccess: (_data, vars) => invalidateResearch(qc, vars.dossierId),
+  });
+}
+
+export function useMarkNotificationRead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (notificationId: string) => api.markNotificationRead(notificationId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.notifications() }),
   });
 }
 

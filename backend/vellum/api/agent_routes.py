@@ -51,6 +51,19 @@ class StartAgentRequest(BaseModel):
         return v
 
 
+class ResearchPolicyRequest(BaseModel):
+    policy: m.ResearchPolicy
+
+
+class StartResearchRequest(BaseModel):
+    policy: Optional[m.ResearchPolicy] = None
+    idempotency_key: Optional[str] = Field(default=None, min_length=8, max_length=200)
+
+
+class RestartResearchRequest(StartResearchRequest):
+    confirm: bool
+
+
 def _require_dossier(dossier_id: str) -> None:
     if storage.get_dossier(dossier_id) is None:
         raise HTTPException(404, "dossier not found")
@@ -73,6 +86,8 @@ async def start(
 ) -> dict:
     _require_dossier(dossier_id)
     params = body or StartAgentRequest()
+    if storage.get_active_research_run(dossier_id) is not None:
+        raise HTTPException(409, "an autonomous research run exists; use its research controls")
     # An explicit user start overrides self-heal quarantine and resets the
     # failure streak — the user is saying "try again".
     try:
@@ -90,54 +105,49 @@ async def start(
             active.id, m.WorkSessionEndReason.crashed
         )
 
-    try:
-        session = storage.start_work_session(
-            dossier_id, trigger=m.WorkSessionTrigger.manual
-        )
-    except storage.ActiveWorkSessionExists as exc:
-        return JSONResponse(
-            status_code=409,
-            content={
-                "detail": "work_session already active for this dossier",
-                "dossier_id": dossier_id,
-                "active_work_session_id": exc.session.id,
-            },
-        )
-
+    research_run = storage.get_active_research_run(dossier_id)
+    max_turns = params.max_turns
+    trigger = m.WorkSessionTrigger.manual
+    if research_run and research_run.status in {
+        m.ResearchRunStatus.queued, m.ResearchRunStatus.running,
+        m.ResearchRunStatus.waiting_for_user,
+    }:
+        trigger = m.WorkSessionTrigger.autonomous
+        max_turns = research_run.policy_snapshot.max_turns_per_session
+    holder: dict[str, str] = {}
+    def create_session() -> str:
+        session = storage.start_work_session(dossier_id, trigger=trigger)
+        holder["id"] = session.id
+        if trigger is m.WorkSessionTrigger.manual:
+            storage.mark_work_session_launched(session.id)
+        return session.id
     try:
         return await ORCHESTRATOR.start(
             dossier_id,
-            max_turns=params.max_turns,
+            max_turns=max_turns,
             model=params.model,
-            expected_session_id=session.id,
+            session_factory=create_session,
         )
     except AgentAlreadyRunning:
-        try:
-            storage.end_work_session(session.id)
-        except Exception:
-            logger.exception(
-                "agent/start: failed to close just-created session %s after "
-                "orchestrator reported AgentAlreadyRunning",
-                session.id,
-            )
         raise HTTPException(409, "agent already running for this dossier")
     except AgentCapacityExceeded:
-        try:
-            storage.end_work_session(session.id)
-        except Exception:
-            logger.exception(
-                "agent/start: failed to close just-created session %s after "
-                "orchestrator capacity rejection",
-                session.id,
-            )
         raise HTTPException(429, "agent capacity exceeded")
+    except storage.ActiveWorkSessionExists as exc:
+        return JSONResponse(status_code=409,content={"detail":"work_session already active for this dossier","dossier_id":dossier_id,"active_work_session_id":exc.session.id})
 
 
 @router.post("/dossiers/{dossier_id}/agent/stop")
 async def stop(dossier_id: str) -> dict:
     _require_dossier(dossier_id)
     try:
-        return await ORCHESTRATOR.stop(dossier_id, reason="user_stop")
+        result = await ORCHESTRATOR.stop(dossier_id, reason="user_stop")
+        dossier = storage.get_dossier(dossier_id)
+        if dossier is not None and dossier.research_policy.autonomy_enabled:
+            storage.pause_autonomous_research(dossier_id, "stopped_by_user")
+            wake = storage.get_dossier_wake_state(dossier_id)
+            if wake and wake.get("wake_reason") == m.WakeReason.autonomous_continue.value:
+                storage.clear_dossier_wake(dossier_id)
+        return result
     except AgentNotRunning:
         raise HTTPException(404, "no active agent for this dossier")
 
@@ -183,6 +193,8 @@ async def resume(dossier_id: str) -> dict:
     """
     if storage.get_dossier(dossier_id) is None:
         raise HTTPException(404, "dossier not found")
+    if storage.get_active_research_run(dossier_id) is not None:
+        raise HTTPException(409, "an autonomous research run exists; use its research controls")
 
     # An explicit user resume overrides self-heal quarantine and resets the
     # failure streak — the user is saying "try again".
@@ -286,6 +298,139 @@ def resume_state(dossier_id: str) -> dict:
     if state is None:
         raise HTTPException(404, "dossier not found")
     return state
+
+
+# ---------- bounded autonomous long research ----------
+
+
+@router.get(
+    "/dossiers/{dossier_id}/research",
+    response_model=m.ResearchProgress,
+)
+def research_progress(dossier_id: str) -> m.ResearchProgress:
+    progress = storage.get_research_progress(dossier_id)
+    if progress is None:
+        raise HTTPException(404, "dossier not found")
+    return progress
+
+
+@router.put(
+    "/dossiers/{dossier_id}/research/policy",
+    response_model=m.ResearchProgress,
+)
+def save_research_policy(
+    dossier_id: str, body: ResearchPolicyRequest
+) -> m.ResearchProgress:
+    dossier = storage.get_dossier(dossier_id)
+    if dossier is None:
+        raise HTTPException(404, "dossier not found")
+    # Saving limits is not a lifecycle action. Preserve the current enabled
+    # bit; POST /research/start and /research/pause own that transition.
+    policy = body.policy.model_copy(
+        update={
+            "autonomy_enabled": dossier.research_policy.autonomy_enabled
+        }
+    )
+    storage.update_research_policy(dossier_id, policy)
+    progress = storage.get_research_progress(dossier_id)
+    assert progress is not None
+    return progress
+
+
+@router.post(
+    "/dossiers/{dossier_id}/research/start",
+    response_model=m.ResearchProgress,
+)
+def start_research(
+    dossier_id: str, body: Optional[StartResearchRequest] = None
+) -> m.ResearchProgress:
+    _require_dossier(dossier_id)
+    if not bool(storage.get_setting("sleep_mode_enabled", True)):
+        raise HTTPException(
+            409,
+            "sleep mode must be enabled before autonomous research can start",
+        )
+    try:
+        progress = storage.start_autonomous_research(
+            dossier_id,
+            body.policy if body is not None else None,
+            idempotency_key=body.idempotency_key if body is not None else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if progress is None:
+        raise HTTPException(404, "dossier not found")
+    return progress
+
+
+@router.post(
+    "/dossiers/{dossier_id}/research/pause",
+    response_model=m.ResearchProgress,
+)
+def pause_research(dossier_id: str) -> m.ResearchProgress:
+    progress = storage.pause_autonomous_research(
+        dossier_id, "paused_by_user"
+    )
+    if progress is None:
+        raise HTTPException(404, "dossier not found")
+    return progress
+
+
+@router.get("/dossiers/{dossier_id}/research/runs", response_model=list[m.ResearchRun])
+def research_runs(dossier_id: str) -> list[m.ResearchRun]:
+    _require_dossier(dossier_id)
+    return storage.list_research_runs(dossier_id)
+
+
+@router.get("/dossiers/{dossier_id}/research/runs/{run_id}/evidence")
+def research_run_evidence(dossier_id: str, run_id: str) -> dict:
+    run = storage.get_research_run(run_id)
+    if run is None or run.dossier_id != dossier_id:
+        raise HTTPException(404, "research run not found")
+    return storage.get_research_evidence(run_id)
+
+
+@router.post("/dossiers/{dossier_id}/research/runs/{run_id}/pause", response_model=m.ResearchProgress)
+def pause_research_run(dossier_id: str, run_id: str) -> m.ResearchProgress:
+    active = storage.get_active_research_run(dossier_id)
+    if active is None or active.id != run_id:
+        raise HTTPException(409, "research run is not active")
+    progress = storage.pause_autonomous_research(dossier_id, "paused_by_user")
+    assert progress is not None
+    return progress
+
+
+@router.post("/dossiers/{dossier_id}/research/runs/{run_id}/resume", response_model=m.ResearchProgress)
+def resume_research_run(dossier_id: str, run_id: str) -> m.ResearchProgress:
+    try:
+        progress = storage.resume_autonomous_research(dossier_id, run_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if progress is None: raise HTTPException(404, "research run not found")
+    return progress
+
+
+@router.post("/dossiers/{dossier_id}/research/restart", response_model=m.ResearchProgress)
+def restart_research(dossier_id: str, body: RestartResearchRequest) -> m.ResearchProgress:
+    if not body.confirm: raise HTTPException(400, "confirm must be true to replace the current run")
+    try:
+        progress = storage.restart_autonomous_research(dossier_id, body.policy, idempotency_key=body.idempotency_key)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if progress is None: raise HTTPException(404, "dossier not found")
+    return progress
+
+
+@router.get("/notifications")
+def notifications(unread_only: bool = True) -> list[dict]:
+    return storage.list_notifications(unread_only=unread_only)
+
+
+@router.post("/notifications/{notification_id}/read")
+def read_notification(notification_id: str) -> dict:
+    if not storage.mark_notification_read(notification_id):
+        raise HTTPException(404, "notification not found")
+    return {"id": notification_id, "is_read": True}
 
 
 # ---------- day 3: computed dossier status ----------
