@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -36,6 +37,9 @@ from .. import storage
 from ..config import ANTHROPIC_API_KEY, MODEL, cost_usd_for_turn
 from ..tools import handlers
 from .compactor import _estimate_tokens as _compactor_estimate_tokens, compact_messages, should_compact
+
+
+logger = logging.getLogger(__name__)
 
 
 # Anthropic's built-in server-side web search tool. Versioned type string —
@@ -74,6 +78,7 @@ _DOSSIER_WRITE_TOOLS: list[str] = [
     "record_premise_challenge", "add_artifact", "update_artifact",
     "spawn_sub_investigation", "complete_sub_investigation", "update_sub_investigation",
     "log_source_consulted", "mark_considered_and_rejected", "set_next_action",
+    "record_disconfirmation", "audit_research_completion",
     "declare_stuck", "schedule_wake", "mark_investigation_delivered", "summarize_session",
 ]
 
@@ -194,6 +199,24 @@ class DossierAgent:
         _end_reason: Optional[m.WorkSessionEndReason] = None
         try:
             while state.turns < max_turns:
+                # Persist the attempt before the external model call so a
+                # crash/time-out still consumes the immutable run turn budget.
+                reservation = storage.reserve_model_call(session_id)
+                if not reservation["allowed"]:
+                    denied_reason = reservation["reason"]
+                    _end_reason = (
+                        m.WorkSessionEndReason.budget_soft_signal
+                        if denied_reason in {"cost_cap_reached", "session_cap_reached"}
+                        else m.WorkSessionEndReason.stopped
+                        if denied_reason in {"paused", "pause_requested", "blocked_sleep", "quarantined"}
+                        else m.WorkSessionEndReason.turn_limit
+                    )
+                    return RunResult(
+                        reason=_end_reason.value,
+                        turns=state.turns,
+                        session_id=session_id,
+                        error=f"model call denied: {denied_reason}",
+                    )
                 # anthropic SDK requires streaming for operations that may
                 # exceed 10 minutes. With max_tokens=32000 + web_search the
                 # SDK guards against the non-streaming path. Use the stream
@@ -265,6 +288,24 @@ class DossierAgent:
                 state.messages.append(
                     {"role": "assistant", "content": serialized_content}
                 )
+
+                # Capture search discoveries and citations even when the API
+                # asks us to continue via pause_turn. Encrypted result payloads
+                # remain only in message history and are never persisted.
+                try:
+                    from . import evidence as evidence_mod
+
+                    evidence_mod.persist_anthropic_evidence(
+                        self.dossier_id,
+                        serialized_content,
+                        work_session_id=session_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "runtime: evidence capture failed for dossier %s",
+                        self.dossier_id,
+                        exc_info=True,
+                    )
 
                 # Count every stream call (including pause_turn continuations)
                 # so RunResult.turns matches client.messages.stream.call_count.
@@ -368,7 +409,7 @@ class DossierAgent:
                         needs_input_in_turn = True
 
                     result_block = await self._dispatch_client_tool(
-                        tool_name, tool_input, tu.id
+                        tool_name, tool_input, tu.id, session_id=session_id
                     )
                     tool_results.append(result_block)
 
@@ -502,6 +543,13 @@ class DossierAgent:
                 try:
                     dossier = storage.get_dossier(self.dossier_id)
                     if dossier is not None and dossier.status != m.DossierStatus.delivered:
+                        research_autonomy = bool(
+                            getattr(
+                                getattr(dossier, "research_policy", None),
+                                "autonomy_enabled",
+                                False,
+                            )
+                        )
                         cadence = getattr(
                             getattr(dossier, "check_in_policy", None),
                             "cadence",
@@ -512,7 +560,7 @@ class DossierAgent:
                             not wake_state.get("wake_pending")
                             and wake_state.get("wake_at") is None
                         )
-                        if no_wake_set and cadence in (
+                        if not research_autonomy and no_wake_set and cadence in (
                             m.CheckInCadence.daily,
                             m.CheckInCadence.weekly,
                         ):
@@ -529,6 +577,22 @@ class DossierAgent:
                 storage.end_work_session_with_reason(session_id, _end_reason)
             else:
                 storage.end_work_session(session_id)
+            # A long-research run continues as a series of bounded durable
+            # sessions. The scheduler owns the next launch; this call only
+            # decides whether another wake is allowed by the dossier policy.
+            if _end_reason is not None:
+                try:
+                    from . import autonomy as autonomy_mod
+
+                    autonomy_mod.after_session(
+                        self.dossier_id, session_id, _end_reason
+                    )
+                except Exception:
+                    logger.warning(
+                        "runtime: autonomous continuation check failed for dossier %s",
+                        self.dossier_id,
+                        exc_info=True,
+                    )
             # Self-heal: an error end schedules its own backoff retry (or
             # quarantines after repeated failures); any healthy end resets
             # the failure streak. Both are best-effort and never raise.
@@ -587,7 +651,8 @@ class DossierAgent:
         return [{"type": "text", "text": snapshot_text}]
 
     async def _dispatch_client_tool(
-        self, tool_name: str, tool_input: dict[str, Any], tool_use_id: str
+        self, tool_name: str, tool_input: dict[str, Any], tool_use_id: str,
+        session_id: Optional[str] = None,
     ) -> dict[str, Any]:
         if (
             tool_name not in handlers.HANDLERS
@@ -600,21 +665,89 @@ class DossierAgent:
                 "is_error": True,
             }
 
-        # Idempotency: if this tool_use_id has already been dispatched,
-        # return the recorded result instead of re-running the handler.
-        # Under Path A this should be rare (new sessions don't replay
-        # message history), but the shim is migration-proof for Path B/C
-        # and closes the "double upsert_section lies to the plan-diff"
-        # failure mode if runtime dispatch ever re-iterates a response.
-        prior = await asyncio.to_thread(
-            storage.get_tool_invocation, tool_use_id
-        )
-        if prior is not None:
+        # Handlers historically pop fields from their input dict. Capture the
+        # audit hash before dispatch so it always describes model input.
+        input_hash = _hash_tool_input(tool_input)
+
+        # Default handlers are SQLite-only. Run their writes and invocation
+        # completion in one unit of work so neither can commit without the
+        # other. Overrides (notably synchronous sub-agent spawning) may cross
+        # a network boundary and therefore use the durable saga below.
+        if tool_name not in handlers.HANDLER_OVERRIDES:
+            try:
+                executed = await asyncio.to_thread(
+                    storage.execute_db_tool_invocation,
+                    tool_use_id,
+                    self.dossier_id,
+                    tool_name,
+                    input_hash,
+                    lambda: handlers.dispatch(
+                        self.dossier_id, tool_name, tool_input
+                    ),
+                    session_id,
+                )
+            except Exception as exc:
+                return {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": f"{type(exc).__name__}: {exc}",
+                    "is_error": True,
+                }
+            if executed["state"] != "completed":
+                return {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": json.dumps({
+                        "ok": False,
+                        "reason": "tool_invocation_in_progress",
+                        "message": "This exact call was already claimed; it will not be replayed automatically.",
+                    }),
+                    "is_error": True,
+                }
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": executed["result_json"],
+                **({"is_error": True} if executed["is_error"] else {}),
+            }
+
+        # Claim before any handler mutation. A crash may leave an in-progress
+        # saga for operator reconciliation, but it can no longer replay a
+        # non-idempotent write and silently duplicate user-visible state.
+        try:
+            claim = await asyncio.to_thread(
+                storage.claim_tool_invocation,
+                tool_use_id,
+                self.dossier_id,
+                tool_name,
+                input_hash,
+                session_id,
+            )
+        except Exception as exc:
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": f"{type(exc).__name__}: {exc}",
+                "is_error": True,
+            }
+        if claim["state"] == "completed":
+            prior = claim["invocation"]
             return {
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
                 "content": prior["result_json"],
                 "is_error": prior["is_error"],
+            }
+        if claim["state"] == "in_progress":
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": json.dumps({
+                    "ok": False,
+                    "reason": "tool_invocation_in_progress",
+                    "message": "This exact call was already claimed; it will not be replayed automatically.",
+                }),
+                "is_error": True,
             }
 
         try:
@@ -633,11 +766,9 @@ class DossierAgent:
             err_content = f"{type(exc).__name__}: {exc}"
             try:
                 await asyncio.to_thread(
-                    storage.record_tool_invocation,
+                    storage.complete_tool_invocation,
                     tool_use_id,
-                    self.dossier_id,
-                    tool_name,
-                    _hash_tool_input(tool_input),
+                    input_hash,
                     err_content,
                     True,
                 )
@@ -663,11 +794,9 @@ class DossierAgent:
         result_json = _coerce_tool_result(result)
         try:
             await asyncio.to_thread(
-                storage.record_tool_invocation,
+                storage.complete_tool_invocation,
                 tool_use_id,
-                self.dossier_id,
-                tool_name,
-                _hash_tool_input(tool_input),
+                input_hash,
                 result_json,
                 False,
             )

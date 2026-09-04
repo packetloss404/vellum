@@ -14,6 +14,7 @@ Exports:
 from __future__ import annotations
 
 from .prompt import _sanitize_user_field
+from . import research_strategy
 
 
 SUB_INVESTIGATION_SYSTEM_PROMPT: str = """You are a Vellum sub-investigator. The main \
@@ -101,6 +102,15 @@ exit: unless the scope is genuinely a one-lookup question, consult more sources 
 returning. A three-source return saying "needs more work" is a failure, not a deliverable.
 
 Once you call `complete_sub_investigation`, you are done."""
+
+
+def build_sub_system_prompt(policy) -> str:
+    """Add the parent dossier's Standard/Deep method to the bounded prompt."""
+    return (
+        SUB_INVESTIGATION_SYSTEM_PROMPT
+        + "\n\n# Research method inherited from the parent\n\n"
+        + research_strategy.render_for_sub(policy)
+    )
 
 
 def render_sub_scope(scope: str, questions: list[str]) -> str:

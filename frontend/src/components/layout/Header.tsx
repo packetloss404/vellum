@@ -2,6 +2,7 @@ import React from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Pill } from "../common/Pill";
 import type { DossierStatus } from "../../api/types";
+import { NotificationCenter } from "./NotificationCenter";
 
 /**
  * Header — the single piece of chrome above every page.
@@ -88,6 +89,7 @@ export function Header({ title, dossier }: HeaderProps) {
         )}
 
         <div className="shrink-0 flex items-center gap-4">
+          <NotificationCenter />
           {!onHome ? (
             <Link
               to="/"

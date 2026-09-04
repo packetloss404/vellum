@@ -52,6 +52,13 @@ def set_dossier_wake_at(
             "UPDATE dossiers SET wake_at = ?, wake_reason = ? WHERE id = ?",
             (_dt_str(wake_at), reason.value, dossier_id),
         )
+    from .research import get_active_research_run, schedule_research_wake
+    run = get_active_research_run(dossier_id)
+    if run and run.status in {m.ResearchRunStatus.queued, m.ResearchRunStatus.running}:
+        try:
+            schedule_research_wake(dossier_id, run.id, reason, wake_at)
+        except ValueError:
+            pass  # lifecycle transition won the race
 
 
 def mark_wake_pending(dossier_id: str, reason: m.WakeReason) -> None:
@@ -61,6 +68,22 @@ def mark_wake_pending(dossier_id: str, reason: m.WakeReason) -> None:
             "UPDATE dossiers SET wake_pending = 1, wake_reason = ? WHERE id = ?",
             (reason.value, dossier_id),
         )
+    from .research import get_active_research_run, schedule_research_wake
+    run = get_active_research_run(dossier_id)
+    if run and run.status in {
+        m.ResearchRunStatus.queued,
+        m.ResearchRunStatus.running,
+        m.ResearchRunStatus.waiting_for_user,
+    }:
+        # A user answer/note is a new generation of the same bounded run.
+        if run.status is m.ResearchRunStatus.waiting_for_user:
+            from .research import resume_waiting_research_run
+            resume_waiting_research_run(dossier_id, run.id, reason)
+        else:
+            try:
+                schedule_research_wake(dossier_id, run.id, reason)
+            except ValueError:
+                pass  # pause/restart won the race
 
 
 def clear_dossier_wake(dossier_id: str) -> None:
@@ -139,11 +162,28 @@ def set_dossier_quarantined(dossier_id: str, reason: str) -> None:
     the quarantine decision can't leak through a scheduler tick.
     """
     with connect() as conn:
+        now_s = _dt_str(m.utc_now())
         conn.execute(
             "UPDATE dossiers SET quarantined_at = ?, quarantine_reason = ?, "
             "wake_at = NULL, wake_pending = 0 WHERE id = ?",
-            (_dt_str(m.utc_now()), reason, dossier_id),
+            (now_s, reason, dossier_id),
         )
+        run = conn.execute(
+            "SELECT * FROM research_runs WHERE dossier_id=? AND status IN "
+            "('queued','running','pause_requested','waiting_for_user','blocked_sleep','paused','cap_reached') "
+            "ORDER BY started_at DESC LIMIT 1", (dossier_id,),
+        ).fetchone()
+        if run:
+            version = int(run["state_version"]) + 1
+            conn.execute("UPDATE research_runs SET status='quarantined',state_version=?,stop_reason=?,updated_at=? WHERE id=?",
+                         (version, reason, now_s, run["id"]))
+            conn.execute("UPDATE research_wakes SET state='cancelled',updated_at=? WHERE run_id=? AND state IN ('pending','leased')", (now_s, run["id"]))
+            event_id=m.new_id("rev")
+            payload=json.dumps({"reason":reason},separators=(",",":"))
+            conn.execute("INSERT INTO research_run_events (id,run_id,event_type,payload,transition_version,created_at) VALUES (?,?,?,?,?,?)",
+                         (event_id,run["id"],"run_quarantined",payload,version,now_s))
+            conn.execute("INSERT INTO notifications (id,dossier_id,run_id,event_id,event_type,payload,is_read,created_at) VALUES (?,?,?,?,?,?,0,?)",
+                         (m.new_id("not"),dossier_id,run["id"],event_id,"run_quarantined",payload,now_s))
 
 
 def clear_dossier_quarantine(dossier_id: str) -> None:

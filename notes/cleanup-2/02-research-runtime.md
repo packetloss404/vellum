@@ -1,5 +1,10 @@
 # Vellum — Cleanup 2 Research: Runtime & Stuck-Detection Refactor
 
+> **Historical research snapshot (2026-08-02).** Shipped findings are recorded
+> in `99-summary.md`; surviving runtime work is reconciled into
+> [`BACKLOG.md`](../../BACKLOG.md) and sequenced in
+> [`docs/IMPLEMENTATION_PLAN.md`](../../docs/IMPLEMENTATION_PLAN.md).
+
 **Scope:** six refactor candidates feeding the second cleanup pass. Read against
 `D:\projects\Vellum\backend\vellum\` on 2026-08-02. All citations are
 `file_path:line_number`. The five "sharp edge" items from

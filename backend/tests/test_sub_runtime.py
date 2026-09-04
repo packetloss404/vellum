@@ -170,6 +170,7 @@ def test_tool_filter_excludes_main_only_and_spawn(fresh_db):
         "log_source_consulted",
         "mark_considered_and_rejected",
         "complete_sub_investigation",
+        "record_disconfirmation",
         "web_search",
     ):
         assert required in names, f"missing expected tool {required}"
@@ -195,6 +196,57 @@ def test_tool_filter_excludes_main_only_and_spawn(fresh_db):
         "update_artifact",
     ):
         assert forbidden not in names, f"tool {forbidden} leaked into sub-agent set"
+
+
+def test_sub_pause_turn_persists_web_search_discovery(fresh_db):
+    from vellum import models as m, storage
+    from vellum.agent import sub_runtime
+
+    dossier = _mk_dossier()
+    sub = storage.spawn_sub_investigation(
+        dossier.id, m.SubInvestigationSpawn(scope="pause evidence", questions=["Q?"])
+    )
+
+    @dataclass
+    class SearchBlock:
+        type: str = "web_search_tool_result"
+
+        def model_dump(self):
+            return {
+                "type": self.type,
+                "tool_use_id": "srvtoolu_sub_pause",
+                "content": [{
+                    "type": "web_search_result",
+                    "url": "https://example.com/sub-pause",
+                    "title": "Sub pause",
+                    "encrypted_content": "do-not-store",
+                }],
+            }
+
+    responses = [
+        _Response(content=[SearchBlock()], stop_reason="pause_turn", usage=_Usage()),
+        _Response(content=[_tool_use(
+            "complete_sub_investigation",
+            {"return_summary": "Answer found; confidence medium.", "findings_section_ids": [], "findings_artifact_ids": []},
+            id_="tu_sub_pause_complete",
+        )], stop_reason="tool_use", usage=_Usage()),
+    ]
+    with patch(
+        "vellum.agent.sub_runtime.anthropic.AsyncAnthropic",
+        return_value=_make_mock_client(responses),
+    ):
+        asyncio.run(sub_runtime.run_sub_investigation(
+            dossier.id, sub.id, sub.scope, sub.questions, max_turns=3
+        ))
+
+    from vellum.db import connect
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT eo.provenance FROM evidence_observations eo JOIN evidence_sources es ON es.id=eo.source_id "
+            "WHERE es.dossier_id=? AND es.canonical_url=?",
+            (dossier.id, "https://example.com/sub-pause"),
+        ).fetchone()
+    assert row is not None and row["provenance"] == "discovered"
 
 
 def test_spawn_handler_inserts_sub_row(fresh_db):

@@ -1,5 +1,11 @@
 # Vellum — Frontend Consolidation Research (Cleanup Pass 2)
 
+> **Historical research snapshot (2026-08-02).** Most consolidation work below
+> shipped during cleanup-2. The remaining deterministic sidebar test and intake
+> pending-state fix are tracked in [`BACKLOG.md`](../../BACKLOG.md); use
+> [`docs/IMPLEMENTATION_PLAN.md`](../../docs/IMPLEMENTATION_PLAN.md) for current
+> sequencing.
+
 **Scope:** 6 items from the deep-dive brief (§3 risky/weak + §8 recommendations), focused on the frontend. The previous one-shot cleanup pass handled 6 small items (deleted `types.generated.ts`, set up vitest with 3 smoke tests); this report feeds the deeper 2nd cleanup pass.
 
 **Workspace root:** `D:\projects\Vellum`

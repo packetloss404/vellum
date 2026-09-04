@@ -86,6 +86,197 @@ class CheckInPolicy(BaseModel):
     notes: str = ""
 
 
+class ResearchDepth(str, Enum):
+    """How exhaustive the evidence-gathering loop should be."""
+
+    standard = "standard"
+    deep = "deep"
+
+
+class ResearchPolicy(BaseModel):
+    """Per-dossier contract for evidence quality and unattended continuation.
+
+    Source targets are quality guides, not permission to pad the bibliography.
+    The session and cost limits are hard autonomy boundaries: crossing either
+    pauses future automatic sessions but never cancels a turn in flight.
+    """
+
+    depth: ResearchDepth = ResearchDepth.standard
+    autonomy_enabled: bool = False
+    max_sessions: int = Field(default=4, ge=1, le=50)
+    max_turns_per_session: int = Field(default=30, ge=5, le=200)
+    max_cost_usd: float = Field(default=12.0, gt=0, le=1000)
+    target_source_count: int = Field(default=20, ge=1, le=500)
+    min_primary_sources: int = Field(default=3, ge=0, le=100)
+    continuation_delay_minutes: float = Field(default=1.0, ge=0.1, le=1440)
+
+    @field_validator("min_primary_sources")
+    @classmethod
+    def primary_target_must_be_reachable(cls, value: int, info):
+        target = info.data.get("target_source_count")
+        if target is not None and value > target:
+            raise ValueError("min_primary_sources cannot exceed target_source_count")
+        return value
+
+
+class ResearchRunStatus(str, Enum):
+    queued = "queued"
+    running = "running"
+    pause_requested = "pause_requested"
+    waiting_for_user = "waiting_for_user"
+    blocked_sleep = "blocked_sleep"
+    paused = "paused"
+    completed = "completed"
+    cap_reached = "cap_reached"
+    failed = "failed"
+    quarantined = "quarantined"
+    cancelled = "cancelled"
+    superseded = "superseded"
+
+
+class ResearchRun(BaseModel):
+    id: str
+    dossier_id: str
+    policy_snapshot: ResearchPolicy
+    depth: ResearchDepth
+    strategy_version: str = "v1"
+    status: ResearchRunStatus
+    initiated_by: str = "user"
+    state_version: int = 1
+    started_at: datetime
+    updated_at: datetime
+    ended_at: Optional[datetime] = None
+    stop_reason: Optional[str] = None
+    completion_reason: Optional[str] = None
+    sessions_started: int = 0
+    cost_usd: float = 0.0
+
+
+class ResearchRunEvent(BaseModel):
+    id: str
+    run_id: str
+    work_session_id: Optional[str] = None
+    event_type: str
+    payload: dict = Field(default_factory=dict)
+    transition_version: int
+    created_at: datetime
+
+
+class EvidenceSource(BaseModel):
+    id: str
+    dossier_id: str
+    canonical_url: str
+    original_url: str
+    title: Optional[str] = None
+    domain: Optional[str] = None
+    source_kind: str = "web"
+    model_source_type: Optional[str] = None
+    model_authority: Optional[str] = None
+    authority_status: str = "unverified"
+    authority_basis: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class EvidenceObservation(BaseModel):
+    id: str
+    source_id: str
+    run_id: Optional[str] = None
+    work_session_id: Optional[str] = None
+    provenance: Literal["discovered", "cited", "consulted", "user_provided"]
+    retrieved_at: Optional[datetime] = None
+    page_age: Optional[str] = None
+    published_at: Optional[datetime] = None
+    excerpt: Optional[str] = None
+    excerpt_sha256: Optional[str] = None
+    limitations: Optional[str] = None
+    provider: Optional[str] = None
+    provider_ref: Optional[str] = None
+    created_at: datetime
+
+
+class ResearchClaim(BaseModel):
+    id: str
+    dossier_id: str
+    run_id: Optional[str] = None
+    plan_item_id: Optional[str] = None
+    section_id: Optional[str] = None
+    claim_text: str
+    materiality: str = "supporting"
+    status: str = "draft"
+    primary_required: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+
+class ClaimEvidence(BaseModel):
+    claim_id: str
+    observation_id: str
+    relation: str
+    excerpt: Optional[str] = None
+    created_at: datetime
+
+
+class ResearchCompletionCheck(BaseModel):
+    key: str
+    label: str
+    passed: bool
+    current: float = 0
+    target: float = 0
+    detail: str = ""
+
+
+class ResearchCompletionReport(BaseModel):
+    ready: bool = False
+    checks: list[ResearchCompletionCheck] = Field(default_factory=list)
+    completed_plan_items: int = 0
+    abandoned_plan_items: int = 0
+    total_plan_items: int = 0
+
+
+class ResearchProgress(BaseModel):
+    dossier_id: str
+    run_id: Optional[str] = None
+    status: Literal[
+        "manual",
+        "queued",
+        "running",
+        "pause_requested",
+        "waiting_for_user",
+        "blocked_sleep",
+        "paused",
+        "cap_reached",
+        "completed",
+        "failed",
+        "quarantined",
+        "cancelled",
+        "superseded",
+        "delivered",
+    ]
+    policy: ResearchPolicy
+    started_at: Optional[datetime] = None
+    stop_reason: Optional[str] = None
+    sessions_used: int = 0
+    cost_usd: float = 0.0
+    source_count: int = 0
+    unique_source_count: int = 0
+    primary_source_count: int = 0
+    unique_domains: int = 0
+    sources_linked_to_sections: int = 0
+    sources_with_limitations: int = 0
+    contradictory_sources: int = 0
+    completed_plan_items: int = 0
+    total_plan_items: int = 0
+    open_needs_input_count: int = 0
+    open_decision_point_count: int = 0
+    active_run_id: Optional[str] = None
+    run_version: Optional[int] = None
+    allowed_actions: list[Literal["start", "pause", "resume", "restart"]] = Field(default_factory=list)
+    active_session_id: Optional[str] = None
+    next_wake_at: Optional[datetime] = None
+    completion_report: ResearchCompletionReport = Field(default_factory=ResearchCompletionReport)
+
+
 class InvestigationPlanItem(BaseModel):
     id: str = Field(default_factory=lambda: new_id("pli"))  # prefix: "pli"
     question: str
@@ -217,6 +408,9 @@ class Dossier(BaseModel):
     dossier_type: DossierType
     status: DossierStatus = DossierStatus.active
     check_in_policy: CheckInPolicy = Field(default_factory=CheckInPolicy)
+    research_policy: ResearchPolicy = Field(default_factory=ResearchPolicy)
+    research_started_at: Optional[datetime] = None
+    research_stop_reason: Optional[str] = None
     debrief: Optional[Debrief] = None
     investigation_plan: Optional[InvestigationPlan] = None
     working_theory: Optional[WorkingTheory] = None
@@ -318,6 +512,7 @@ class WorkSessionTrigger(str, Enum):
     resume = "resume"
     intake = "intake"
     manual = "manual"
+    autonomous = "autonomous"
 
 
 class WorkSessionEndReason(str, Enum):
@@ -343,6 +538,12 @@ class WorkSession(BaseModel):
     cost_usd: float = 0.0
     end_reason: Optional[WorkSessionEndReason] = None
     trace_id: str = ""
+    research_run_id: Optional[str] = None
+    wake_id: Optional[str] = None
+    max_turns_snapshot: Optional[int] = None
+    turns_started: int = 0
+    launched_at: Optional[datetime] = None
+    launch_state: str = "created"
 
 
 class WakeReason(str, Enum):
@@ -352,6 +553,7 @@ class WakeReason(str, Enum):
     decision_resolved = "decision_resolved"
     error_retry = "error_retry"
     user_note = "user_note"
+    autonomous_continue = "autonomous_continue"
 
 
 class ScheduleWakeArgs(BaseModel):
@@ -486,6 +688,7 @@ class DossierCreate(BaseModel):
     out_of_scope: list[str] = Field(default_factory=list)
     dossier_type: DossierType = DossierType.investigation
     check_in_policy: CheckInPolicy = Field(default_factory=CheckInPolicy)
+    research_policy: ResearchPolicy = Field(default_factory=ResearchPolicy)
 
 
 class DossierUpdate(BaseModel):

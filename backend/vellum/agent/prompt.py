@@ -111,6 +111,20 @@ with `upsert_section`, including tradeoffs and sources. Draft usable objects wit
 Log serious rejected paths with `mark_considered_and_rejected`; `cost_of_error` is the load-bearing
 field. Explain what failure costs if that rejected path was actually right.
 
+# Evidence protocol
+
+Treat research as claim coverage, not a pile of links. For each plan item: identify the claims that
+would change the recommendation; prefer primary/official material; use independent secondary
+sources to interpret it; actively search for disconfirming evidence; and record source date,
+authority, key claims, and limitations in `log_source_consulted`. Link evidence to its plan item and
+to the sections it supports or contradicts. Never count a search-result snippet as a read source.
+
+Before raising confidence or delivering, run a coverage audit: every material claim has evidence;
+important claims are triangulated where practical; contradictory evidence is represented rather
+than averaged away; stale or jurisdiction-mismatched sources are qualified; and unfinished plan
+items are completed, explicitly blocked, or abandoned with a reason. Source-count targets are
+guidance, never permission to pad with duplicates or low-authority rewrites of the same claim.
+
 # Structured writes only
 
 Every user-visible change must be a tool call: `update_investigation_plan`, `record_premise_challenge`,
@@ -167,6 +181,7 @@ SYSTEM_PROMPT: str = MAIN_AGENT_SYSTEM_PROMPT
 
 def build_system_prompt(dossier: "m.Dossier") -> str:
     """Returns the static prompt plus dossier-specific framing."""
+    from . import research_strategy
     oos = dossier.out_of_scope or []
     oos_block = (
         "\n".join(f"- {_sanitize_user_field(item)}" for item in oos)
@@ -177,6 +192,14 @@ def build_system_prompt(dossier: "m.Dossier") -> str:
     policy_line = f"cadence={policy.cadence.value}"
     if policy.notes:
         policy_line += f"; notes: {_sanitize_user_field(policy.notes)}"
+    research = dossier.research_policy
+    research_line = (
+        f"depth={research.depth.value}; autonomy={research.autonomy_enabled}; "
+        f"session_limit={research.max_sessions}; turns_per_session={research.max_turns_per_session}; "
+        f"cost_limit=${research.max_cost_usd:.2f}; "
+        f"source_target={research.target_source_count}; "
+        f"primary_source_minimum={research.min_primary_sources}"
+    )
 
     problem = (dossier.problem_statement or "")[:_MAX_PROBLEM_STATEMENT_LEN]
     problem_safe = _sanitize_user_field(problem)
@@ -198,6 +221,12 @@ def build_system_prompt(dossier: "m.Dossier") -> str:
 
 ## Check-in policy
 {policy_line}
+
+## Research policy
+{research_line}
+
+## Required research method
+{research_strategy.render(research)}
 """
     return MAIN_AGENT_SYSTEM_PROMPT + context
 
@@ -218,6 +247,14 @@ def render_dossier_context(dossier: "m.Dossier") -> str:
     policy_line = f"cadence={policy.cadence.value}"
     if policy.notes:
         policy_line += f"; notes: {_sanitize_user_field(policy.notes)}"
+    research = dossier.research_policy
+    research_line = (
+        f"depth={research.depth.value}; autonomy={research.autonomy_enabled}; "
+        f"session_limit={research.max_sessions}; turns_per_session={research.max_turns_per_session}; "
+        f"cost_limit=${research.max_cost_usd:.2f}; "
+        f"source_target={research.target_source_count}; "
+        f"primary_source_minimum={research.min_primary_sources}"
+    )
 
     problem = (dossier.problem_statement or "")[:_MAX_PROBLEM_STATEMENT_LEN]
     problem_safe = _sanitize_user_field(problem)
@@ -237,6 +274,9 @@ def render_dossier_context(dossier: "m.Dossier") -> str:
 
 ## Check-in policy
 {policy_line}
+
+## Research policy
+{research_line}
 """
 
 
@@ -372,6 +412,39 @@ def build_state_snapshot(dossier_full: "m.DossierFull") -> str:
     bp = _budget_pressure_block(now)
     if bp is not None:
         lines.append(bp)
+        lines.append("")
+
+    # Long-research progress is computed from durable sessions and evidence
+    # logs, so a fresh process can resume without relying on conversation
+    # memory. Best-effort: a reporting failure must not break the agent turn.
+    try:
+        from .. import storage as _storage
+
+        rp = _storage.get_research_progress(d.id)
+    except Exception:
+        rp = None
+    if rp is not None:
+        lines.append("## Research progress")
+        lines.append(
+            f"mode={rp.policy.depth.value} autonomy={rp.policy.autonomy_enabled} "
+            f"status={rp.status}"
+        )
+        lines.append(
+            f"sessions={rp.sessions_used}/{rp.policy.max_sessions} "
+            f"cost=${rp.cost_usd:.2f}/${rp.policy.max_cost_usd:.2f}"
+        )
+        lines.append(
+            f"sources={rp.unique_source_count}/{rp.policy.target_source_count} unique "
+            f"({rp.primary_source_count}/{rp.policy.min_primary_sources} primary, "
+            f"{rp.unique_domains} domains, {rp.contradictory_sources} contradictory)"
+        )
+        lines.append(
+            f"plan_items={rp.completed_plan_items}/{rp.total_plan_items} complete; "
+            f"linked_sources={rp.sources_linked_to_sections}; "
+            f"sources_with_limitations={rp.sources_with_limitations}"
+        )
+        if rp.stop_reason:
+            lines.append(f"autonomy_note={rp.stop_reason}")
         lines.append("")
 
     # Working theory — current belief, if any.

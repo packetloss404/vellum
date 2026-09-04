@@ -13,6 +13,11 @@ import type {
   IntakeStartResult,
   IntakeTurnResult,
   NeedsInput,
+  ResearchPolicy,
+  ResearchProgress,
+  ResearchRun,
+  ResearchEvidence,
+  NotificationEntry,
   SettingEntry,
   UserNote,
   // v2
@@ -198,6 +203,66 @@ export const api = {
       wake_pending: boolean;
       wake_reason: string | null;
     }>("GET", `/api/dossiers/${dossierId}/resume-state`),
+
+  getResearchProgress: (dossierId: string) =>
+    request<ResearchProgress>("GET", `/api/dossiers/${dossierId}/research`),
+
+  saveResearchPolicy: (dossierId: string, policy: ResearchPolicy) =>
+    request<ResearchProgress>(
+      "PUT",
+      `/api/dossiers/${dossierId}/research/policy`,
+      { policy },
+    ),
+
+  startAutonomousResearch: (dossierId: string, policy: ResearchPolicy) =>
+    request<ResearchProgress>(
+      "POST",
+      `/api/dossiers/${dossierId}/research/start`,
+      { policy, idempotency_key: crypto.randomUUID() },
+    ),
+
+  pauseAutonomousResearch: (dossierId: string) =>
+    request<ResearchProgress>(
+      "POST",
+      `/api/dossiers/${dossierId}/research/pause`,
+    ),
+
+  resumeAutonomousResearch: (dossierId: string, runId: string) =>
+    request<ResearchProgress>(
+      "POST",
+      `/api/dossiers/${dossierId}/research/runs/${runId}/resume`,
+    ),
+
+  restartAutonomousResearch: (dossierId: string, policy: ResearchPolicy) =>
+    request<ResearchProgress>(
+      "POST",
+      `/api/dossiers/${dossierId}/research/restart`,
+      { policy, idempotency_key: crypto.randomUUID(), confirm: true },
+    ),
+
+  listResearchRuns: (dossierId: string) =>
+    request<ResearchRun[]>(
+      "GET",
+      `/api/dossiers/${dossierId}/research/runs`,
+    ),
+
+  getResearchEvidence: (dossierId: string, runId: string) =>
+    request<ResearchEvidence>(
+      "GET",
+      `/api/dossiers/${dossierId}/research/runs/${runId}/evidence`,
+    ),
+
+  listNotifications: (unreadOnly = true) =>
+    request<NotificationEntry[]>(
+      "GET",
+      `/api/notifications${qs({ unread_only: String(unreadOnly) })}`,
+    ),
+
+  markNotificationRead: (notificationId: string) =>
+    request<{ id: string; is_read: true }>(
+      "POST",
+      `/api/notifications/${notificationId}/read`,
+    ),
 
   // ---------- v2: Artifacts ----------
   createArtifact: (

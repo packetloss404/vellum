@@ -1,12 +1,15 @@
 import json
 import sqlite3
+import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config
 
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+_ACTIVE_UNIT_OF_WORK: ContextVar[sqlite3.Connection | None] = ContextVar("vellum_active_uow", default=None)
 
 
 # SQLite's CREATE TABLE IF NOT EXISTS does not add new columns to a table that
@@ -61,6 +64,25 @@ _REQUIRED_COLUMNS: list[tuple[str, str, str]] = [
     # information the escalation_count alone doesn't carry. NULL-tolerant
     # on existing rows; the ratchet's ALTER TABLE adds it as TEXT NULL.
     ("dossiers", "last_signal_kind", "TEXT"),
+    # Long-research autonomy. Policy is stored as one versionable JSON value;
+    # lifecycle timestamps remain scalar so progress queries stay cheap.
+    (
+        "dossiers",
+        "research_policy",
+        "TEXT NOT NULL DEFAULT '{\"depth\":\"standard\",\"autonomy_enabled\":false,\"max_sessions\":4,\"max_turns_per_session\":30,\"max_cost_usd\":12.0,\"target_source_count\":20,\"min_primary_sources\":3,\"continuation_delay_minutes\":1.0}'",
+    ),
+    ("dossiers", "research_started_at", "TEXT"),
+    ("dossiers", "research_stop_reason", "TEXT"),
+    ("work_sessions", "research_run_id", "TEXT"),
+    ("work_sessions", "wake_id", "TEXT"),
+    ("work_sessions", "max_turns_snapshot", "INTEGER"),
+    ("work_sessions", "turns_started", "INTEGER NOT NULL DEFAULT 0"),
+    ("work_sessions", "launched_at", "TEXT"),
+    ("work_sessions", "launch_state", "TEXT NOT NULL DEFAULT 'created'"),
+    ("evidence_observations", "limitations", "TEXT"),
+    ("tool_invocations", "state", "TEXT NOT NULL DEFAULT 'completed'"),
+    ("tool_invocations", "claimed_at", "TEXT"),
+    ("tool_invocations", "completed_at", "TEXT"),
 ]
 
 
@@ -156,6 +178,22 @@ _REQUIRED_INDICES: list[str] = [
     ON decision_points(dossier_id)
     WHERE kind = 'plan_approval' AND resolved_at IS NULL
     """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_research_runs_one_live_per_dossier
+    ON research_runs(dossier_id)
+    WHERE status IN ('queued','running','pause_requested','waiting_for_user','blocked_sleep','paused','cap_reached','quarantined')
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_research_runs_start_key
+    ON research_runs(dossier_id, start_idempotency_key)
+    WHERE start_idempotency_key IS NOT NULL
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_research_wakes_one_live_per_run
+    ON research_wakes(run_id)
+    WHERE run_id IS NOT NULL AND state IN ('pending','leased')
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_work_sessions_wake_id ON work_sessions(wake_id) WHERE wake_id IS NOT NULL",
 ]
 
 
@@ -225,6 +263,54 @@ def _migrate_plan_items(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_research_runs(conn: sqlite3.Connection) -> None:
+    """Lift legacy dossier-level research state into a first-class run once."""
+    rows = conn.execute(
+        "SELECT * FROM dossiers WHERE research_started_at IS NOT NULL "
+        "AND NOT EXISTS (SELECT 1 FROM research_runs r WHERE r.dossier_id=dossiers.id)"
+    ).fetchall()
+    now_s = datetime.now(timezone.utc).isoformat()
+    for dossier in rows:
+        try:
+            policy = json.loads(dossier["research_policy"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            policy = {}
+        if int(policy.get("min_primary_sources", 3)) > int(policy.get("target_source_count", 20)):
+            policy["min_primary_sources"] = int(policy.get("target_source_count", 20))
+        policy_json = json.dumps(policy, separators=(",", ":"))
+        enabled = bool(policy.get("autonomy_enabled"))
+        active = conn.execute("SELECT id FROM work_sessions WHERE dossier_id=? AND ended_at IS NULL", (dossier["id"],)).fetchone()
+        stop_reason = dossier["research_stop_reason"]
+        if dossier["status"] == "delivered": status = "completed"
+        elif active: status = "running"
+        elif stop_reason in {"session_cap_reached", "cost_cap_reached"}: status = "cap_reached"
+        elif stop_reason == "waiting_for_user": status = "waiting_for_user"
+        elif stop_reason == "sleep_mode_disabled": status = "blocked_sleep"
+        elif enabled: status = "queued"
+        else: status = "paused"
+        run_id = f"rrn_{uuid.uuid4().hex[:12]}"
+        started = dossier["research_started_at"] or now_s
+        stats = conn.execute(
+            "SELECT COUNT(*) n,COALESCE(SUM(cost_usd),0) cost FROM work_sessions WHERE dossier_id=? AND started_at>=?",
+            (dossier["id"], started),
+        ).fetchone()
+        conn.execute(
+            "INSERT INTO research_runs (id,dossier_id,policy_snapshot,depth,strategy_version,status,initiated_by,state_version,started_at,updated_at,ended_at,stop_reason,completion_reason,sessions_started,cost_usd) "
+            "VALUES (?,?,?,?,? ,?,'migration',1,?,?,?,?,?,?,?)",
+            (run_id, dossier["id"], policy_json, policy.get("depth", "standard"), "legacy-v0", status,
+             started, now_s, now_s if status in {"completed", "failed", "cancelled", "superseded"} else None,
+             stop_reason, "legacy_delivery" if status == "completed" else None, int(stats["n"] or 0), float(stats["cost"] or 0)),
+        )
+        conn.execute("UPDATE dossiers SET research_policy=? WHERE id=?", (policy_json, dossier["id"]))
+        conn.execute("UPDATE work_sessions SET research_run_id=? WHERE dossier_id=? AND started_at>=? AND research_run_id IS NULL", (run_id, dossier["id"], started))
+        conn.execute("INSERT INTO research_run_events (id,run_id,event_type,payload,transition_version,created_at) VALUES (?,?,?,'{}',1,?)",
+                     (f"rev_{uuid.uuid4().hex[:12]}", run_id, "legacy_migrated", now_s))
+        if status == "queued" and (dossier["wake_pending"] or dossier["wake_at"]):
+            due = dossier["wake_at"] or now_s
+            conn.execute("INSERT INTO research_wakes (id,dossier_id,run_id,reason,due_at,state,expected_run_version,created_at,updated_at) VALUES (?,?,?,?,?,'pending',1,?,?)",
+                         (f"rwk_{uuid.uuid4().hex[:12]}", dossier["id"], run_id, dossier["wake_reason"] or "autonomous_continue", due, now_s, now_s))
+
+
 def init_db(db_path: Path | None = None) -> None:
     path = db_path or config.DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -241,8 +327,9 @@ def init_db(db_path: Path | None = None) -> None:
         _backfill_decision_point_kinds(conn)
         _close_duplicate_unresolved_plan_approvals(conn)
         _close_duplicate_active_work_sessions(conn)
-        _ensure_indices(conn)
         _migrate_plan_items(conn)
+        _migrate_research_runs(conn)
+        _ensure_indices(conn)
         conn.commit()
     finally:
         conn.close()
@@ -250,6 +337,13 @@ def init_db(db_path: Path | None = None) -> None:
 
 @contextmanager
 def connect(db_path: Path | None = None):
+    active = _ACTIVE_UNIT_OF_WORK.get()
+    if active is not None:
+        # Storage handlers may compose several store functions. During a tool
+        # unit-of-work they all share the outer transaction; nested helpers do
+        # not commit or roll back independently.
+        yield active
+        return
     path = db_path or config.DB_PATH
     conn = sqlite3.connect(path, timeout=10.0)
     conn.row_factory = sqlite3.Row
@@ -261,4 +355,26 @@ def connect(db_path: Path | None = None):
         conn.rollback()
         raise
     finally:
+        conn.close()
+
+
+@contextmanager
+def unit_of_work(db_path: Path | None = None):
+    """Open one IMMEDIATE transaction reused by nested ``connect`` calls."""
+    if _ACTIVE_UNIT_OF_WORK.get() is not None:
+        raise RuntimeError("nested unit_of_work is not supported")
+    path = db_path or config.DB_PATH
+    conn = sqlite3.connect(path, timeout=10.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("BEGIN IMMEDIATE")
+    token = _ACTIVE_UNIT_OF_WORK.set(conn)
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        _ACTIVE_UNIT_OF_WORK.reset(token)
         conn.close()

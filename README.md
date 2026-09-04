@@ -15,9 +15,10 @@ The agent also works over time. A user can leave and return later to see what ch
 Vellum is not a "single agent writes to a structured doc" demo. The investigation surface sits on top of several hand-built subsystems that handle concurrency, durability, recursion, and runaway-cost protection:
 
 - **Manual agentic loop over the Anthropic Messages API** (`agent/runtime.py`, `DossierAgent.run`). It streams `client.messages.stream(max_tokens=32000)`, prepends a fresh dossier-state snapshot to every turn, dispatches tool calls off-thread with `dossier_id` injected server-side, records token cost per turn, handles Anthropic's `pause_turn` for server-side `web_search`, and discards any prose not attached to a tool call. The user never sees raw model prose — all visible output flows through a closed set of 30 dossier + 7 intake = 37 typed, Pydantic-backed tools (`upsert_section`, `flag_needs_input`, `flag_decision_point`, `mark_ruled_out`, `spawn_sub_investigation`, `append_reasoning`, …). The 30 dossier tools dispatch through `HANDLERS`; `spawn_sub_investigation` is additionally registered in `HANDLER_OVERRIDES` so the sub-investigation runs synchronously inside the parent's turn loop rather than as a stub.
-- **Idempotent, replay-safe tool dispatch.** Every tool call is keyed on its `tool_use_id` in a `tool_invocations` table and short-circuits on replay, so the agent loop is crash- and retry-safe: a re-run never double-applies a section edit or a spawn.
+- **Recorded-call replay protection.** Completed tool calls are keyed on `tool_use_id` in `tool_invocations` and short-circuit on replay. Naturally idempotent updates are safe to repeat. A narrow crash window remains between a create-only handler commit and its invocation record; closing that gap is the top reliability item in `BACKLOG.md` (REL-01).
 - **Multi-dossier orchestrator** (`agent/orchestrator.py`). One `asyncio.Task` per dossier with bounded concurrency, `AgentAlreadyRunning` / `AgentCapacityExceeded` guards, lock-protected start/stop, graceful 30s shutdown, and done-callback pruning.
 - **Sleep-mode scheduler** (`agent/scheduler.py`, pinned by 13 dedicated tests). Polls for dossiers ready to wake every 30s, pre-creates `trigger=scheduled` work sessions, and retries on capacity/contention without dropping the user's change — a late answer keeps `wake_pending` set rather than being lost. The contention path is the canonical "reactive wake within one tick" promise.
+- **Bounded autonomous long research** (`agent/autonomy.py`, `storage/research.py`). Each dossier can opt into standard or deep research with hard boundaries for sessions and spend plus evidence targets for unique and primary sources. Healthy sessions checkpoint into SQLite and schedule the next pass through the existing scheduler; open user questions or decisions pause the chain, and session/cost caps disable future automatic passes without cancelling work in flight. The dossier page shows live source, domain, plan, session, and spend progress.
 - **Recursive sub-investigations** (`agent/sub_runtime.py`). `spawn_sub_investigation` launches a real second agent runtime with its own work sessions, its own narrowed (allowlisted) tool surface, its own token accounting, a depth cap, force-completion nudge logic, and `sub_investigation_id` threaded through a `ContextVar`. It returns a `return_summary` back up to the parent's tool call.
 - **Tiered stuck detection** (`agent/stuck.py`, 941 LOC, pinned by 25 tests). Far more than "token budgets." It tracks per-session state with exact-args loop hashing, same-tool-no-progress heuristics, per-section revision counters reset by real progress, section/session token budgets, and a three-tier escalation ladder that decides between a silent reasoning-trail note, a `decision_point`, and a forced-recommended `decision_point` — so the agent never burns cycles blindly. The `stuck_escalation_count` (H-19) and `last_signal_kind` (H-20) columns persist across sleep/wake cycles so the next session can re-surface "last time you got stuck, it was a loop not a budget."
 - **Crash recovery at startup** (`lifecycle.py`). Reconciles orphaned work sessions and stale intakes on boot.
@@ -40,15 +41,24 @@ Vellum is not a "single agent writes to a structured doc" demo. The investigatio
 - **Context compaction.** Long sessions automatically compact their message history via a summarizer call (default `claude-haiku-4-5`) so they never hit the context ceiling.
 - **Quiet by default.** No pings, no notifications, no status updates. The dossier is a destination, not a stream. The 3-second polling on the activity indicator is the only "is the agent alive" affordance.
 - **Stuck detection with escalation.** Repeated-tool-call detection, revision stalls, and token-budget signals surface clean decision_points — escalating across tiers until the user or agent resolves the loop. The escalation tier (H-19) and the kind of signal that fired (H-20, `last_signal_kind`) both persist across sleep/wake so the next session can re-surface "last time you got stuck, it was a loop not a budget."
-- **It survives crashes and runs unattended.** Idempotent tool dispatch (keyed on Anthropic's `tool_use_id`), startup reconciliation (orphaned work sessions auto-close as `crashed`), the orchestrator/scheduler pair, and tiered stuck detection mean a dossier can be paused, resumed, woken on a schedule, or recovered after a restart without losing or duplicating work. The retention guard (`ERROR_RETRY_MAX=5` consecutive errored sessions) quarantines a sick dossier instead of looping it.
+- **It survives crashes and runs unattended.** Recorded-call replay protection, startup reconciliation (orphaned work sessions auto-close as `crashed`), the orchestrator/scheduler pair, and tiered stuck detection mean a dossier can be paused, resumed, woken on a schedule, or recovered after a restart. The retention guard (`ERROR_RETRY_MAX=5` consecutive errored sessions) quarantines a sick dossier instead of looping it. The remaining create-only tool crash window is documented rather than hidden (REL-01).
 
 ## Stack
 
 - **Backend:** Python + FastAPI + Pydantic (single source of truth for the dossier schema across API, DB, and agent tool schemas), SQLite + WAL, asyncio. Largest modules: `tools/handlers.py` (~58 KB), `agent/stuck.py` (~45 KB), `agent/runtime.py` (~44 KB), `agent/sub_runtime.py` (~34 KB).
 - **Agent:** Direct Anthropic Messages API with a manual agentic loop (no agent SDK). Default model: `claude-opus-4-7`. Intake uses `claude-sonnet-4-6`; compaction summarisation uses `claude-haiku-4-5`.
 - **DB:** SQLite (v1) — **22-table relational schema** with runtime column/index migration. The schema-level **partial unique indexes** (`idx_work_sessions_one_active_per_dossier`, `idx_decision_points_one_open_plan_approval_per_dossier`) are the load-bearing invariants the code-level guards protect.
-- **Frontend:** React 18 + TypeScript + Tailwind (Vite) + react-router + @tanstack/react-query + react-markdown. 40 components (41 `.tsx` files in `src/components/`, of which one is a co-located test for `AgentActivityIndicator`), polling for live dossier state. Serif-forward, warm, document-like. No rich-text editor.
-- **Tests:** **393 backend pytest tests** across 36 files (lifecycle, orchestrator, scheduler, stuck-detection, sub-investigation, resume, end-to-end roundtrip, plan items, intake, runtime, telemetry, prompt caching, db migrations, API auth, and the `test_storage_imports.py` public-surface lint) plus **26 frontend vitest tests** across 5 files (cx utility, time/format utilities, plan-diff category order, agent activity indicator state machine, and the time/format tests).
+- **Frontend:** React 18 + TypeScript + Tailwind (Vite) + react-router + @tanstack/react-query + react-markdown. 41 components (42 `.tsx` files in `src/components/`, of which one is a co-located test for `AgentActivityIndicator`), polling for live dossier state. Serif-forward, warm, document-like. No rich-text editor.
+- **Tests:** **398 passing backend pytest tests plus 2 conditional skips** across 37 files (lifecycle, orchestrator, scheduler, long-research autonomy, stuck-detection, sub-investigation, resume, end-to-end roundtrip, plan items, intake, runtime, telemetry, prompt caching, db migrations, API auth, and the `test_storage_imports.py` public-surface lint) plus **26 passing frontend vitest tests** across 5 files.
+
+## Project documentation
+
+- [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — maintainer setup, architecture, migration rules, and verification.
+- [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) — current sequencing and phase gates.
+- [`BACKLOG.md`](BACKLOG.md) — canonical unfinished-work queue.
+- [`deploy/README.md`](deploy/README.md) — hardened production Docker, Caddy
+  authentication, health/readiness checks, verified backup/restore, and rollback.
+- `notes/` — dated audits and historical plans; useful evidence, not the active roadmap.
 
 ## Local dev
 
@@ -58,13 +68,13 @@ Full local stack for real agent runs:
 # Backend
 cd backend
 python -m venv .venv
-source .venv/bin/activate         # or .venv/Scripts/activate on Windows
-pip install -e .
-cp .env.example .env              # then fill in ANTHROPIC_API_KEY
+source .venv/bin/activate         # PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
+cp .env.example .env              # PowerShell: Copy-Item .env.example .env
 
 # Frontend
 cd ../frontend
-npm install
+npm ci
 
 # Run both together
 cd ..
@@ -90,7 +100,7 @@ npm run dev    # vite on :5173, proxy to localhost:8731 for /api
 
 # Backend in offline / smoke-test mode (no real LLM)
 cd backend
-python -m pytest -m "not live"    # 393 tests, ~50s
+python -m pytest -m "not live"    # current suite: 398 pass, 2 skip, ~60s
 
 # Backend with the live LLM test (one scenario, costs ~$2-6)
 cd backend
@@ -100,7 +110,7 @@ VELLUM_RUN_AUTONOMOUS_TESTS=1 ANTHROPIC_API_KEY=… python -m pytest tests/test_
 ## Test suite quick reference
 
 ```bash
-# Backend (393 tests, ~50s)
+# Backend (current suite: 398 pass, 2 skip, ~60s)
 cd backend && python -m pytest
 
 # Backend with the live autonomous test (requires ANTHROPIC_API_KEY)
@@ -118,7 +128,7 @@ The most load-bearing test files:
 - `test_scheduler.py` (13 tests) — pins the late-answer correctness contract at `agent/scheduler.py:202-216`. The "reactive wake within one tick" claim.
 - `test_stuck.py` (25 tests) — every stuck-detection signal kind, every exempt-tool carve-out, the `_STUCK_EXEMPT_TOOLS` whitelist contract, the H-20 `last_signal_kind` persistence, and the daemon-thread dispatch contract.
 - `test_storage_imports.py` (4 tests) — pins the flat `storage.X` namespace contract: every public name importable, no old per-entity modules leak, no submodule attribute access, and no new public name added to `__all__` without being added to the expected set.
-- `test_runtime_v2.py` — the dispatch loop, state-snapshot prepending, `pause_turn` handling, idempotent tool dispatch.
+- `test_runtime_v2.py` — the dispatch loop, state-snapshot prepending, `pause_turn` handling, and completed-call replay protection.
 - `test_sub_runtime.py` — sub-agent tool filter, `ContextVar` for `sub_investigation_id`, prod-then-force-complete path, the broken `asyncio.run()` fallback's actual current behavior.
 
 ## Project layout
@@ -130,6 +140,7 @@ backend/vellum/
     sub_runtime.py    # sub-investigation turn loop (recursive sub-agents)
     orchestrator.py   # concurrency cap, session lifecycle
     scheduler.py      # sleep-mode: polls dossier_lifecycle wake flags, fires sessions on schedule
+    autonomy.py       # bounded multi-session continuation for long research
     compactor.py      # context compaction (summariser call when token budget is low)
     stuck.py          # stuck detection: loop/stall/budget signals, escalation tiers
     prompt.py         # system prompt assembly (main agent)
@@ -138,7 +149,7 @@ backend/vellum/
   api/                # FastAPI routes (dossier CRUD, agent control, intake, settings)
   intake/             # intake conversation agent (creates dossiers)
   tools/              # 30 typed tool handlers (upsert_section, flag_needs_input, …)
-  storage/            # per-entity DB stores (14 files after cleanup-2)
+  storage/            # per-domain DB stores (15 files, including long-research rollups)
     dossier_store.py        # core dossier CRUD
     plan_items_store.py     # first-class plan items
     sub_investigation_store.py
@@ -151,14 +162,15 @@ backend/vellum/
     dossier_lifecycle.py   # wake + user_notes + next_actions (merged)
     audit.py                # agent_turns + budget_accounting (merged)
     settings.py             # settings + tool_invocations (merged)
+    research.py             # per-dossier research policy + evidence/session progress
     _helpers.py             # shared row-converters + _ORDER_STEP
-    __init__.py             # flat re-export of all 119 public names
+    __init__.py             # flat re-export of the public storage surface
   models.py           # Pydantic source of truth for the entire schema
   schema.sql          # SQLite schema (22 tables) + migrations
   db.py               # connection management + init_db + migration runner
   lifecycle.py        # reconcile orphaned work_sessions at startup
 
-backend/tests/        # 393 backend tests across 36 files
+backend/tests/        # 398 passing tests + 2 conditional skips across 37 files
   conftest.py
   test_stuck.py             # 25 tests — loop/section/session budget, revision stall,
                             # _STUCK_EXEMPT_TOOLS whitelist lint, last_signal_kind H-20,
@@ -166,6 +178,7 @@ backend/tests/        # 393 backend tests across 36 files
   test_scheduler.py         # 13 tests — 30s poll, contention path, late-answer
                             # correctness contract, exception containment
   test_storage_imports.py   # 4 tests — flat namespace contract + inverse check
+  test_research_autonomy.py # 5 tests — policy, evidence rollup, caps, scheduler, API
   test_intake.py, test_intake_e2e.py, test_plan_items.py,
   test_plan_approval.py, test_dossier_extensions.py,
   test_orchestrator.py, test_runtime_v2.py, test_sub_runtime.py,
@@ -204,11 +217,12 @@ frontend/src/
 
 ## How the agent stays honest
 
-The runtime enforces three load-bearing invariants that distinguish Vellum from a chat-shaped wrapper around Claude:
+The runtime enforces four load-bearing invariants that distinguish Vellum from a chat-shaped wrapper around Claude:
 
 1. **No prose reaches the user.** Every model turn that ends with only a text block (no `tool_use`) is silently discarded by `runtime.py:282-290`. The user never sees raw model output; the only visible surface is the dossier, which is updated exclusively via typed tool calls.
-2. **Tool calls are idempotent.** The `tool_invocations` table is keyed on Anthropic's `tool_use_id`. A crash, retry, or replay of the same tool call short-circuits to the recorded result — the dossier cannot be double-edited by a re-run.
+2. **Completed tool calls are replay-protected.** The `tool_invocations` table is keyed on Anthropic's `tool_use_id`; a replay after the invocation record commits returns the recorded result. Naturally idempotent updates are safe across the remaining handler-commit/invocation-record crash window. REL-01 tracks exactly-once behavior for create-only and compound handlers.
 3. **Stuck detection is a real, multi-heuristic system.** `agent/stuck.py` watches for exact-args loops, same-tool-no-progress spin, per-section revision stalls, and per-section/session token budgets. A three-tier escalation ladder decides whether the next move is a silent reasoning note, a user-facing decision point, or a forced-recommended decision point. The escalation tier (and the kind of signal that fired) persist across sleep/wake via `stuck_escalation_count` and `last_signal_kind` columns, so a flaky agent doesn't get to "forget" it was stuck.
+4. **Research quality is measurable, not inferred from verbosity.** Source logs classify primary versus secondary evidence, authority, publication date, claims, limitations, section links, and contradictions. The progress rollup deduplicates URL variants, tracks domain diversity and plan coverage, and feeds the result back into every agent turn. Source targets guide coverage but never make duplicate or low-authority links count as progress.
 
 ## Notable endpoints
 
@@ -227,11 +241,21 @@ Most routes follow standard CRUD patterns on `/api/dossiers/{id}/...`; a few hav
 
 - **`GET /api/dossiers/{id}/resume-state`** — read-only snapshot for the UI to decide whether to offer a resume action. Returns `{ active_work_session_id, wake_pending, wake_at, wake_reason, consecutive_error_count, quarantined_at }`.
 
+- **`GET /api/dossiers/{id}/research`** — durable long-research progress: policy, state, sessions/spend used, unique and primary sources, domain diversity, evidence links, contradictions, and plan coverage.
+
+- **`PUT /api/dossiers/{id}/research/policy`, `POST /api/dossiers/{id}/research/start`, `POST /api/dossiers/{id}/research/pause`** — configure, start, and pause bounded multi-session research. Starting queues work through the scheduler; pausing prevents the next session but does not cancel a model turn already in flight.
+
 - **`GET /api/agents/running`** — list of all in-flight agent runs (powers the "Researching" pill on every dossier card in the list view; avoids an N+1 fanout). One request, not N.
 
 - **`GET /api/agent/status`** — the running state of the agent for a single dossier. Used by `AgentActivityIndicator` to derive the 4-state `running | waking | scheduled | idle` machine.
 
-- **Optional API token guard** — set `VELLUM_API_TOKEN` (single env var, server-side only) to require a bearer token for `/api/*`. In dev, the Vite proxy reads `VELLUM_API_TOKEN` at startup and injects the `Authorization: Bearer …` header on every proxied request, so the token never ships in the browser bundle. `/health` remains public. Empty token keeps localhost dev unchanged unless `VELLUM_API_AUTH_REQUIRED=true`.
+- **Optional API token guard** — set `VELLUM_API_TOKEN` (single env var,
+  server-side only) to require a bearer token for `/api/*`. In dev, the Vite
+  proxy injects it without shipping it in the browser bundle. In production,
+  Nginx injects this token only after its trusted-proxy allowlist and Caddy
+  supplies the user-facing basic-auth boundary. `/health` and `/ready` remain
+  public for monitoring. Empty token keeps localhost dev unchanged unless
+  `VELLUM_API_AUTH_REQUIRED=true`.
 
 - **`GET /api/settings`, `PUT /api/settings/{key}`** — DB-backed settings (sleep-mode toggle, budget caps, warn fractions, progress-forcing threshold). Soft signals only; crossing a cap surfaces a decision_point rather than terminating the agent.
 
@@ -243,6 +267,7 @@ Most routes follow standard CRUD patterns on `/api/dossiers/{id}/...`; a few hav
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | Required. Anthropic API key. |
 | `VELLUM_MODEL` | `claude-opus-4-7` | Main dossier agent model. |
+| `VELLUM_MODEL_ALT` | `claude-sonnet-4-6` | Alternate model available to runtime policy. |
 | `VELLUM_INTAKE_MODEL` | `claude-sonnet-4-6` | Intake conversation model. |
 | `VELLUM_SUMMARY_MODEL` | `claude-haiku-4-5` | Compaction summariser model. |
 | `VELLUM_API_TOKEN` | unset | Bearer token for `/api/*`. Required when binding to a non-loopback address. |
@@ -261,6 +286,8 @@ Most routes follow standard CRUD patterns on `/api/dossiers/{id}/...`; a few hav
 | `VELLUM_ERROR_RETRY_MAX` | `5` | Self-heal: consecutive errored sessions before the dossier is quarantined. |
 | `VELLUM_ERROR_RETRY_CAP_SECONDS` | `21600` | Self-heal: max backoff between retries (6 hours). |
 | `VELLUM_COMPACT_INPUT_TOKEN_THRESHOLD` | `80000` | Input token count above which context compaction fires. ~80% of the 100k practical input limit. |
+| `VELLUM_CONTEXT_MANAGEMENT_THRESHOLD` | `180000` | Anthropic context-management trigger passed to the main runtime. |
+| `VELLUM_TOOL_LOG_PATH` | unset | Optional JSONL destination for tool/turn telemetry; defaults to stderr. |
 | `VELLUM_RUN_AUTONOMOUS_TESTS` | unset | For `test_autonomous_live.py` — when `1` with `ANTHROPIC_API_KEY` set, the live autonomous-agent test runs. Otherwise it skips. |
 
 A few calibration knobs are constants in code, not env vars, because they were tuned during the 5-day build and the surface hasn't justified exposing them. If you need to change them, edit and restart:
@@ -270,16 +297,17 @@ A few calibration knobs are constants in code, not env vars, because they were t
 
 ## Status
 
-v1, single-user, localhost. Runs against a live `ANTHROPIC_API_KEY`. A startup warning is emitted if `VELLUM_API_TOKEN` is unset and the bind address is not loopback — the server can be configured to refuse to start in that case.
+v1, single-user. Local development runs on Vite/FastAPI; the production
+Docker/Nginx stack is deployed behind Caddy at `https://vellum.ianlan.dev`.
+Production requires Caddy basic authentication, Nginx source allowlisting,
+API-token enforcement, and a private backend port. Dependencies are locked,
+container bases are digest-pinned, and the recovery tooling produces verified
+online SQLite backups. See `deploy/README.md` for the network boundary,
+deployment checks, backup/restore, and rollback.
 
 ## Known issues and follow-ups
 
-Things surfaced during the cleanup-2 audit that are deferred to a follow-up pass:
-
-- **The `asyncio.run()` fallback at `agent/sub_runtime.py:769-783` is broken.** When `spawn_handler` is called from inside a running event loop, the inner `loop.run_until_complete` raises "Cannot run the event loop while another loop is running" — the fallback doesn't actually do anything. The outer except at line 784 catches the error and the call returns a structured error response. The right fix is to run the sub-investigation in a separate thread with its own event loop. Pinned by `test_sub_runtime.py::test_spawn_handler_when_called_inside_running_loop`.
-- **`dossiers.investigation_plan` JSON column carries a redundant `items` list** (the first-class `plan_items` table is authoritative). The `items=[]` serialization already happens at write time (`storage/dossier_store.py:597, 606`); the column itself will be dropped in a 30-day-soak migration once we're confident no legacy dossier needs the JSON read.
-- **The `InvestigationPlanItem` legacy model and its `_coerce_legacy_items` validator** are load-bearing for the JSON-blob read path on pre-v2 dossiers. The intake-layer `commit_intake` continues to use it (the model is stricter than `PlanItem` — `question` is required, not defaulted) so the "surface `plan_error` for malformed seeds" contract holds. The coercion now emits a `logger.debug` line so a future caller that accidentally constructs the legacy model is traceable.
-- **The `last_signal_kind` column is read by the prompt but not yet threaded through `lastVisitedAt`-style "what changed since you last visited" UI surfaces.** Today the user sees "Last stuck signal" only on the next session's first turn.
+The canonical list is [`BACKLOG.md`](BACKLOG.md). Highest priority is REL-01, which closes the partial-replay window for create-only tool handlers. The next structural work normalizes investigation-plan metadata, hardens schema constraints, repairs the nested-event-loop sub-investigation fallback, and closes the small return-visit/intake UX gaps. Historical cleanup findings remain under `notes/cleanup-2/` and are linked into the backlog only when still actionable.
 
 ## Frontend types
 

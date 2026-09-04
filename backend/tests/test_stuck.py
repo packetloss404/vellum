@@ -538,6 +538,16 @@ def test_progress_whitelist_covers_all_handlers():
     )
 
 
+def test_research_audit_tools_count_as_analytic_progress():
+    """Evidence gates are substantive research steps, not neutral reads."""
+    from vellum.agent import stuck
+
+    assert {
+        "record_disconfirmation",
+        "audit_research_completion",
+    }.issubset(stuck._PROGRESS_TOOL_NAMES)
+
+
 def test_progress_mutation_tools_are_a_strict_subset_of_progress_tools():
     """A tool in _PROGRESS_MUTATION_TOOL_NAMES should also be in
     _PROGRESS_TOOL_NAMES — both signals are progress. Overlap is the

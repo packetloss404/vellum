@@ -421,6 +421,43 @@ def test_pause_turn_does_not_count_as_ended(fresh_db):
     assert client.messages.stream.call_count == 2
 
 
+def test_pause_turn_persists_web_search_discovery_without_encrypted_content(fresh_db):
+    """Evidence parsing happens before the pause-turn continuation branch."""
+    did = _seed_dossier()
+
+    class SearchResultBlock:
+        type = "web_search_tool_result"
+
+        def model_dump(self):
+            return {
+                "type": self.type,
+                "tool_use_id": "srvtoolu_pause",
+                "content": [{
+                    "type": "web_search_result",
+                    "url": "https://example.com/pause-result",
+                    "title": "Pause result",
+                    "page_age": "today",
+                    "encrypted_content": "must-never-be-persisted",
+                }],
+            }
+
+    client = make_mock_client([
+        _message([SearchResultBlock()], stop_reason="pause_turn"),
+        _message([_text("done")], stop_reason="end_turn"),
+    ])
+    result = _run(_make_agent(did, client).run(max_turns=5))
+    assert result.reason == "ended_turn"
+
+    from vellum.db import connect
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM evidence_observations eo JOIN evidence_sources es ON es.id=eo.source_id "
+            "WHERE es.dossier_id=?", (did,),
+        ).fetchone()
+    assert row["provenance"] == "discovered"
+    assert "must-never-be-persisted" not in json.dumps(dict(row))
+
+
 # ---------------------------------------------------------------------------
 # State management
 # ---------------------------------------------------------------------------

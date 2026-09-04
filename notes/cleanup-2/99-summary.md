@@ -1,5 +1,11 @@
 # Cleanup-2 — Final Summary
 
+> **Historical close-out.** This records the repository at the end of the
+> 2026-08-02 cleanup session. Current development guidance lives in
+> [`docs/DEVELOPMENT.md`](../../docs/DEVELOPMENT.md), current sequencing in
+> [`docs/IMPLEMENTATION_PLAN.md`](../../docs/IMPLEMENTATION_PLAN.md), and all
+> actionable deferred work in [`BACKLOG.md`](../../BACKLOG.md).
+
 **Date:** 2026-08-02 (single overnight session, plus an extended peer-review + bug-check pass)
 **Commits:** ~30 (8 one-shot + 4 research/design + 7 implementation + 6 docs + 5 peer-review + 5 bug-check + ~3 polish)
 **Tests:** 358 → 393 backend (+35); 12 → 26 frontend (+14)

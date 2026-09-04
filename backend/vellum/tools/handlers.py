@@ -298,12 +298,57 @@ def update_sub_investigation(dossier_id: str, args: dict[str, Any]) -> dict[str,
 
 
 def log_source_consulted(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
-    """Log every source actually consulted. Required, not optional."""
+    """Log an evidence note with enough metadata to audit source quality."""
+    from ..storage import evidence_store
+
     session_id = _ensure_session(dossier_id)
     citation: str = args["citation"]
     why_consulted: str = args["why_consulted"]
     what_learned: str = args["what_learned"]
     supports_section_ids: list[str] = args.get("supports_section_ids") or []
+    contradicts_section_ids: list[str] = args.get("contradicts_section_ids") or []
+    sub_investigation_id = args.get("sub_investigation_id")
+    # Reject links across dossiers before writing either the legacy audit row
+    # or first-class evidence records.
+    for section_id in [*supports_section_ids, *contradicts_section_ids]:
+        section = storage.get_section(section_id)
+        if section is None or section.dossier_id != dossier_id:
+            raise ValueError(f"section {section_id!r} does not belong to dossier")
+    plan_item_id = args.get("plan_item_id")
+    if plan_item_id and storage.get_plan_item(dossier_id, plan_item_id) is None:
+        raise ValueError(f"plan item {plan_item_id!r} does not belong to dossier")
+
+    evidence = evidence_store.record_observation(
+        dossier_id=dossier_id,
+        url=citation,
+        title=args.get("source_title"),
+        provenance="consulted",
+        excerpt=what_learned,
+        published_at=args.get("published_at"),
+        provider="agent_log_source",
+        provider_ref=None,
+        work_session_id=session_id,
+        source_kind=args.get("source_type", "unknown"),
+        model_source_type=args.get("source_type", "unknown"),
+        model_authority=args.get("authority", "unknown"),
+        limitations=args.get("limitations") or None,
+    )
+    claim_ids: list[str] = []
+    key_claims = args.get("key_claims") or []
+    if key_claims:
+        relation = "contradicts" if contradicts_section_ids else "supports"
+        section_id = (contradicts_section_ids or supports_section_ids or [None])[0]
+        claim_ids = evidence_store.record_claim_links(
+            dossier_id=dossier_id,
+            observation_id=evidence["observation_id"],
+            claims=key_claims,
+            relation=relation,
+            plan_item_id=plan_item_id,
+            section_id=section_id,
+            excerpt=what_learned,
+            materiality=args.get("claim_materiality", "material"),
+            primary_required=bool(args.get("primary_required", False)),
+        )
     summary = f"{citation[:80]} — {what_learned[:120]}"
     entry = storage.append_investigation_log(
         dossier_id,
@@ -316,12 +361,72 @@ def log_source_consulted(dossier_id: str, args: dict[str, Any]) -> dict[str, Any
                 "why_consulted": why_consulted,
                 "what_learned": what_learned,
                 "supports_section_ids": supports_section_ids,
+                "contradicts_section_ids": contradicts_section_ids,
+                "source_title": args.get("source_title"),
+                "source_type": args.get("source_type", "unknown"),
+                "authority": args.get("authority", "unknown"),
+                "published_at": args.get("published_at"),
+                "key_claims": args.get("key_claims") or [],
+                "limitations": args.get("limitations") or "",
+                "plan_item_id": plan_item_id,
             },
             summary=summary,
+            sub_investigation_id=sub_investigation_id,
         ),
         session_id,
     )
-    return {"log_entry_id": getattr(entry, "id", None)}
+    return {
+        "log_entry_id": getattr(entry, "id", None),
+        "source_id": evidence["source_id"],
+        "observation_id": evidence["observation_id"],
+        "claim_ids": claim_ids,
+        "canonical_url": evidence["canonical_url"],
+        "authority_status": evidence["authority_status"],
+    }
+
+
+def record_disconfirmation(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Record the required adverse-evidence pass without pretending it proves authority."""
+    session_id = _ensure_session(dossier_id)
+    hypothesis = " ".join(str(args.get("hypothesis") or "").split()).strip()
+    method = " ".join(str(args.get("method") or "").split()).strip()
+    outcome = " ".join(str(args.get("outcome") or "").split()).strip()
+    if not hypothesis or not method or not outcome:
+        raise ValueError("hypothesis, method, and outcome are required")
+    active_run = storage.get_active_research_run(dossier_id)
+    tags = ["research", "disconfirmation"]
+    if active_run is not None:
+        tags.append(f"research_run:{active_run.id}")
+    entry = storage.append_reasoning(
+        dossier_id,
+        m.ReasoningAppend(
+            note=f"[disconfirmation] Hypothesis: {hypothesis} Method: {method} Outcome: {outcome}",
+            tags=tags,
+        ),
+        work_session_id=session_id,
+    )
+    return {"recorded": True, "reasoning_id": getattr(entry, "id", None)}
+
+
+def audit_research_completion(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Return deterministic claim/evidence gaps and leave an auditable event."""
+    from ..storage import evidence_store
+
+    session_id = _ensure_session(dossier_id)
+    audit = evidence_store.completion_audit(dossier_id, args.get("run_id"))
+    storage.append_reasoning(
+        dossier_id,
+        m.ReasoningAppend(
+            note=(
+                "[final_evidence_audit] "
+                f"claims={audit['claim_count']} qualified_sources={audit['qualified_source_count']} "
+                f"unsupported={len(audit['unsupported_claims'])} ready={audit['ready']}"
+            ),
+            tags=["research", "final_evidence_audit"],
+        ),
+        work_session_id=session_id,
+    )
+    return audit
 
 
 def mark_considered_and_rejected(dossier_id: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -542,6 +647,35 @@ def mark_investigation_delivered(dossier_id: str, args: dict[str, Any]) -> dict[
             ),
         }
 
+    # Autonomous runs are held to their immutable evidence contract. Manual
+    # dossiers retain the legacy delivery flow; a research run must pass the
+    # deterministic claim-level audit (including Deep disconfirmation).
+    active_run = storage.get_active_research_run(dossier_id)
+    if active_run is not None:
+        from ..storage import evidence_store
+
+        evidence_audit = evidence_store.completion_audit(dossier_id, active_run.id)
+        research_progress = storage.get_research_progress(dossier_id)
+        contract_ready = bool(
+            research_progress
+            and research_progress.completion_report.ready
+        )
+        if not evidence_audit["ready"] or not contract_ready:
+            return {
+                "ok": False,
+                "reason": "evidence_audit_failed",
+                "audit": evidence_audit,
+                "completion_report": (
+                    research_progress.completion_report.model_dump(mode="json")
+                    if research_progress else None
+                ),
+                "message": (
+                    "The autonomous research run has not met its source/plan contract, has "
+                    "unsupported material claims, a missing required primary source, or a "
+                    "missing Deep disconfirmation pass."
+                ),
+            }
+
     # --- All clear: proceed ----------------------------------------------
     session_id = _ensure_session(dossier_id)
     storage.update_dossier(
@@ -562,6 +696,19 @@ def mark_investigation_delivered(dossier_id: str, args: dict[str, Any]) -> dict[
         ),
         session_id,
     )
+    if active_run is not None:
+        storage.append_reasoning(
+            dossier_id,
+            m.ReasoningAppend(
+                note=(
+                    "[final_evidence_audit] passed before delivery: "
+                    f"claims={evidence_audit['claim_count']} "
+                    f"qualified_sources={evidence_audit['qualified_source_count']}"
+                ),
+                tags=["research", "final_evidence_audit", "passed"],
+            ),
+            session_id,
+        )
     return {
         "ok": True,
         "dossier_id": dossier_id,
@@ -701,6 +848,8 @@ HANDLERS = {
     "complete_sub_investigation": complete_sub_investigation,
     "update_sub_investigation": update_sub_investigation,
     "log_source_consulted": log_source_consulted,
+    "record_disconfirmation": record_disconfirmation,
+    "audit_research_completion": audit_research_completion,
     "mark_considered_and_rejected": mark_considered_and_rejected,
     "set_next_action": set_next_action,
     "declare_stuck": declare_stuck,
@@ -866,12 +1015,22 @@ TOOL_DESCRIPTIONS = {
     ),
     "log_source_consulted": (
         "Call ONCE PER SOURCE you actually read. Searching does not count — log only after you "
-        "have read the page. The user counts these as evidence of work; the '47 sources' "
-        "counter on the dossier depends on this call being honest. "
-        "Example args: citation='https://www.consumerfinance.gov/rules-policy/regulations/1006/', "
-        "why_consulted='Does Reg F cap collection call frequency?', what_learned='Reg F caps at "
-        "7 calls per 7 days per debt', supports_section_ids=['sec_abc123']. "
-        "Link via supports_section_ids whenever the source backs a claim in a section."
+        "have read the page. The dossier's source counter depends on this being honest. "
+        "Classify source_type (primary/secondary/analysis/data/user_provided) and authority "
+        "(official/expert/commercial/community/unknown). Record limitations and contradictory "
+        "evidence, not just supporting evidence. Link via supports_section_ids, "
+        "contradicts_section_ids, and plan_item_id whenever possible. Example: an agency rule is "
+        "source_type='primary', authority='official'."
+    ),
+    "record_disconfirmation": (
+        "Record a deliberate attempt to falsify the current working theory. State the hypothesis, "
+        "how you searched for adverse evidence, and the outcome. Deep research must call this before "
+        "its final audit; this event does not itself count as a source."
+    ),
+    "audit_research_completion": (
+        "Run the deterministic final claim-to-evidence audit before delivery. It reports unsupported "
+        "material claims and counts only cited, consulted, or user-provided evidence. Do not deliver "
+        "while ready=false; revise, downgrade, or explicitly leave the unsupported claims unresolved."
     ),
     "mark_considered_and_rejected": (
         "Record a path you seriously considered and rejected — reserved for options compelling "
@@ -1182,8 +1341,48 @@ def tool_schemas() -> list[dict[str, Any]]:
                 "why_consulted": {"type": "string"},
                 "what_learned": {"type": "string"},
                 "supports_section_ids": _section_ids_schema(),
+                "contradicts_section_ids": _section_ids_schema(),
+                "source_title": {"type": "string"},
+                "source_type": {
+                    "type": "string",
+                    "enum": ["primary", "secondary", "analysis", "data", "user_provided", "unknown"],
+                },
+                "authority": {
+                    "type": "string",
+                    "enum": ["official", "expert", "commercial", "community", "unknown"],
+                },
+                "published_at": {"type": "string"},
+                "key_claims": {"type": "array", "items": {"type": "string"}},
+                "claim_materiality": {"type": "string", "enum": ["material", "supporting"]},
+                "primary_required": {"type": "boolean", "default": False},
+                "limitations": {"type": "string"},
+                "plan_item_id": {"type": "string"},
             },
             "required": ["citation", "why_consulted", "what_learned"],
+        },
+    })
+
+    schemas.append({
+        "name": "record_disconfirmation",
+        "description": TOOL_DESCRIPTIONS["record_disconfirmation"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hypothesis": {"type": "string"},
+                "method": {"type": "string"},
+                "outcome": {"type": "string"},
+            },
+            "required": ["hypothesis", "method", "outcome"],
+            "additionalProperties": False,
+        },
+    })
+    schemas.append({
+        "name": "audit_research_completion",
+        "description": TOOL_DESCRIPTIONS["audit_research_completion"],
+        "input_schema": {
+            "type": "object",
+            "properties": {"run_id": {"type": "string"}},
+            "additionalProperties": False,
         },
     })
 

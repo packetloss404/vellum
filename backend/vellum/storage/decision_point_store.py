@@ -125,9 +125,19 @@ def resolve_decision_point(
         except Exception:
             pass
         if sleep_mode_on:
-            conn.execute(
-                "UPDATE dossiers SET wake_pending = 1, wake_reason = ? WHERE id = ?",
-                (m.WakeReason.decision_resolved.value, dossier_id),
+            from .research import _resume_waiting_research_run_tx
+            handled = _resume_waiting_research_run_tx(
+                conn, dossier_id, m.WakeReason.decision_resolved
+            )
+            if not handled:
+                conn.execute(
+                    "UPDATE dossiers SET wake_pending = 1, wake_reason = ? WHERE id = ?",
+                    (m.WakeReason.decision_resolved.value, dossier_id),
+                )
+        else:
+            from .research import _resume_waiting_research_run_tx
+            _resume_waiting_research_run_tx(
+                conn, dossier_id, m.WakeReason.decision_resolved
             )
         if (
             row["kind"] == "plan_approval"

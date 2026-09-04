@@ -2,6 +2,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import db, storage
@@ -78,6 +79,31 @@ def create_app() -> FastAPI:
     @app.get("/health")
     def health() -> dict:
         return {"ok": True}
+
+    @app.get("/ready", response_model=None)
+    def ready():
+        """Readiness probe: the process is useful only when its DB is readable.
+
+        Keep this separate from ``/health`` so an orchestrator can distinguish
+        a live Python process from an application that is ready to serve the
+        durable dossier state.  The response intentionally does not include
+        exception text or filesystem paths.
+        """
+        try:
+            with db.connect() as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'dossiers'"
+                ).fetchone()
+            if row is None:
+                raise RuntimeError("required schema is unavailable")
+        except Exception:
+            logger.warning("readiness check failed", exc_info=True)
+            return JSONResponse(
+                status_code=503,
+                content={"ok": False, "ready": False},
+            )
+        return {"ok": True, "ready": True}
 
     return app
 

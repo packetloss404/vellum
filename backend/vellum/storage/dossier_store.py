@@ -45,6 +45,11 @@ def create_dossier(data: m.DossierCreate) -> m.Dossier:
         dossier_type=data.dossier_type,
         status=m.DossierStatus.active,
         check_in_policy=data.check_in_policy,
+        # Enabling autonomy is a lifecycle transition owned by
+        # POST /research/start, never a side effect of dossier creation.
+        research_policy=data.research_policy.model_copy(
+            update={"autonomy_enabled": False}
+        ),
         created_at=now,
         updated_at=now,
     )
@@ -52,9 +57,9 @@ def create_dossier(data: m.DossierCreate) -> m.Dossier:
         conn.execute(
             """
             INSERT INTO dossiers (id, title, problem_statement, out_of_scope, dossier_type,
-                                  status, check_in_policy, debrief, investigation_plan,
-                                  created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  status, check_in_policy, research_policy, debrief,
+                                  investigation_plan, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 dossier.id,
@@ -64,6 +69,7 @@ def create_dossier(data: m.DossierCreate) -> m.Dossier:
                 dossier.dossier_type.value,
                 dossier.status.value,
                 dossier.check_in_policy.model_dump_json(),
+                dossier.research_policy.model_dump_json(),
                 None,
                 None,
                 _dt_str(dossier.created_at),

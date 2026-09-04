@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import hashlib
 import json
 import logging
 from typing import Any, Optional
@@ -82,6 +83,7 @@ SUB_TOOL_ALLOWLIST: frozenset[str] = frozenset({
     "upsert_section",
     "add_artifact",
     "log_source_consulted",
+    "record_disconfirmation",
     "mark_considered_and_rejected",
     "complete_sub_investigation",
 })
@@ -132,6 +134,14 @@ def _coerce_tool_result(result: Any) -> str:
         return json.dumps(result, default=str)
     except (TypeError, ValueError):
         return str(result)
+
+
+def _hash_tool_input(tool_input: dict[str, Any]) -> str:
+    try:
+        blob = json.dumps(tool_input, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        blob = str(sorted(tool_input.items(), key=lambda pair: str(pair[0])))
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()
 
 
 def _extract_result_section_id(result_block: dict[str, Any]) -> Optional[str]:
@@ -197,6 +207,14 @@ def _log_source_consulted_with_sub(
                 "why_consulted": why_consulted,
                 "what_learned": what_learned,
                 "supports_section_ids": supports_section_ids,
+                "contradicts_section_ids": args.get("contradicts_section_ids") or [],
+                "source_title": args.get("source_title"),
+                "source_type": args.get("source_type", "unknown"),
+                "authority": args.get("authority", "unknown"),
+                "published_at": args.get("published_at"),
+                "key_claims": args.get("key_claims") or [],
+                "limitations": args.get("limitations") or "",
+                "plan_item_id": args.get("plan_item_id"),
             },
             summary=summary,
             sub_investigation_id=sub_id,
@@ -243,37 +261,75 @@ async def _dispatch_sub_tool(
         stamped_input = dict(stamped_input)
         stamped_input["sub_investigation_id"] = sub_id
 
-    try:
-        # log_source_consulted: route through the sub-local variant so the
-        # resulting investigation_log row carries sub_investigation_id. The
-        # default handlers.log_source_consulted drops the field; we can't
-        # edit that file (scope fence), so we call storage directly here.
-        if tool_name == "log_source_consulted":
-            result = await asyncio.to_thread(
-                _log_source_consulted_with_sub,
+    input_hash = _hash_tool_input(stamped_input)
+    if tool_name not in handlers.HANDLER_OVERRIDES:
+        try:
+            executed = await asyncio.to_thread(
+                storage.execute_db_tool_invocation,
+                tool_use_id,
                 dossier_id,
-                stamped_input,
+                tool_name,
+                input_hash,
+                lambda: handlers.dispatch(dossier_id, tool_name, stamped_input),
                 session_id,
-                sub_id,
             )
-        else:
-            handler = handlers.HANDLERS.get(tool_name)
-            if handler is None:
-                return (
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_id,
-                        "content": f"unknown tool: {tool_name}",
-                        "is_error": True,
-                    },
-                    None,
-                )
-            # Handlers resolve their own session via _ensure_session; since
-            # our sub session is the dossier's active session, they pick
-            # it up. For tools that accept sub_investigation_id as a model
-            # field (mark_considered_and_rejected), _inject_sub_id stamped
-            # it onto stamped_input above.
-            result = await asyncio.to_thread(handler, dossier_id, stamped_input)
+        except Exception as exc:
+            return ({
+                "type": "tool_result", "tool_use_id": tool_use_id,
+                "content": f"{type(exc).__name__}: {exc}", "is_error": True,
+            }, None)
+        if executed["state"] != "completed":
+            return ({
+                "type": "tool_result", "tool_use_id": tool_use_id,
+                "content": json.dumps({"ok": False, "reason": "tool_invocation_in_progress"}),
+                "is_error": True,
+            }, None)
+        block = {
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": executed["result_json"],
+            **({"is_error": True} if executed["is_error"] else {}),
+        }
+        completion_args = (
+            stamped_input
+            if tool_name == "complete_sub_investigation" and not executed["is_error"]
+            else None
+        )
+        return block, completion_args
+
+    try:
+        claim = await asyncio.to_thread(
+            storage.claim_tool_invocation,
+            tool_use_id,
+            dossier_id,
+            tool_name,
+            input_hash,
+            session_id,
+        )
+    except Exception as exc:
+        return ({
+            "type": "tool_result", "tool_use_id": tool_use_id,
+            "content": f"{type(exc).__name__}: {exc}", "is_error": True,
+        }, None)
+    if claim["state"] == "completed":
+        prior = claim["invocation"]
+        return ({
+            "type": "tool_result", "tool_use_id": tool_use_id,
+            "content": prior["result_json"], "is_error": prior["is_error"],
+        }, stamped_input if tool_name == "complete_sub_investigation" and not prior["is_error"] else None)
+    if claim["state"] == "in_progress":
+        return ({
+            "type": "tool_result", "tool_use_id": tool_use_id,
+            "content": json.dumps({"ok": False, "reason": "tool_invocation_in_progress"}),
+            "is_error": True,
+        }, None)
+
+    try:
+        # Override handlers may cross a network boundary, so dispatch them
+        # outside the SQLite unit of work but inside the durable claim saga.
+        result = await asyncio.to_thread(
+            handlers.dispatch, dossier_id, tool_name, stamped_input
+        )
 
         block = {
             "type": "tool_result",
@@ -281,11 +337,18 @@ async def _dispatch_sub_tool(
             "content": _coerce_tool_result(result),
         }
     except Exception as exc:  # noqa: BLE001 — surface to model, don't kill loop
+        error_text = f"{type(exc).__name__}: {exc}"
+        try:
+            await asyncio.to_thread(
+                storage.complete_tool_invocation, tool_use_id, input_hash, error_text, True
+            )
+        except Exception:
+            logger.warning("sub_runtime: failed to complete errored invocation %s", tool_use_id, exc_info=True)
         return (
             {
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
-                "content": f"{type(exc).__name__}: {exc}",
+                "content": error_text,
                 "is_error": True,
             },
             None,
@@ -294,6 +357,17 @@ async def _dispatch_sub_tool(
     completion_args: Optional[dict[str, Any]] = None
     if tool_name == "complete_sub_investigation":
         completion_args = stamped_input
+
+    try:
+        await asyncio.to_thread(
+            storage.complete_tool_invocation,
+            tool_use_id,
+            input_hash,
+            block["content"],
+            False,
+        )
+    except Exception:
+        logger.warning("sub_runtime: failed to complete invocation %s", tool_use_id, exc_info=True)
 
     return block, completion_args
 
@@ -422,7 +496,12 @@ async def run_sub_investigation(
     session_id = session.id
 
     tools = _tools_with_cache_breakpoint(_build_sub_tool_definitions())
-    system_prompt = _cached_system_prompt(sub_prompt.SUB_INVESTIGATION_SYSTEM_PROMPT)
+    dossier = storage.get_dossier(parent_dossier_id)
+    system_prompt = _cached_system_prompt(
+        sub_prompt.build_sub_system_prompt(
+            getattr(dossier, "research_policy", None)
+        )
+    )
 
     messages: list[dict[str, Any]] = [
         {
@@ -450,6 +529,14 @@ async def run_sub_investigation(
 
     try:
         while turns < effective_max_turns:
+            reservation = storage.reserve_model_call(session_id)
+            if not reservation["allowed"]:
+                logger.info(
+                    "sub_runtime: model call denied for sub %s: %s",
+                    sub_id, reservation["reason"],
+                )
+                force_completed = True
+                break
             turns += 1
 
             # H-13: check stuck state before each API call (mirrors runtime.py).
@@ -484,6 +571,7 @@ async def run_sub_investigation(
                     )
 
             # Streaming is required for long operations (see runtime.py).
+            # The attempt was atomically reserved above before this boundary.
             async with client.messages.stream(
                 model=resolved_model,
                 max_tokens=32000,
@@ -524,6 +612,21 @@ async def run_sub_investigation(
                 for b in response.content
             ]
             messages.append({"role": "assistant", "content": serialized_content})
+
+            try:
+                from . import evidence as evidence_mod
+
+                evidence_mod.persist_anthropic_evidence(
+                    parent_dossier_id,
+                    serialized_content,
+                    work_session_id=session_id,
+                )
+            except Exception:
+                logger.warning(
+                    "sub_runtime: evidence capture failed for sub %s",
+                    sub_id,
+                    exc_info=True,
+                )
 
             if getattr(response, "stop_reason", None) == "pause_turn":
                 # web_search hit its per-turn iteration cap — resume.

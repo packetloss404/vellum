@@ -34,7 +34,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from ..config import (
     AGENT_MAX_CONCURRENT_RUNS,
@@ -139,6 +139,7 @@ class AgentOrchestrator:
         max_turns: int = AGENT_MAX_TURNS,
         model: Optional[str] = None,
         expected_session_id: Optional[str] = None,
+        session_factory: Optional[Callable[[], str]] = None,
     ) -> dict:
         """Launch a ``DossierAgent.run()`` as an asyncio.Task.
 
@@ -160,6 +161,13 @@ class AgentOrchestrator:
                 and active_count >= AGENT_MAX_CONCURRENT_RUNS
             ):
                 raise AgentCapacityExceeded("agent capacity exceeded")
+
+            # A scheduler may need a durable work_session, but creating it
+            # before this capacity gate turns ordinary capacity pressure into
+            # phantom sessions and consumed run quota. Build it only after the
+            # orchestrator has accepted the launch while holding the same lock.
+            if expected_session_id is None and session_factory is not None:
+                expected_session_id = session_factory()
 
             effective_max_turns = max(
                 1, min(int(max_turns or AGENT_MAX_TURNS), AGENT_MAX_TURNS)
