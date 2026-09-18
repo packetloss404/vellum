@@ -8,7 +8,7 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-FROM nginx:1.29.4-alpine@sha256:4870c12cd2ca986de501a804b4f506ad3875a0b1874940ba0a2c7f763f1855b2
+FROM nginx:1.31.0-alpine@sha256:2f07d83bf561b506400dc183b1b2003803e39efbd22451f848adaba14d28c7c7
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY docs/index.html /usr/share/nginx/html/docs/index.html
 COPY deploy/nginx.conf.template /etc/nginx/templates/default.conf.template
